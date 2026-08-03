@@ -150,6 +150,19 @@ the `code` CLI has no command or URI execution, and `VSCODE_IPC_HOOK` speaks an 
 protocol. It drives the command palette via AppleScript, which is why it is a separate verb
 that nothing calls on your behalf, needs `--force`, and is macOS-only.
 
+**A reload is recoverable, and that was measured rather than assumed.** The waker is
+registered on `SessionStart` as well as `Stop`, so the reloaded session arms a listener
+without having to take a turn first. Proven end to end: the reload fired at 18:56:45, the
+mark `wake-SessionStart` appeared at 18:57:00 from pid 11866, that pidfile was never
+superseded — **no `Stop` waker existed in that session at all** — and when a probe landed
+3.7 minutes later the session was woken unprompted, the harness naming the delivering hook
+`SessionStart:resume`.
+
+That matters because `reload` refuses unless a `SessionStart` invocation has actually left
+its mark. Registration is not firing: an earlier guard allowed a reload on the strength of
+the hook being *registered*, and stranded the session twice — it came back with nothing
+listening and only a human could revive it. `--i-know` overrides, and accepts that.
+
 ## Why a server and not a shared file
 
 The obvious design is a JSONL file both agents append to. It does not work here.
