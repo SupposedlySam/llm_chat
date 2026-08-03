@@ -64,14 +64,20 @@ STATE = os.path.join(PROJECT, ".llm_chat")
 JOINED = os.path.join(STATE, "joined.json")
 PID_PATH = os.path.join(STATE, "wake.pid")
 
-# Nothing re-arms this while a session sits idle: only a turn-end or a session
-# start does, and neither happens to an agent that is waiting. So when the
-# budget elapses the session goes DEAF until something else makes it act — and
-# an agent told "wait until the other side says it is ready" is exactly the case
-# that waits longest. An hour, not fifteen minutes; the real stop condition is
-# every joined room closing, which is checked each pass.
-LISTEN_SEC = int(os.environ.get("LLM_CHAT_LISTEN_SEC") or 3600)
-POLL_SEC = int(os.environ.get("LLM_CHAT_POLL_SEC") or 5)
+POLL_SEC_DEFAULT = 5
+
+# There is NO listen budget. If you are in a room you hear every reply, full
+# stop — a timer here meant an idle agent went silently deaf at a moment
+# unrelated to anything, and nothing re-arms it while it waits, because only a
+# turn-end or a session start does and neither happens to an agent that is
+# waiting. The budget was standing in for "has this session gone away?", which
+# is answerable directly: see orphaned().
+#
+# The parent process is the Claude Code extension. When it dies this process is
+# reparented (pid 1), which is a precise, free liveness signal — no token to
+# refresh and nothing to keep in sync.
+PARENT = os.getppid()
+POLL_SEC = int(os.environ.get("LLM_CHAT_POLL_SEC") or POLL_SEC_DEFAULT)
 
 
 def joined_rooms():
@@ -118,6 +124,22 @@ def superseded() -> bool:
             return int(f.read().strip()) != os.getpid()
     except (OSError, ValueError):
         return False
+
+
+def orphaned() -> bool:
+    """Has the session that armed this waker gone away?
+
+    Checked BEFORE polling, never after, for the same reason superseded() is:
+    `poll` advances the server-side cursor, so an orphan that polled would
+    CONSUME messages and then exit(2) into a session that no longer exists.
+    Those messages would be delivered to nobody and unreachable afterwards —
+    which is worse than the stale poller a listen budget was guarding against.
+
+    If we were already reparented at startup we cannot tell orphaned from
+    normal, so we do not guess: the room-closed check and supersession still
+    bound the process, and the harness timeout backstops it.
+    """
+    return PARENT != 1 and os.getppid() != PARENT
 
 
 def poll(channel, entry):
@@ -209,12 +231,13 @@ def main() -> int:
     if not claim_pidfile():
         return 0
 
-    waited = 0
-    while waited < LISTEN_SEC:
-        # BEFORE polling, never after: `poll` advances the server-side cursor,
-        # so once this process has claimed a message it is the only one that
-        # can deliver it. Standing down after claiming would lose it.
+    while True:
+        # BOTH before polling, never after: `poll` advances the server-side
+        # cursor, so once this process has claimed a message it is the only one
+        # that can deliver it. Standing down after claiming would lose it.
         if superseded():
+            return 0
+        if orphaned():
             return 0
 
         blocks = []
@@ -226,10 +249,10 @@ def main() -> int:
         if blocks:
             wake(blocks)  # exits 2
         time.sleep(POLL_SEC)
-        waited += POLL_SEC
+        # The only real stop conditions: nothing can arrive any more, a newer
+        # waker took over, or the session is gone.
         if not still_worth_listening(joined_rooms()):
             return 0
-    return 0
 
 
 if __name__ == "__main__":
