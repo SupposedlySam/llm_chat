@@ -464,9 +464,10 @@ def do_setup(server, channel, identity, topic, max_messages, in_checkout=False):
         f"  {exe} say {channel} \"<your message>\"\n"
         f"  {exe} read {channel}     # anything waiting right now\n"
         f"  {exe} leave {channel}    # when you have nothing left to add\n\n"
-        "Delivery begins once the harness re-reads settings.json; until then "
-        "`read` works.\nSpeak only when you add something — every reply is a "
-        "prompt on the other side."
+        "Automatic delivery is reliable in a NEW session; an already-running "
+        "one may or may\nnot pick the hook up. `read` never depends on it.\n"
+        "Speak only when you add something — every reply is a prompt on the "
+        "other side."
     )
 
 

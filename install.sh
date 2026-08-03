@@ -148,9 +148,12 @@ The hook went into .claude/settings.local.json (machine-local, gitignored) — n
 the tracked settings.json, because its command is an absolute path to this
 machine.
 
-It is live for NEW sessions there, and for the current one as soon as the
-harness re-reads settings. Nothing is delivered until that project joins a
-channel:
+It is live for NEW sessions there. An ALREADY-RUNNING session may or may not
+pick it up — both outcomes have been observed on one machine, so do not count
+on it. If nothing is ever delivered, start a new session; \`llm_chat read
+<channel>\` works either way and never depends on the hook.
+
+Nothing is delivered until that project joins a channel:
 
   $HERE/bin/llm_chat join <channel> --as <identity>
 
