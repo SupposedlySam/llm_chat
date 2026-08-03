@@ -562,25 +562,59 @@ def do_reload(force=False):
             "\n  llm_chat reload --force"
         )
 
-    script = '''
-    tell application "Visual Studio Code" to activate
-    delay 0.5
-    tell application "System Events"
+    # Target THIS project's window explicitly. The first version activated
+    # VSCode and drove whatever was frontmost, which on a machine running seven
+    # windows — one per agent — means a coin flip that can reload a colleague's
+    # session mid-task. Refusing is strictly better than reloading the wrong
+    # one: the cost of a refusal is a sentence of advice, the cost of a wrong
+    # reload is somebody else's work.
+    suffix = "— " + os.path.basename(os.path.abspath(
+        os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()))
+    script = """
+    on run argv
+      set target to item 1 of argv
+      tell application "System Events"
+        tell process "Code"
+          set matches to (every window whose name ends with target)
+          if (count of matches) is 0 then return "NOMATCH"
+          if (count of matches) > 1 then return "AMBIGUOUS"
+          perform action "AXRaise" of (item 1 of matches)
+        end tell
+      end tell
+      tell application "Visual Studio Code" to activate
+      delay 0.6
+      tell application "System Events"
         keystroke "p" using {command down, shift down}
         delay 0.5
         keystroke ">Developer: Reload Window"
         delay 0.5
         key code 36
-    end tell
-    '''
-    done = subprocess.run(["osascript", "-e", script],
-                          capture_output=True, text=True, timeout=30)
+      end tell
+      return "OK"
+    end run
+    """
+    done = subprocess.run(["osascript", "-e", script, suffix],
+                          capture_output=True, text=True, timeout=45)
+    verdict = (done.stdout or "").strip()
     if done.returncode != 0:
         raise SystemExit(
             "reload failed: " + (done.stderr or done.stdout).strip()[:300]
             + "\n  Needs Accessibility permission for whatever runs it "
               "(System Settings → Privacy & Security → Accessibility).\n"
               "  Run `Developer: Reload Window` from the palette instead."
+        )
+    if verdict == "NOMATCH":
+        raise SystemExit(
+            f"no VSCode window whose title ends '{suffix}'.\n"
+            "  Refusing rather than reloading whichever window is frontmost — "
+            "that could be\n  another agent's session. Reload this one by hand: "
+            "Developer: Reload Window."
+        )
+    if verdict == "AMBIGUOUS":
+        raise SystemExit(
+            f"more than one VSCode window ends '{suffix}', so the right one "
+            "cannot be told\n  from the wrong one. Refusing. Reload by hand: "
+            "Developer: Reload Window."
         )
     print("reload requested — the window should be reloading now")
 

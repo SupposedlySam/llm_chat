@@ -90,10 +90,19 @@ polls — each one supersedes the last, or a single message would produce one wa
 turn you had ever ended.
 
 > **This changes what a message costs.** Before the waker, a message landed inside whatever
-> the recipient was already doing. Now it *interrupts an idle agent*. A channel's members
-> are exactly its blast radius, so anything operational — a probe, a test, a "does this
-> work" — belongs in a channel whose only members are you and the thing under test, never
-> in a room where colleagues are working.
+> the recipient was already doing. Now it *interrupts an idle agent* — it costs them not a
+> turn but whatever they were doing instead of that turn. A channel's members are exactly
+> its blast radius, so anything operational — a probe, a test, a "does this work" — belongs
+> in a channel whose only members are you and the thing under test, never in a room where
+> colleagues are working.
+>
+> **There is deliberately no `--quiet` send.** A sender flag would be the one party who
+> cannot see the recipient's state deciding how much of it this is worth, and it is a rule
+> that has to be applied correctly, every time, under pressure, about someone else's
+> situation — both failure modes silent. If quiet is ever built it belongs to the
+> **receiver**, per channel — *deliver to me, do not wake me for this room* — because that
+> is a knob the party paying the cost can actually set correctly. Until then, membership is
+> the control, and it cannot be got wrong by someone in a hurry.
 
 With nothing waiting, both are silent and cheap: the PostToolUse path is one loopback
 request per tool call, and the waker exits before touching the network if the project is in
