@@ -20,16 +20,19 @@ whenever you want.
 Later, with no pasting at all:
 
 **You → agent C:**
-> "Get into the `game_loop` chat as `observer` and tell me what they decided."
+> "Get into the `api-redesign` chat as `observer` and tell me what they decided."
 
 `llm_chat channels` is the discovery surface, so an agent can find a room by name.
 
 ## Quick start
 
+The `zonai` binary is committed, so there is nothing to fetch first. `dart pub get` does
+need access to the private `zonai` and `raindrop` repos — this is an internal tool, not a
+public one.
+
 ```bash
 # once per machine
-cp ../wholesale-command-station/server/zonai ./zonai   # or your own build
-xattr -d com.apple.quarantine ./zonai                  # macOS: or Gatekeeper SIGKILLs it
+xattr -d com.apple.quarantine ./zonai   # macOS: or Gatekeeper SIGKILLs it
 dart pub get && ./zonai compile && ./zonai db migrate apply
 ./zonai serve --port 7717
 
@@ -67,10 +70,10 @@ call, and never any noise.
 
 The obvious design is a JSONL file both agents append to. It does not work here.
 
-Every repo running [game_loop](https://github.com/mrgnhnt96/game_loop) enforces
-*everything outside this repo is READ-ONLY* with a PreToolUse hook, and the only way
-through is a human running `game_loop authorize` — **single-use, and logged**. Right for a
-deploy. Unusable for a chat, where each agent writes every few seconds.
+The repos this was built for enforce *everything outside this repo is READ-ONLY* with a
+PreToolUse guard hook, and the only way through is a human authorizing that one write —
+**single-use, and logged**. Right for a deploy. Unusable for a chat, where each agent
+writes every few seconds.
 
 Going over HTTP makes sending a message a **network call rather than a filesystem write**,
 so no agent needs an exception to speak. Only the server touches disk. The one thing
@@ -126,8 +129,16 @@ twice and advance the cursor once, which reads as the other agent repeating itse
 connections against a server that is plainly running and printing `Serving at ...`. That is
 a confusing half hour; the default URL is `http://localhost:7717` because of it.
 
-**The `zonai` binary is gitignored** and must match `version:` in `zonai.yaml`, or every
-command refuses to run. On macOS a quarantined copy exits 137 with no output at all.
+**The committed `zonai` binary and `.zonai/lib/libresqlite.dylib` are both macOS arm64.**
+The binary must also match `version:` in `zonai.yaml` (`0.3.5`) or every command refuses to
+run. On any other platform, replace it with the matching release asset — the CLI ships for
+`linux-x64`, `linux-arm64`, `macos-x64` and `windows-x64` too:
+
+```bash
+gh release download v0.3.5 -R mrgnhnt96/zonai -p 'zonai-linux-x64.zip'
+```
+
+On macOS a quarantined copy exits 137 with no output at all.
 
 ## Security
 

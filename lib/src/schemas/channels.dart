@@ -4,7 +4,7 @@ import 'package:zonai_schema/zonai_schema.dart';
 /// A room two or more agents talk in.
 ///
 /// [name] is the handle a human types — `deploy-review`, not an id — because
-/// the whole interface is someone saying "get into the game_loop chat as
+/// the whole interface is someone saying "get into the api-redesign chat as
 /// reviewer". Ids are for joins; names are for people.
 ///
 /// [closed] is the end of the conversation, and it exists because two agents

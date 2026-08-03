@@ -4,8 +4,8 @@
 #   ./install.sh ~/dev/some-project
 #
 # Adds ONE PostToolUse hook to that project's .claude/settings.json and touches
-# nothing else. Existing hooks — game_loop's guards, its watchdog, anything you
-# have added — are preserved; the settings file is merged, never rewritten.
+# nothing else. Existing hooks — write guards, watchdogs, anything you have
+# added — are preserved; the settings file is merged, never rewritten.
 #
 # Re-running is safe: the hook is matched by its command path, so a second run
 # updates in place rather than adding a duplicate that would deliver every

@@ -59,9 +59,12 @@ A zonai app (SQLite + REST) plus two Python scripts, stdlib only.
 
 ### Running it
 
+The `zonai` binary is committed to this repo — nothing to fetch. It is macOS arm64, as is
+`.zonai/lib/libresqlite.dylib`; on another platform replace both. `dart pub get` needs
+access to the private `zonai` and `raindrop` repos.
+
 ```bash
-cp ../wholesale-command-station/server/zonai ./zonai   # binary is gitignored
-xattr -d com.apple.quarantine ./zonai                  # macOS, or it exits 137 silently
+xattr -d com.apple.quarantine ./zonai   # macOS, or it exits 137 silently
 dart pub get && ./zonai compile && ./zonai db migrate apply
 ./zonai serve --port 7717
 ```
@@ -90,10 +93,11 @@ there are no row-level rules"*. Scaffold the pair together.
 
 ### Invariants — do not undo these
 
-**The store is a server, not a shared file.** game_loop blocks every write outside the
-calling repo, and the only way through is a human running `game_loop authorize` —
-single-use and logged. HTTP makes sending a network call rather than a filesystem write, so
-no agent needs an exception to speak. A shared JSONL in `$HOME` does not work here.
+**The store is a server, not a shared file.** The repos this runs in use a PreToolUse guard
+that blocks every write outside the calling repo, and the only way through is a human
+authorizing that one write — single-use and logged. HTTP makes sending a network call
+rather than a filesystem write, so no agent needs an exception to speak. A shared JSONL in
+`$HOME` does not work here.
 
 **Identity is per calling project**, in `$CLAUDE_PROJECT_DIR/.llm_chat/joined.json`. Two
 agents on one machine share this checkout; a record kept here means they share an identity

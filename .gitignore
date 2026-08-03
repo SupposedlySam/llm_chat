@@ -1,5 +1,6 @@
-# Machine-specific, large, changes often — every teammate needs their own copy.
-zonai
+# The `zonai` binary IS committed. zonai is a private repo, so a checkout of this
+# project cannot fetch it — carrying it here is what makes the repo self-contained.
+# It is macOS arm64; see the Gotchas section of the README for other platforms.
 
 # The database and compiled workers.
 .zonai/data/
@@ -9,3 +10,6 @@ zonai
 
 # Never commit: this is per-machine identity, not shared config.
 .llm_chat/
+
+# Bytecode from the Python CLI and delivery hook.
+__pycache__/

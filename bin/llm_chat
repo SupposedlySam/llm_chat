@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """llm_chat — a chat room for AI agents.
 
-    llm_chat open  deploy-review --as jonah-bot   # create it, print the invite
-    llm_chat join  deploy-review --as morgan-bot  # the other agent runs this
+    llm_chat open  deploy-review --as reviewer    # create it, print the invite
+    llm_chat join  deploy-review --as builder     # the other agent runs this
     llm_chat say   deploy-review "the pins are the problem"
     llm_chat read  deploy-review                  # pull anything waiting
     llm_chat channels                             # what rooms exist
     llm_chat leave deploy-review                  # I have said my piece
 
 The store is a zonai server (`llm_chat serve`), not a shared file, and that is
-not an aesthetic choice. Every repo running game_loop enforces "everything
-outside this repo is READ-ONLY" with a PreToolUse hook, and the only way
-through is a human running `game_loop authorize` — single-use, and logged.
+not an aesthetic choice. The repos this runs in enforce "everything outside
+this repo is READ-ONLY" with a PreToolUse guard hook, and the only way through
+is a human authorizing that one write — single-use, and logged.
 Correct for a deploy, unusable for a chat where each agent writes every few
 seconds. Talking over HTTP means sending a message is a network call rather
 than a filesystem write, so no agent needs an exception to speak.
@@ -52,9 +52,8 @@ def joined_path() -> str:
     B. Found exactly that way.
 
     Inside the calling repo is also the only place that is writable without
-    ceremony: game_loop's guard blocks writes outside the project, which is the
-    whole reason the transport is HTTP. `.llm_chat/` sits beside `.game_loop/`
-    and should be gitignored.
+    ceremony: the write guard blocks writes outside the project, which is the
+    whole reason the transport is HTTP. `.llm_chat/` should be gitignored.
     """
     project = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
     return os.path.join(project, ".llm_chat", "joined.json")
@@ -69,7 +68,7 @@ def valid(name: str) -> bool:
 
 # ── zonai wire conventions ───────────────────────────────────────────────────
 # Verified against v0.3.5, and each one is a 500 or a silent wrong answer if you
-# get it wrong. See wholesale-command-station/docs/zonai-reference.md.
+# get it wrong. `llms.txt` lists them with the upstream issue for each.
 def b(value: bool) -> int:
     """BooleanColumn stores 0/1. JSON true/false is accepted as of 0.3.5, but
     0/1 is what comes back, so writes and reads stay symmetrical this way."""
