@@ -426,15 +426,18 @@ def install_hook(project) -> str:
     return first[0] if first else "registered"
 
 
-def do_setup(server, channel, identity, topic, max_messages):
+def do_setup(server, channel, identity, topic, max_messages, in_checkout=False):
     """One command: server up, hook registered here, channel joined."""
     project = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
-    if project == os.path.abspath(ROOT):
+    if project == os.path.abspath(ROOT) and not in_checkout:
         raise SystemExit(
             "run this from the repo you are working in, not from the llm_chat "
             "checkout. Identity is stored per calling project, so two agents "
             "set up here would share one identity and receive each other's "
-            "messages."
+            "messages.\n\n"
+            "  If you ARE the agent who works on llm_chat — the one the others "
+            "ask when\n  setup goes wrong — pass --in-checkout. Exactly one "
+            "agent per machine may."
         )
     if not valid(channel) or not valid(identity):
         raise SystemExit("channel and identity must be 1-64 chars of [a-z0-9._-]")
@@ -485,6 +488,9 @@ def main() -> int:
     p.add_argument("--as", dest="identity", required=True)
     p.add_argument("--topic")
     p.add_argument("--max-messages", type=int, default=DEFAULT_MAX_MESSAGES)
+    p.add_argument("--in-checkout", dest="in_checkout", action="store_true",
+                   help="allow setup inside the llm_chat checkout itself, for "
+                        "the agent that maintains it; only one per machine")
 
     p = sub.add_parser("say", help="send a message")
     p.add_argument("channel")
@@ -512,7 +518,7 @@ def main() -> int:
 
     if args.cmd == "setup":
         do_setup(server, args.channel, args.identity, args.topic,
-                 args.max_messages)
+                 args.max_messages, args.in_checkout)
         return 0
     if args.cmd in ("open", "join"):
         do_join(server, args.channel, args.identity, args.topic,
