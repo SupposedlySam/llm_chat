@@ -75,9 +75,74 @@ payload=$(cat)
 #   THE COMMIT GATE does NOT stay here. What a change owes, and whether the evidence is newer than
 #     the change, are facts about a TREE — its files, its mtimes, its record. That one is resolved
 #     from the tree the commit targets; see the commit scan below.
-GAMELOOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"    # .game_loop/
+CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"        # the .game_loop/ this CODE is in
+
+deny() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+    "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+  exit 0
+}
+
+# THE HOME — where the project's identity and state live, which under a pin is NOT where this script
+# lives. GAME_LOOP_HOME names it; unset means the code's own directory, exactly as before.
+#
+# WHY THIS ONE REFUSES INSTEAD OF FALLING BACK, even though refusing a PreToolUse hook denies the
+# tool: this script reads config.json for read_roots, allow_write_roots and deploy_verbs — the
+# project's own policy about what may be written and what may never be run. Falling back to the
+# pinned copy's config would enforce SOME OTHER project's policy, and the direction of that error is
+# permissive: a write into another repo that this project never allowed would be allowed. Silently
+# guarding the wrong thing is worse than a loud stop, so a set-but-unusable home is denied and named.
+# The way through is the human's, as INV5 requires — fix or drop GAME_LOOP_HOME in
+# .claude/settings.local.json and reload — never an env var that switches the guard off.
+GAMELOOP_DIR="$CODE_DIR"
+if [ -n "${GAME_LOOP_HOME+x}" ]; then
+  _home=$(python3 -c 'import os,sys; v=sys.argv[1].strip(); print(os.path.abspath(os.path.expanduser(v)) if v else "")' "$GAME_LOOP_HOME" 2>/dev/null)
+  if [ -n "$_home" ] && [ -f "$_home/config.json" ]; then
+    GAMELOOP_DIR="$_home"
+  else
+    deny "guard-writes REFUSED — GAME_LOOP_HOME does not name a game_loop home.
+
+    GAME_LOOP_HOME : '$GAME_LOOP_HOME'
+    looked for     : ${_home:-(empty value)}/config.json
+
+This guard reads that home's config.json for read_roots, allow_write_roots and deploy_verbs — this
+project's own policy about what may be written and what may never be run. Falling back to the code's
+own directory would enforce a DIFFERENT project's policy, and permissively: writes this project never
+allowed would be allowed, silently. So it stops instead.
+
+Fix or remove GAME_LOOP_HOME in .claude/settings.local.json, then reload the window — hooks are read
+when a session starts. \`game_loop self\` prints the correct wiring."
+  fi
+elif [ -f "$CODE_DIR/PINNED" ]; then
+  deny "guard-writes REFUSED — this is a PINNED code checkout and no GAME_LOOP_HOME names its project.
+
+    code : $CODE_DIR
+
+A pinned checkout carries CODE only: no config.json worth reading, and any state written beside it is
+destroyed by the next re-pin. Running it with no home is the one wiring that silently re-creates the
+failure pinning exists to prevent, so it is refused rather than guessed.
+
+Add GAME_LOOP_HOME=\"\$CLAUDE_PROJECT_DIR/.game_loop\" to this hook in .claude/settings.local.json,
+then reload the window. \`game_loop self\` prints the whole block."
+fi
 REPO="${CLAUDE_PROJECT_DIR:-$(dirname "$GAMELOOP_DIR")}"
 CONFIG_F="$GAMELOOP_DIR/config.json"
+
+# Running `verify` is two independent questions: WHICH CODE runs it, and WHICH TREE's record it
+# answers from. They were the same directory until pinning split them, and the commit gate needs
+# them apart — the whole point of a pin is that the code is not the half-edited copy in the tree
+# being committed, while the record must be exactly that tree's (#28).
+#   not pinned → runs "$home/bin/verify", byte-for-byte the invocation this always made.
+#   pinned     → runs the PINNED binary, told which home to answer from.
+# $1 is the .game_loop/ whose verify.yaml and verified.json describe the tree in question.
+run_verify() {
+  local home="$1"; shift
+  if [ "$CODE_DIR" = "$GAMELOOP_DIR" ]; then
+    "$home/bin/verify" "$@"
+  else
+    GAME_LOOP_HOME="$home" "$CODE_DIR/bin/verify" "$@"
+  fi
+}
 
 REPO_REAL=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$REPO" 2>/dev/null)
 SLUG=$(python3 -c 'import re,sys; print(re.sub(r"[^a-zA-Z0-9]", "-", sys.argv[1]))' "$REPO_REAL" 2>/dev/null)
@@ -98,11 +163,8 @@ fi
 # are not this session's work, exactly as a sibling's mandate is not its mandate.
 EDITED_F="$(dirname "$STATE_F")/edited.txt"
 
-deny() {
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
-  exit 0
-}
+# deny() is defined ABOVE, before the home is resolved — a bad GAME_LOOP_HOME has to be able to
+# refuse, and it is the first thing this script decides.
 
 # A WARNING, not a decision. Carries NO permissionDecision, so the tool call proceeds exactly as it
 # would have and the permission flow is untouched; the text is injected into the model's context
@@ -414,7 +476,7 @@ or commit with --no-verify to skip the gate out loud and on the record."
       # Unchanged whenever the target resolves to this script's own tree.
       TARGET_TREE="$REPO_REAL"
       [ "$GAMELOOP_TARGET" != "$GAMELOOP_DIR" ] && TARGET_TREE="$(dirname "$GAMELOOP_TARGET")"
-      if ! "$GAMELOOP_TARGET/bin/verify" --check >/tmp/.game_loop_verify 2>&1; then
+      if ! run_verify "$GAMELOOP_TARGET" --check >/tmp/.game_loop_verify 2>&1; then
         # ORDERING NOTE: this hook runs at PreToolUse, BEFORE the command body executes. Bundling
         # `verify` and `git commit` in ONE call can never pass — the check runs before your verify
         # line does. Run them as two separate calls.
@@ -643,7 +705,7 @@ PY
       # STATED, NEVER BLOCKED, and for the same reason the manifest ships empty: on a fresh install
       # every path is unchecked, and refusing there would block the first commit with the fix —
       # writing the rules — sitting behind the gate (INV5).
-      cov_json=$("$GAMELOOP_DIR/bin/verify" --coverage --staged --porcelain 2>/dev/null || true)
+      cov_json=$(run_verify "$GAMELOOP_DIR" --coverage --staged --porcelain 2>/dev/null || true)
       cov_note=$(COV="$cov_json" python3 <<'PY'
 import json, os
 try:

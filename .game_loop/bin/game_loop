@@ -57,7 +57,81 @@ try:
 except Exception:  # noqa: BLE001 — a missing/broken notify file must never break a real command
     notify = None
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .game_loop/
+CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the .game_loop/ this CODE is in
+
+# --- WHERE THE HOME IS, AND WHY IT IS NOT WHERE THE CODE IS -------------------------------------
+#
+# game_loop guards the session that is EDITING game_loop. The hooks run `.game_loop/bin/*` out of the
+# checkout being worked on, so a half-finished edit to a gate is live in the same breath it is
+# written: a merge left conflict markers in this file and every verb died with a SyntaxError; a shell
+# parse error in the write guard once blocked every tool call including its own fix.
+#
+# The answer is to run the CODE from a pinned checkout — a gitignored directory holding a known-good
+# commit — while the HOME stays in the repo. GAME_LOOP_HOME names that home. Two reasons the split
+# falls exactly there, neither of them cosmetic:
+#
+#   1. verify.yaml must be the REPO's or dogfooding is silently off. bin/verify resolves the tree it
+#      checks from its own __file__; a pinned copy resolves it to the PINNED directory, so editing
+#      the repo's own gates owes nothing, `verify --check` prints "nothing owes a check", and the
+#      commit gate passes. A green that gated nothing is the failure shape of #25 and #30.
+#   2. State in the pinned directory is DESTROYED on every upgrade, because upgrading IS a
+#      re-checkout. Pins, the ruled-out list, hardened learnings, the log — the accumulated identity
+#      that most needs to outlive a version bump — is exactly what a naive pin would wipe.
+#
+# UNSET is the common path and behaves byte-identically to before: home is the code's own directory.
+HOME_ENV = "GAME_LOOP_HOME"
+PINNED_MARK = "PINNED"   # written into a pinned checkout by `game_loop self --pin`; see resolve_home
+PINNED_DIRNAME = ".game_loop_self"   # where `self --pin` puts it, inside the repo, gitignored
+
+
+def refuse_home(msg):
+    """A home that cannot be trusted is refused, never guessed. Stderr + exit 2, before any work."""
+    sys.stderr.write(msg + "\n")
+    raise SystemExit(2)
+
+
+def resolve_home(code_root, prog):
+    """The .game_loop/ that owns identity and state, given the one the CODE lives in.
+
+    Unset  → the code's own directory (today's behavior, unchanged).
+    Set    → it must exist and carry config.json, or this REFUSES. A silent fallback to __file__ is
+             the whole trap: it would point every check at the pinned copy and report success.
+    Set to the empty string → also refused. That is deliberately NOT the GAME_LOOP_SESSION
+             convention, where empty names a real target (the repo-global state file). Empty names
+             no directory, and the reading that would make it harmless — "treat it as unset" — is
+             the silent fallback again.
+
+    A PINNED marker in the code directory flips the default the other way: pinned code run with NO
+    home is refused too. That combination is undetectable from the inside otherwise (it looks exactly
+    like an ordinary install of the pinned tree) and it is the one wiring that recreates the trap.
+    """
+    raw = os.environ.get(HOME_ENV)
+    if raw is None:
+        if os.path.exists(os.path.join(code_root, PINNED_MARK)):
+            refuse_home(
+                f"{prog} REFUSED — this is a PINNED code checkout and no {HOME_ENV} names its "
+                f"project.\n    code : {code_root}\n\n"
+                "A pinned checkout carries CODE only. Its verify.yaml is a copy of some older "
+                "commit's,\nand any state written beside it is destroyed by the next re-pin. Name "
+                "the project's home:\n"
+                f"    {HOME_ENV}=<project>/.game_loop {code_root}/bin/{prog} ...\n"
+                "  → `game_loop self` prints the hook wiring that sets it.")
+        return code_root
+    home = os.path.abspath(os.path.expanduser(raw.strip())) if raw.strip() else ""
+    if home and os.path.isfile(os.path.join(home, "config.json")):
+        return home
+    refuse_home(
+        f"{prog} REFUSED — {HOME_ENV} does not name a game_loop home.\n"
+        f"    {HOME_ENV} : {raw!r}\n"
+        f"    looked for : {os.path.join(home, 'config.json') if home else '(empty value)'}\n\n"
+        "It must name the .game_loop/ holding the PROJECT's own identity — config.json, "
+        "verify.yaml,\nINVARIANTS.md, state, log.jsonl, pins, the ruled-out list. Falling back to "
+        "this code's own\ndirectory would check the PINNED copy instead of the project and report "
+        "success while gating\nnothing, so this refuses. Point it at a real .game_loop/, or unset it "
+        "entirely.")
+
+
+ROOT = resolve_home(CODE_ROOT, "game_loop")   # .game_loop/ — identity and state
 REPO_ROOT = os.path.dirname(ROOT)
 SESSIONS_DIR = os.path.join(ROOT, "sessions")
 LEGACY_STATE_F = os.path.join(ROOT, "state.json")   # no-session fallback (human terminal, old harness)
@@ -3133,14 +3207,39 @@ def hooks_live_warning():
     turn-ends, and the human's read was "you must not be on the game_loop" — which was exactly right.
 
     The tell is the probe. `cmd_stopgate` writes `probe/stop-payload.json` on EVERY invocation, so
-    its absence is proof the Stop hook has never fired in this checkout. Rung 5 of the harden ladder:
-    the system reports the fact rather than leaving it to be guessed.
+    its absence means no Stop hook has been recorded here. Rung 5 of the harden ladder: the fact is
+    REPORTED rather than left to be guessed.
+
+    WHAT THE PROBE DOES NOT PROVE, and this is the correction that earned this paragraph: absence is
+    a statement about the PROBE'S lifetime, not the hook's. A checkout that was working before the
+    probe existed reads identically to one that never fired, until its next Stop. So this says "no
+    record", never "never fired" — a guard that overstates its reach buys false confidence (INV6),
+    and a diagnostic is least trustworthy exactly when someone first runs it to decide whether to
+    trust the wiring. Another project adopting this pattern had its own tool report a hook as
+    never-fired that its author had watched work minutes earlier.
+
+    THE REMEDY DEPENDS ON THE HOST. Claude Code as the VSCode extension registers hooks with the
+    session at WINDOW LOAD, so reloading the window is what actually wires them — cheaper than, and
+    sufficient without, a restart. Detected by CLAUDE_CODE_ENTRYPOINT (`claude-vscode`), never by
+    TERM_PROGRAM: that is equally true of a plain `claude` in VSCode's integrated terminal, where the
+    remedy really IS a restart, and it is unset here entirely — so keying off it does not merely
+    misdirect, it detects nothing and falls through, which is the silent failure again.
     """
     if not os.path.isfile(os.path.join(ROOT, "probe", "stop-payload.json")):
-        return ("⚠ HOOKS NOT LIVE — the Stop gate has never fired in this checkout (no "
+        vscode = os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-vscode"
+        remedy = ("Reload the VSCode window — the extension registers hooks at window load, so a\n"
+                  "  hook written mid-session stays inert until then (a restart also works, and "
+                  "costs more)."
+                  if vscode else
+                  "Start a new session — hooks are read at session start (or /hooks).")
+        return ("⚠ HOOKS NOT LIVE — no record of the Stop gate firing in this checkout (no "
                 "probe/stop-payload.json).\n"
-                "  Claude Code reads hooks at session START; install.sh wrote .claude/settings.json\n"
-                "  after this one began. Start a new session (or /hooks) or NOTHING here is enforced.")
+                "  Claude Code reads hooks when a session starts; install.sh wrote "
+                ".claude/settings.json\n"
+                "  after this one began, so nothing here is enforced yet.\n"
+                f"  → {remedy}\n"
+                "  (This tracks the PROBE's lifetime, not the hook's: a checkout that fired before\n"
+                "   probing shipped reads the same way until its next Stop.)")
     return None
 
 
@@ -3237,6 +3336,33 @@ def installed_version():
         return v or None
     except OSError:
         return None
+
+
+def _git_sha(path):
+    """HEAD of the checkout at `path`, or None. Best effort: never raises, never stalls a report."""
+    try:
+        r = subprocess.run(["git", "-C", path, "rev-parse", "HEAD"],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def running_version():
+    """The commit the CODE now executing came from, which is not always the one installed here.
+
+    installed_version() answers "what did install.sh put in this .game_loop/" — a fact about the
+    HOME. Under a pin those are two different commits, and "the pinned copy is behind the repo" is
+    invisible unless both are printed. A pin written by `self --pin` stamps VERSION; one made by
+    hand (a `git worktree add`) has none, so git answers for it.
+    """
+    try:
+        with open(os.path.join(CODE_ROOT, "VERSION")) as f:
+            if (v := f.read().strip()):
+                return v
+    except OSError:
+        pass
+    return _git_sha(CODE_ROOT)
 
 
 def _latest_version(repo, api_base):
@@ -3392,7 +3518,10 @@ def coverage_report(s):
     cfg = config()
     cov, cov_err = None, None
     try:
-        r = subprocess.run([sys.executable, os.path.join(ROOT, "bin", "verify"),
+        # CODE_ROOT, not ROOT: the binary comes from wherever this process's code came from, so a
+        # pinned run keeps reading pinned code. Which TREE it reports on is decided by the home it
+        # inherits through GAME_LOOP_HOME, not by where the file sits. Identical when not pinned.
+        r = subprocess.run([sys.executable, os.path.join(CODE_ROOT, "bin", "verify"),
                             "--coverage", "--porcelain"],
                            cwd=REPO_ROOT, capture_output=True, text=True, timeout=30)
         cov = json.loads(r.stdout) if r.returncode == 0 else None
@@ -3660,6 +3789,164 @@ def cmd_owned(s, a):
         "  hardcoded copy goes wrong silently the moment game_loop adds a file.")
 
 
+def pinned_report():
+    """Where the running CODE is, when that is not where the HOME is. Empty on the common path.
+
+    Same reasoning as the coverage and drift reports: a configuration you cannot see is one you
+    cannot verify. Running pinned changes what a gate is reading and what an upgrade will destroy,
+    and inferring it from a hook command line nobody re-reads is exactly how it goes wrong. So it is
+    printed, with both locations named and both commits shown, every session.
+    """
+    if CODE_ROOT == ROOT:
+        return []
+    code_v, home_v = running_version(), _git_sha(REPO_ROOT)
+    lines = ["", "PINNED CODE — the harness guarding this session is NOT the code in this repo:",
+             f"  code : {CODE_ROOT}" + (f"   @ {code_v[:8]}" if code_v else "   (no VERSION, not a "
+                                                                           "git checkout)"),
+             f"  home : {ROOT}" + (f"   (repo @ {home_v[:8]})" if home_v else "")]
+    if code_v and home_v and not (code_v.startswith(home_v) or home_v.startswith(code_v)):
+        lines.append("  ⚠ the pinned copy is a DIFFERENT commit from this repo's HEAD — edits to "
+                     ".game_loop/bin/")
+        lines.append("    here are inert until you re-pin. That is the point, and it is also how a "
+                     "fix sits unused.")
+    lines += ["  rules, state, log, pins and verified.json are read from and written to the HOME, "
+              "never the",
+              "  pinned copy — a check run against the copy would gate nothing, and state written "
+              "there is",
+              "  destroyed by the next re-pin. → game_loop self"]
+    return lines
+
+
+def cmd_self(s, a):
+    """`game_loop self` — run the harness from a pinned checkout, so editing it cannot break it.
+
+    WHY THIS IS A VERB AND NOT A PARAGRAPH IN A README (INV1): the mechanism is two git commands, but
+    the DANGEROUS part is the wiring, and the wiring is what a human writes by hand. Point the hooks
+    at a pinned bin/ and forget GAME_LOOP_HOME and every gate silently reads the pinned copy's
+    verify.yaml — the trap, wired by omission, reporting green. So the pin is stamped with a PINNED
+    marker that makes that combination REFUSE, and the hooks block is generated rather than
+    remembered. A setup whose only failure mode is a step you can forget belongs in a tool.
+
+    Writes nothing outside the repo: the checkout lands in <repo>/.game_loop_self, and the hooks
+    block is PRINTED for .claude/settings.local.json rather than written over a file that may hold
+    the human's own settings.
+    """
+    dest = os.path.join(REPO_ROOT, PINNED_DIRNAME)
+    code = os.path.join(dest, ".game_loop")
+    if not a.pin:
+        if CODE_ROOT != ROOT:
+            out(*(pinned_report()[1:]))
+        elif os.path.isdir(code):
+            out(f"a pinned checkout exists at {code}, but THIS process is not running from it.",
+                "  The hooks still point at the repo's own bin/. Wire them (below) and reload.")
+        else:
+            out("not pinned: this process runs the repo's own .game_loop/bin/, which is also what "
+                "you edit.")
+        out("", *self_hooks_block(code))
+        return
+    sha = _rev(a.pin)
+    if not sha:
+        die(f"self --pin: git cannot resolve {a.pin!r} in {REPO_ROOT} — name a commit, tag or "
+            "branch that exists here.")
+    if os.path.exists(dest):
+        if not os.path.isdir(os.path.join(dest, ".game_loop")):
+            die(f"self --pin: {dest} exists and does not look like a pinned checkout — refusing to "
+                "delete it. Move it aside yourself.")
+        shutil.rmtree(dest)
+    os.makedirs(dest)
+    try:
+        _extract_game_loop(sha, dest)
+    except Exception as e:  # noqa: BLE001 — a half-written pin is worse than none; clean up and say why
+        shutil.rmtree(dest, ignore_errors=True)
+        die(f"self --pin: could not extract .game_loop at {sha[:8]} — {e}")
+    for f in sorted(os.listdir(os.path.join(code, "bin"))):
+        p = os.path.join(code, "bin", f)
+        if os.path.isfile(p):
+            os.chmod(p, 0o755)
+    # The pinned copy must not carry the project's identity files. They are the HOME's, and a second
+    # copy sitting beside the code is a copy something will eventually read — the trap needs only one
+    # such misread to report a green it did not earn. Removing them makes the misread impossible
+    # rather than merely wrong (rung 1), and `resolve_home` refuses a home with no config.json.
+    dropped = []
+    for o in OWNED_FILES:
+        p = os.path.join(code, o["path"])
+        if os.path.exists(p):
+            os.remove(p)
+            dropped.append(o["path"])
+    with open(os.path.join(code, "VERSION"), "w") as f:
+        f.write(sha + "\n")
+    with open(os.path.join(code, PINNED_MARK), "w") as f:
+        json.dump({"ref": a.pin, "sha": sha, "at": datetime.datetime.now().isoformat(
+            timespec="seconds"), "home": ROOT}, f, indent=2)
+        f.write("\n")
+    logline({"kind": "self_pin", "ref": a.pin, "sha": sha, "dest": code})
+    out(f"pinned {a.pin} ({sha[:8]}) → {code}",
+        f"  dropped the project's own files from the copy: {', '.join(dropped) or '(none present)'}",
+        f"  stamped VERSION and {PINNED_MARK} — running this code without {HOME_ENV} now REFUSES,",
+        "  rather than quietly checking the copy instead of the project.",
+        f"  add {PINNED_DIRNAME}/ to .gitignore if it is not there already.",
+        "", *self_hooks_block(code))
+
+
+def self_hooks_block(code):
+    """The wiring, generated. Printed for .claude/settings.local.json — never for settings.json."""
+    return [
+        "WIRE IT IN .claude/settings.local.json (gitignored, machine-local) — NOT in the tracked",
+        ".claude/settings.json, which ships to every install and must keep pointing at",
+        "$CLAUDE_PROJECT_DIR/.game_loop/bin/. Replace each game_loop hook command with:",
+        "",
+        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/guard-writes.sh',
+        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/guard-mcp.sh',
+        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/game_loop limitgate',
+        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/game_loop stopgate',
+        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/watchdog',
+        "",
+        f"{HOME_ENV} is not optional in any of those: it is what keeps verify.yaml, the record of "
+        "what",
+        "was checked, and every byte of state in the REPO.",
+        "",
+        "THEN REMOVE THE GAME_LOOP HOOKS FROM .claude/settings.json — the two files MERGE, they do",
+        "not override. Leaving both wired runs EVERY gate twice: two write guards, two stop gates,",
+        "two watchdogs polling. Measured, not predicted: a commit under both printed the same",
+        "blast-radius warning verbatim two times. Nothing breaks loudly, which is the problem —",
+        "duplicate output reads as the tool repeating itself rather than as two of it running.",
+        "  In THIS repo the tracked file carries no hooks for exactly that reason; `./install.sh .`",
+        "  puts the unpinned wiring back whenever you want to stop running pinned.",
+        "",
+        "Then reload — hooks are read at session start, so none of this takes effect until you do.",
+    ]
+
+
+def _rev(ref):
+    """The commit `ref` names in this repo, or None."""
+    try:
+        r = subprocess.run(["git", "-C", REPO_ROOT, "rev-parse", "--verify", f"{ref}^{{commit}}"],
+                           capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.stdout.strip() or None if r.returncode == 0 else None
+
+
+def _extract_game_loop(sha, dest):
+    """`git archive <sha> .game_loop` straight into dest, via stdlib tarfile — no `tar` dependency."""
+    import tarfile
+    p = subprocess.Popen(["git", "-C", REPO_ROOT, "archive", "--format=tar", sha, ".game_loop"],
+                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        with tarfile.open(fileobj=p.stdout, mode="r|") as tf:
+            try:
+                tf.extractall(dest, filter="data")   # 3.12+: refuse paths that escape dest
+            except TypeError:
+                tf.extractall(dest)
+    finally:
+        err = p.stderr.read().decode(errors="replace") if p.stderr else ""
+        p.stdout.close()
+        if p.wait() != 0:
+            raise RuntimeError(err.strip() or f"git archive exited {p.returncode}")
+    if not os.path.isfile(os.path.join(dest, ".game_loop", "bin", "game_loop")):
+        raise RuntimeError(f"that commit carries no .game_loop/bin/game_loop")
+
+
 def cmd_status(s, a):
     _prune_stale_sessions()
     out(render_banner(s))
@@ -3714,6 +4001,7 @@ def cmd_status(s, a):
         "   game_loop measure --instrument <name> --before <n> --after <n>   (a delta, never a total)",
         "→ writes outside this repo are blocked by .game_loop/bin/guard-writes.sh (PreToolUse)",
         "knowledge: .game_loop/LEDGER.md (reference, NOT a gate) · log: .game_loop/log.jsonl")
+    out(*pinned_report())  # which code is running, and on whose home — silent unless they differ
     out(*pins_report(s))   # load-bearing env facts, re-shown every session: this is what survives
     out(*effectors_report(s))   # which verbs are proved to actually act — findings lean only on these
     out(*instruments_report(s))   # the declared harm must outlive the context that declared it
@@ -3976,6 +4264,12 @@ def main():
                          "owned set. exit 0 ONLY for clean; 1 rules drifted; 3 notes drifted; "
                          "2 could not determine — never read a 2 as clean")
 
+    sf = sub.add_parser("self")  # run the harness from a pinned checkout of itself
+    sf.add_argument("--pin", metavar="REF",
+                    help="check .game_loop out of REF into <repo>/.game_loop_self and stamp it, so "
+                         "the hooks can run code that editing this repo cannot break. No --pin: "
+                         "report what is pinned now and print the hook wiring.")
+
     sub.add_parser("stopgate")    # Stop-hook entrypoint; not for humans
     sub.add_parser("limitgate")   # PreToolUse entrypoint (usage-limit handoff gate); not for humans
     sub.add_parser("statusline")  # statusline entrypoint (limits tap + one-row render); not for humans
@@ -4001,7 +4295,7 @@ def main():
      "pin": cmd_pin, "effector": cmd_effector, "fix": cmd_fix,
      "checkpoint": cmd_checkpoint, "authorize": cmd_authorize, "notify": cmd_notify,
      "pin": cmd_pin, "effector": cmd_effector, "fix": cmd_fix, "owned": cmd_owned,
-     "worktree": cmd_worktree,
+     "worktree": cmd_worktree, "self": cmd_self,
      "instrument": cmd_instrument, "measure": cmd_measure}[a.cmd](s, a)
 
 

@@ -59,7 +59,46 @@
 set -uo pipefail
 payload=$(cat)
 
-GAMELOOP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"    # .game_loop/
+CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"        # the .game_loop/ this CODE is in
+
+deny() {
+  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
+    "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+  exit 0
+}
+
+# THE HOME — GAME_LOOP_HOME when set, so a pinned harness still reads the PROJECT's identity. Unset
+# means the code's own directory, unchanged. Refuses a bad value for the same reason as
+# guard-writes-impl.sh, and the error runs the same direction: this guard reads config.json for
+# mcp_read_only_tools, the project's list of MCP calls that only read. A different project's list
+# would ALLOW mutating calls this project never declared safe. Loud stop over silent permission.
+GAMELOOP_DIR="$CODE_DIR"
+if [ -n "${GAME_LOOP_HOME+x}" ]; then
+  _home=$(python3 -c 'import os,sys; v=sys.argv[1].strip(); print(os.path.abspath(os.path.expanduser(v)) if v else "")' "$GAME_LOOP_HOME" 2>/dev/null)
+  if [ -n "$_home" ] && [ -f "$_home/config.json" ]; then
+    GAMELOOP_DIR="$_home"
+  else
+    deny "guard-mcp REFUSED — GAME_LOOP_HOME does not name a game_loop home.
+
+    GAME_LOOP_HOME : '$GAME_LOOP_HOME'
+    looked for     : ${_home:-(empty value)}/config.json
+
+This guard reads that home's config.json for mcp_read_only_tools — this project's own list of MCP
+calls that only read. Falling back to the code's own directory would apply a DIFFERENT project's
+list, and permissively: a mutating call this project never declared safe would pass unexamined.
+
+Fix or remove GAME_LOOP_HOME in .claude/settings.local.json, then reload the window. \`game_loop self\`
+prints the correct wiring."
+  fi
+elif [ -f "$CODE_DIR/PINNED" ]; then
+  deny "guard-mcp REFUSED — this is a PINNED code checkout and no GAME_LOOP_HOME names its project.
+
+    code : $CODE_DIR
+
+A pinned checkout carries CODE only, so there is no project policy here to read and no state worth
+writing — the next re-pin destroys it. Add GAME_LOOP_HOME=\"\$CLAUDE_PROJECT_DIR/.game_loop\" to this
+hook in .claude/settings.local.json and reload the window. \`game_loop self\` prints the whole block."
+fi
 CONFIG_F="$GAMELOOP_DIR/config.json"
 
 # State is per-session: an authorization is granted IN a session and spendable only THERE. Mirrors
@@ -79,11 +118,8 @@ else
   STATE_F="$GAMELOOP_DIR/state.json"
 fi
 
-deny() {
-  printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
-  exit 0
-}
+# deny() is defined ABOVE, before the home is resolved — a bad GAME_LOOP_HOME has to be able to
+# refuse, and it is the first thing this script decides.
 
 # One classification pass. Prints "ALLOW", or "DENY" followed by the reason body.
 #

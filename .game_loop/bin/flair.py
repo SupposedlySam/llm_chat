@@ -18,7 +18,22 @@ import json
 import os
 import random
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .game_loop/
+def _home():
+    """The .game_loop/ holding config, honouring GAME_LOOP_HOME so a pinned harness reads the
+    PROJECT's settings rather than the pinned copy's. Deliberately PERMISSIVE where the gates refuse:
+    this module is decoration and its whole contract is that a broken flair never breaks a real
+    command, so a home it cannot use degrades to the code's own directory and, at worst, to
+    defaults. The gates (bin/game_loop, bin/verify, bin/watchdog, the two guards) have already
+    refused a bad value long before anything here could matter."""
+    raw = (os.environ.get("GAME_LOOP_HOME") or "").strip()
+    if raw:
+        home = os.path.abspath(os.path.expanduser(raw))
+        if os.path.isfile(os.path.join(home, "config.json")):
+            return home
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+ROOT = _home()  # .game_loop/
 CONFIG_F = os.path.join(ROOT, "config.json")
 
 DEFAULT = {

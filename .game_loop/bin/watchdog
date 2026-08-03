@@ -52,7 +52,48 @@ try:
 except Exception:  # noqa: BLE001
     notify = None
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .game_loop/
+CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the .game_loop/ this CODE is in
+
+# GAME_LOOP_HOME, honoured here for the same reason as in bin/game_loop and bin/verify, and for one
+# more that is specific to this process: the watchdog WRITES — state, the pid file, log.jsonl. Under
+# a pin those would land beside the pinned code, and a pin is upgraded by re-checkout, so every
+# upgrade would silently destroy the session state and the permanent log. Unset behaves as before.
+HOME_ENV = "GAME_LOOP_HOME"
+PINNED_MARK = "PINNED"
+
+
+def resolve_home(code_root, prog):
+    """Unset → the code's own directory (unchanged). Set → must exist and carry config.json, else
+    REFUSE rather than fall back to __file__. Pinned code run with no home is refused too."""
+    raw = os.environ.get(HOME_ENV)
+    if raw is None:
+        if os.path.exists(os.path.join(code_root, PINNED_MARK)):
+            sys.stderr.write(
+                f"{prog} REFUSED — this is a PINNED code checkout and no {HOME_ENV} names its "
+                f"project.\n    code : {code_root}\n\n"
+                "A pinned checkout carries CODE only. Its verify.yaml is a copy of some older "
+                "commit's,\nand any state written beside it is destroyed by the next re-pin. Name "
+                "the project's home:\n"
+                f"    {HOME_ENV}=<project>/.game_loop {code_root}/bin/{prog} ...\n"
+                "  → `game_loop self` prints the hook wiring that sets it.\n")
+            raise SystemExit(2)
+        return code_root
+    home = os.path.abspath(os.path.expanduser(raw.strip())) if raw.strip() else ""
+    if home and os.path.isfile(os.path.join(home, "config.json")):
+        return home
+    sys.stderr.write(
+        f"{prog} REFUSED — {HOME_ENV} does not name a game_loop home.\n"
+        f"    {HOME_ENV} : {raw!r}\n"
+        f"    looked for : {os.path.join(home, 'config.json') if home else '(empty value)'}\n\n"
+        "It must name the .game_loop/ holding the PROJECT's own identity — config.json, "
+        "verify.yaml,\nINVARIANTS.md, state, log.jsonl, pins, the ruled-out list. Falling back to "
+        "this code's own\ndirectory would check the PINNED copy instead of the project and report "
+        "success while gating\nnothing, so this refuses. Point it at a real .game_loop/, or unset it "
+        "entirely.\n")
+    raise SystemExit(2)
+
+
+ROOT = resolve_home(CODE_ROOT, "watchdog")          # .game_loop/ — identity and state
 STATE_F = os.path.join(ROOT, "state.json")          # re-pointed by set_session()
 LOG_F = os.path.join(ROOT, "log.jsonl")
 CONFIG_F = os.path.join(ROOT, "config.json")

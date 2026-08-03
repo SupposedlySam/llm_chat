@@ -48,7 +48,20 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .game_loop/
+def _home():
+    """The .game_loop/ holding notify.json, honouring GAME_LOOP_HOME so a pinned harness pages using
+    the PROJECT's credentials and logs to the PROJECT's log. Permissive where the gates refuse, for
+    the same reason as bin/flair.py: paging is optional and must never break a real command, and a
+    bad value has already been refused by every entrypoint that gates anything."""
+    raw = (os.environ.get("GAME_LOOP_HOME") or "").strip()
+    if raw:
+        home = os.path.abspath(os.path.expanduser(raw))
+        if os.path.isfile(os.path.join(home, "config.json")):
+            return home
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+ROOT = _home()  # .game_loop/
 NOTIFY_F = os.path.join(ROOT, "notify.json")
 CONFIG_F = os.path.join(ROOT, "config.json")
 LOG_F = os.path.join(ROOT, "log.jsonl")

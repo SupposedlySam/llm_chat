@@ -46,8 +46,55 @@ import sys
 import time
 from fnmatch import fnmatch
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # .game_loop/
-REPO = os.path.dirname(ROOT)
+CODE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # the .game_loop/ this CODE is in
+
+# THE HOME, WHICH IS THE TREE THIS CHECKS. Resolved from GAME_LOOP_HOME when set, so the harness can
+# run from a pinned checkout while still checking the PROJECT. Getting this wrong is not a cosmetic
+# bug and it is not loud: ROOT decides which verify.yaml is the manifest and REPO decides which git
+# tree `git status` reads and whose mtimes are compared. A pinned copy resolving both to ITSELF finds
+# no changed files and no rules, prints "nothing owes a check", and the commit gate passes — so
+# editing the repo's own gates would owe nothing at all. That is dogfooding switched off while
+# reporting success. Duplicated from bin/game_loop's resolve_home on purpose: `verify` must keep
+# working when the rest of the harness is mid-edit, and a shared import is one more thing to break.
+# The two are kept in step by a test that runs the same refusals through every entrypoint.
+HOME_ENV = "GAME_LOOP_HOME"
+PINNED_MARK = "PINNED"
+
+
+def resolve_home(code_root, prog):
+    """Unset → the code's own directory (unchanged). Set → must exist and carry config.json, else
+    REFUSE; a silent fallback to __file__ is the trap above. Pinned code with no home is refused
+    too — that combination looks identical to an ordinary install from the inside."""
+    raw = os.environ.get(HOME_ENV)
+    if raw is None:
+        if os.path.exists(os.path.join(code_root, PINNED_MARK)):
+            sys.stderr.write(
+                f"{prog} REFUSED — this is a PINNED code checkout and no {HOME_ENV} names its "
+                f"project.\n    code : {code_root}\n\n"
+                "A pinned checkout carries CODE only. Its verify.yaml is a copy of some older "
+                "commit's,\nand any state written beside it is destroyed by the next re-pin. Name "
+                "the project's home:\n"
+                f"    {HOME_ENV}=<project>/.game_loop {code_root}/bin/{prog} ...\n"
+                "  → `game_loop self` prints the hook wiring that sets it.\n")
+            raise SystemExit(2)
+        return code_root
+    home = os.path.abspath(os.path.expanduser(raw.strip())) if raw.strip() else ""
+    if home and os.path.isfile(os.path.join(home, "config.json")):
+        return home
+    sys.stderr.write(
+        f"{prog} REFUSED — {HOME_ENV} does not name a game_loop home.\n"
+        f"    {HOME_ENV} : {raw!r}\n"
+        f"    looked for : {os.path.join(home, 'config.json') if home else '(empty value)'}\n\n"
+        "It must name the .game_loop/ holding the PROJECT's own identity — config.json, "
+        "verify.yaml,\nINVARIANTS.md, state, log.jsonl, pins, the ruled-out list. Falling back to "
+        "this code's own\ndirectory would check the PINNED copy instead of the project and report "
+        "success while gating\nnothing, so this refuses. Point it at a real .game_loop/, or unset it "
+        "entirely.\n")
+    raise SystemExit(2)
+
+
+ROOT = resolve_home(CODE_ROOT, "verify")            # .game_loop/ — the manifest and the record
+REPO = os.path.dirname(ROOT)                        # the tree whose files are checked
 MAP_F = os.path.join(ROOT, "verify.yaml")
 REC_F = os.path.join(ROOT, "verified.json")
 

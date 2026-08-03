@@ -103,6 +103,12 @@ def claim_pidfile() -> bool:
     except (OSError, ValueError, ProcessLookupError):
         pass
     try:
+        # Not merely defensive: today this only works because joined.json is
+        # read first and therefore the directory exists. That is an ordering
+        # dependency between two unrelated functions, and it would fail
+        # silently — claim_pidfile returning False makes the waker exit, so the
+        # session would simply never be woken and nothing would say why.
+        os.makedirs(os.path.dirname(PID_PATH), exist_ok=True)
         with open(PID_PATH, "w") as f:
             f.write(str(os.getpid()))
         return True
