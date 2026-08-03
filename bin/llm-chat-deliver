@@ -216,9 +216,9 @@ def main() -> int:
 
         if not out or out.startswith("nothing new"):
             continue
+        # `out` is already non-empty after strip(), so at least one line
+        # survives this filter — an emptiness check here could never fire.
         lines = [ln for ln in out.splitlines() if ln.strip()][:MAX_PER_DELIVERY]
-        if not lines:
-            continue
         blocks.append(
             f"#{channel} (you are '{identity}')\n" + "\n".join(f"  {ln}" for ln in lines)
         )

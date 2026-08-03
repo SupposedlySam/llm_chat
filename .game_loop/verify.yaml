@@ -23,6 +23,22 @@
 # setup path against a throwaway repo. Neither exists yet. Until one does, green here means "it
 # parses", never "it works".
 
+# mutate.py is the check that makes --min 100 mean something. It reverts eleven
+# fixes this project actually shipped and requires the suite to go RED for each.
+# A mutation that SURVIVES is the finding: the lines are covered, the suite is
+# green, and the behaviour is not defended — which is the exact false comfort a
+# coverage number invites. It also guards the tests themselves, since weakening
+# an assertion shows up as a survivor rather than as a still-green run.
+# 2.4s, measured, so it is affordable per changed pattern; if it stops being
+# affordable that is a reason to split it, not to drop it.
+#
+# `--min 100` is a RATCHET, not a trophy. It cannot say a test would fail if
+# the behaviour broke — only that no line is unvisited — so its real job is to
+# stop new code arriving with nobody having looked at it. Adding an untested
+# branch now fails the commit that adds it, which is the moment it is cheapest
+# to test. The runner prints that caveat on every single run so the number is
+# never read as a claim about correctness.
+#
 # The suite REPLACES the old py_compile gates rather than joining them: it
 # loads all three scripts, so a syntax error fails it too, and it additionally
 # fails when a behaviour breaks. A syntax gate that a stronger check subsumes is
@@ -34,19 +50,23 @@
 # rules took a repo from seconds to minutes. This suite is ~40ms, so the
 # repetition is affordable today; it would not stay affordable by accident.
 "bin/llm_chat":
-  - "python3 test/run.py --tests-only"
+  - "python3 test/run.py --min 100"
+  - "python3 test/mutate.py"
 
 "bin/llm-chat-deliver":
-  - "python3 test/run.py --tests-only"
+  - "python3 test/run.py --min 100"
+  - "python3 test/mutate.py"
 
 "bin/llm-chat-wake":
-  - "python3 test/run.py --tests-only"
+  - "python3 test/run.py --min 100"
+  - "python3 test/mutate.py"
 
 # A change to the tests themselves must run them. Otherwise a broken or
 # vacuous test can be committed with the gate reporting clean, which is the
 # exact failure the coverage report exists to surface.
 "test/**":
-  - "python3 test/run.py --tests-only"
+  - "python3 test/run.py --min 100"
+  - "python3 test/mutate.py"
 
 "install.sh":
   - "bash -n install.sh"
