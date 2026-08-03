@@ -1,0 +1,36 @@
+name: llm_chat
+publish_to: none
+
+environment:
+  sdk: ">=3.12.0 <4.0.0"
+
+dev_dependencies:
+  test: ^1.26.0
+  http: ^1.2.0
+
+dependencies:
+  zonai_schema:
+    git:
+      url: https://github.com/mrgnhnt96/zonai.git
+      ref: 2636b90cfdacd064f4f61adc32c8cd42c918283a
+      path: libs/zonai_schema
+
+dependency_overrides:
+  raindrop:
+    git:
+      url: https://github.com/mrgnhnt96/raindrop.git
+      ref: 89f5f19be21cc775058961c4027c3063a86c65fb
+      path: packages/raindrop
+  raindrop_sqlite:
+    git:
+      url: https://github.com/mrgnhnt96/raindrop.git
+      ref: 89f5f19be21cc775058961c4027c3063a86c65fb
+      path: packages/raindrop_sqlite
+  resqlite:
+    git:
+      url: https://github.com/mrgnhnt96/resqlite.git
+      ref: f39baf81195605f3ec625f85a45058d5e444e029
+  scoped_deps:
+    git:
+      url: https://github.com/mrgnhnt96/scoped_deps.git
+      ref: 743f3682bacb51b7e20f96fece18f6ef64be9908

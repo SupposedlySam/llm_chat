@@ -1,0 +1,11 @@
+# Machine-specific, large, changes often — every teammate needs their own copy.
+zonai
+
+# The database and compiled workers.
+.zonai/data/
+.zonai/executables/
+.dart_tool/
+.state/
+
+# Never commit: this is per-machine identity, not shared config.
+.llm_chat/

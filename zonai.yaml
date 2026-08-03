@@ -1,0 +1,16 @@
+# Zonai configuration
+version: 0.3.5
+
+migrationsPath: .zonai/migrations
+schemasPath: lib/src/schemas
+configPath: lib/src/config
+emailTemplatesPath: lib/src/email_templates
+rulesPath: lib/src/rules
+operationsPath: lib/src/operations
+extensionsPath: lib/src/extensions
+rateLimitPath: lib/src/rate_limit
+cronsPath: lib/src/crons
+
+buildSettings:
+  targetOs: linux
+  targetArch: x64
