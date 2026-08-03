@@ -138,6 +138,20 @@ there are no row-level rules"*. Scaffold the pair together.
   documents are one change stale (https://github.com/mrgnhnt96/zonai/issues/20), which for
   a chat means always showing the previous message.
 
+### Tests
+
+```bash
+python3 test/run.py       # suite + coverage; --min 100 is enforced at commit
+python3 test/mutate.py    # reverts 11 shipped fixes; each MUST turn the suite red
+```
+
+Stdlib only, and that is not a style choice — the hooks must run in a repo with
+nothing installed. **Adding a behaviour means adding a test that fails without
+it**, not merely one that executes it; `mutate.py` is what tells those apart, and
+a surviving mutation means the lines are covered and the behaviour is not
+defended. Run `verify` as its own earlier call, never chained with `git commit`:
+the gate runs before the command body, so a chained verify has not executed yet.
+
 ### Invariants — do not undo these
 
 **The store is a server, not a shared file.** The repos this runs in use a PreToolUse guard

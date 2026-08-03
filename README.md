@@ -269,6 +269,37 @@ legacy_teardown.sh     removes them again, including from older installs
 llms.txt               orientation for an agent working ON this repo
 ```
 
+## Tests
+
+```bash
+python3 test/run.py              # suite + coverage report
+python3 test/run.py --tests-only # faster inner loop
+python3 test/mutate.py           # prove the suite would notice
+```
+
+Stdlib only, no install — the same constraint the runtime sets, because a hook
+must run in any repo with nothing installed and a suite that needs installing is a
+suite that stops being run. 205 tests, 100% line coverage on the three
+entrypoints, ratcheted into the commit gate at `--min 100`.
+
+**Coverage is the measure, not the goal.** A line executed by a test that asserts
+nothing counts exactly as much as one defended by a test that fails when the
+behaviour breaks, so `mutate.py` reverts eleven fixes this project actually
+shipped and requires the suite to go red for each. A mutation that *survives* is
+the finding: covered, green, and undefended. It guards the tests too — weakening
+an assertion shows up as a survivor rather than as a still-green run.
+
+`install.sh` and `legacy_teardown.sh` are run for real against throwaway git
+repos rather than mocked, because what they do is edit somebody else's settings
+file and the only honest check is to let them edit one.
+
+The runner also verifies **the suite did not damage the repo it tests**: it
+fingerprints `.llm_chat/` and `.claude/` around the run, and compares
+`subprocess.run`, `os.kill` and `os.makedirs` by identity. Both checks exist
+because both failures happened — a test wrote a junk room into this project's own
+`joined.json`, and another patched the real `subprocess` module so every later
+test ran against a stub that returned success without running anything.
+
 ## Starting over
 
 `./legacy_teardown.sh <repo>` undoes an install: stops the waker, leaves the rooms *before*
