@@ -289,6 +289,16 @@ shipped and requires the suite to go red for each. A mutation that *survives* is
 the finding: covered, green, and undefended. It guards the tests too — weakening
 an assertion shows up as a survivor rather than as a still-green run.
 
+`test/contract.py` compares the Python client against the **Dart schema** it
+talks to. The suite alone cannot: it runs against a fake that accepts any column,
+so renaming `from_identity` in `lib/src/schemas/messages.dart` leaves all 205
+tests green and `./zonai compile` succeeding, and the failure appears only at
+runtime — as a 500, or as a query that quietly matches nothing. Demonstrated by
+doing exactly that. The columns are not hand-listed; they are recorded from what
+the client actually sent while the suite ran, so the check cannot drift from real
+usage. It answers one question — does every column this client names still exist
+— and nothing about types, nullability or the rules.
+
 `install.sh` and `legacy_teardown.sh` are run for real against throwaway git
 repos rather than mocked, because what they do is edit somebody else's settings
 file and the only honest check is to let them edit one.

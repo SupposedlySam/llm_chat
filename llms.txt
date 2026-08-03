@@ -143,7 +143,13 @@ there are no row-level rules"*. Scaffold the pair together.
 ```bash
 python3 test/run.py       # suite + coverage; --min 100 is enforced at commit
 python3 test/mutate.py    # reverts 11 shipped fixes; each MUST turn the suite red
+python3 test/contract.py  # every column the client sends still exists in the Dart schema
 ```
+
+**Renaming a column in `lib/src/schemas/` will not fail the Python suite** — it
+runs against a fake that accepts any column, and `zonai compile` only checks the
+Dart is valid. `contract.py` is the only thing that catches it, so run it after
+touching a schema.
 
 Stdlib only, and that is not a style choice — the hooks must run in a repo with
 nothing installed. **Adding a behaviour means adding a test that fails without

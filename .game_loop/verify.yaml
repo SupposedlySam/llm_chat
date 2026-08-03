@@ -67,6 +67,7 @@
 "test/**":
   - "python3 test/run.py --min 100"
   - "python3 test/mutate.py"
+  - "python3 test/contract.py"
 
 "install.sh":
   - "bash -n install.sh"
@@ -77,11 +78,18 @@
 "legacy_teardown.sh":
   - "bash -n legacy_teardown.sh"
 
+# `./zonai compile` catches a table with rules and no row-rules. It does NOT
+# catch a renamed column: the Dart stays perfectly valid, and the Python suite
+# stays green because it runs against a fake that accepts whatever column it is
+# asked for. Demonstrated by renaming from_identity in messages.dart — 205 tests
+# passed, the contract check named the column. That gap is the reason both run.
+#
 # Schemas and rules are compiled into worker executables, so the compiler is their real consumer —
 # not a test of the Dart source in isolation. It fails on a table that has table-rules and no
 # row-rules, which is a runtime error this project has already hit once.
 "lib/**":
   - "./zonai compile"
+  - "python3 test/contract.py"
 
 # Genuinely nothing to check. Anything neither listed here nor matched above stays UNCHECKED and
 # says so on every commit that touches it — including `.zonai/migrations/**`, deliberately: the only

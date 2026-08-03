@@ -37,6 +37,27 @@ def load(script, name=None):
     return module
 
 
+# Every column name the production code actually put on the wire during a run.
+# The fake accepts any column, so on its own it would agree with a client that
+# had drifted from the Dart schema — a mock that says yes to whatever it is
+# asked cannot catch a rename. test/contract.py checks this against the schemas.
+OBSERVED_COLUMNS = {}
+
+
+def _observe(table, where=None, obj=None):
+    seen = OBSERVED_COLUMNS.setdefault(table, set())
+    if obj:
+        seen.update(obj)
+    stack = [where] if where else []
+    while stack:
+        clause = stack.pop()
+        if not isinstance(clause, dict):
+            continue
+        if "column" in clause:
+            seen.add(clause["column"])
+        stack.extend(clause.get("conditions") or [])
+
+
 class FakeServer:
     """An in-memory zonai, faithful to the parts llm_chat actually uses.
 
@@ -70,10 +91,12 @@ class FakeServer:
         if method == "GET" and path == "/db/list":
             table = self.tables.setdefault(query["table"], [])
             where = query.get("where")
+            _observe(query["table"], where=where)
             return {"data": {"items": [dict(r) for r in table
                                        if self._matches(r, where)]}}
         if method == "POST" and path == "/db":
             table = self.tables.setdefault(body["table"], [])
+            _observe(body["table"], obj=body["object"])
             row = dict(body["object"])
             self._next_id += 1
             row.setdefault("id", "id%d" % self._next_id)
@@ -84,6 +107,7 @@ class FakeServer:
             fields = {}
             for update in body["updates"]:
                 fields.update(update["object"])
+            _observe(body["table"], where=body.get("where"), obj=fields)
             hit = 0
             for row in table:
                 if self._matches(row, body.get("where")):
