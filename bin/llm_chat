@@ -38,6 +38,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -470,6 +471,37 @@ def do_reopen(server, name, max_messages=None):
 EXPECTED_HOOKS = ("llm-chat-deliver", "llm-chat-wake")
 
 
+def wiring_fingerprint() -> str:
+    """A hash of the hook SCRIPTS this checkout would install.
+
+    Strictly stronger than asking "is a hook missing from settings.json", which
+    is all the earlier check did. That catches an absent hook and nothing else —
+    not a hook whose script was rewritten behind an unchanged command line, and
+    not a changed command. Neither is visible in the registration, so a repo can
+    be perfectly wired to a version of the code that no longer exists.
+
+    Kept short: this is a drift signal, not a security boundary.
+    """
+    h = hashlib.sha256()
+    for name in EXPECTED_HOOKS:
+        h.update(name.encode())
+        try:
+            with open(os.path.join(ROOT, "bin", name), "rb") as f:
+                h.update(f.read())
+        except OSError:
+            h.update(b"<missing>")
+    return h.hexdigest()[:16]
+
+
+def installed_fingerprint(project):
+    """What this repo recorded when it was last installed, if anything."""
+    try:
+        with open(os.path.join(project, ".llm_chat", "installed.json")) as f:
+            return (json.load(f) or {}).get("fingerprint")
+    except (OSError, ValueError):
+        return None
+
+
 def host() -> str:
     """Which shell is this session living in — because the remedy differs.
 
@@ -578,6 +610,12 @@ def hook_report(project):
                     cmd = h.get("command") or ""
                     registered.update(e for e in EXPECTED_HOOKS if e in cmd)
 
+    # A mark's ABSENCE means "has not fired since the probe existed" — never
+    # "has not fired". Any repo wired before probing shipped reads as unfired
+    # until its next invocation, so this is at its least reliable exactly when
+    # someone first runs it to decide whether to trust the wiring. Say the
+    # weaker true thing; a diagnostic that contradicts what the operator
+    # watched work with their own eyes does not get believed again.
     probe = os.path.join(project, ".llm_chat", "probe")
     fired = {
         "llm-chat-deliver": os.path.exists(os.path.join(probe, "post-tool-use")),
@@ -595,7 +633,7 @@ def do_doctor(server):
     for hook in EXPECTED_HOOKS:
         reg = hook in registered
         state = ("registered, and has fired" if reg and fired[hook]
-                 else "REGISTERED BUT HAS NEVER FIRED" if reg
+                 else "REGISTERED, NO RECORD OF FIRING" if reg
                  else "NOT REGISTERED")
         print(f"  {hook:20} {state}")
 
@@ -614,10 +652,14 @@ def do_doctor(server):
     if inert:
         # The whole reason `fired` is tracked separately. Config inspection
         # cannot see this, and it looks identical to a working install.
-        print("Configured but INERT — the config is right and the session never "
-              "loaded it.\nClaude Code reads hooks when a session starts; in the "
-              "VSCode extension that\nmeans a window reload. Until then a "
-              "newly-written hook does nothing, silently.\n")
+        print("No record of these firing. Most likely configured but INERT — the "
+              "config is\nright and the session never loaded it. Claude Code reads "
+              "hooks when a session\nstarts; in the VSCode extension that means a "
+              "window reload, and until then a\nnewly-written hook does nothing, "
+              "silently.\n")
+        print("  NOT proof: the mark only exists from the probe's own start, so a "
+              "hook that\n  fired before probing shipped also reads this way until "
+              "it next runs.\n")
         print(f"  this session is: {host()}")
         print(f"  fix: {RELOAD_ADVICE[host()]}")
         print("\nNothing is lost meanwhile — `llm_chat read <channel>` never "
@@ -625,6 +667,17 @@ def do_doctor(server):
     elif not missing:
         print("Wiring looks right: both hooks are registered and both have fired "
               "in this checkout.")
+
+    stamp = installed_fingerprint(project)
+    current = wiring_fingerprint()
+    if stamp and stamp != current:
+        print(f"\nSTALE: installed from hook scripts {stamp}, checkout now has "
+              f"{current}.\nA hook's script changed since this repo was wired, "
+              f"which no reading of\nsettings.json can see — the command line is "
+              f"identical. Re-run:\n  {os.path.join(ROOT, 'install.sh')} {project}")
+    elif stamp is None and registered:
+        print("\nno install stamp — wired before stamping existed; re-run "
+              "install.sh to record one")
 
     joined = read_joined()
     print(f"\nrooms: {', '.join(joined) if joined else '(none joined)'}")
@@ -809,6 +862,7 @@ def main() -> int:
 
     sub.add_parser("channels", help="what rooms exist")
     sub.add_parser("doctor", help="why is nothing arriving?")
+    sub.add_parser("fingerprint", help="hash of this checkout's hook scripts")
     p = sub.add_parser("reload", help="reload the VSCode window (registers hooks)")
     p.add_argument("--force", action="store_true",
                    help="actually do it; it drives the UI and ends this turn")
@@ -830,6 +884,9 @@ def main() -> int:
         return 0
     if args.cmd == "reload":
         do_reload(args.force)
+        return 0
+    if args.cmd == "fingerprint":
+        print(wiring_fingerprint())
         return 0
     if args.cmd == "doctor":
         do_doctor(server)

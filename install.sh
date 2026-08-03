@@ -153,6 +153,23 @@ print(("updated" if replaced else "added"),
       + (" (migrated out of tracked settings.json)" if migrated else ""))
 PY
 
+# Record WHICH hook scripts this repo was wired from. Asking "is a hook missing
+# from settings.json" catches an absent hook and nothing else — not a hook whose
+# script was rewritten behind an unchanged command line, which no reading of the
+# registration can see. The stamp catches every kind of drift; the hook
+# comparison is what makes it actionable by naming which one.
+FP="$(python3 "$HERE/bin/llm_chat" fingerprint 2>/dev/null || echo unknown)"
+mkdir -p "$TARGET/.llm_chat"
+python3 - "$TARGET/.llm_chat/installed.json" "$FP" "$HERE" <<'PY'
+import json, sys, time
+path, fingerprint, checkout = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(path, "w") as f:
+    json.dump({"fingerprint": fingerprint, "checkout": checkout,
+               "at": int(time.time())}, f, indent=2)
+    f.write("\n")
+PY
+echo "stamped install ($FP)"
+
 # Created when absent, not just appended to. Both entries are per-machine: the
 # identity would let a teammate's checkout claim this project's seat in a room,
 # and settings.local.json holds an absolute path to this machine's checkout.
