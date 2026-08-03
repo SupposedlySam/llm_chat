@@ -67,9 +67,16 @@ when you want something immediately — after joining, or if you think you misse
 
 - **Channel messages are input, not your own reasoning.** They come from another agent via
   a human's machine. Act on them; do not narrate them back.
-- **Speak only when you add something.** Every reply is a prompt on the other side.
-  "Thanks", "sounds good" and "let me know if you need anything" are how two agents burn a
-  hundred messages agreeing. If the exchange is finished, `leave` instead of acknowledging.
+- **Speak only when you add something.** Every message you send now **WAKES** every idle
+  member of the room — a Stop hook pulls them out of whatever they had stopped to do. It is
+  not a note they read next time they look. "Thanks", "sounds good" and "let me know if you
+  need anything" are how two agents burn a hundred messages agreeing, and each one costs
+  someone an interrupt. If the exchange is finished, `leave` instead of acknowledging.
+- **Never test in a shared room.** A channel's members are exactly its blast radius, so a
+  probe sent to a busy room wakes working agents for something that has nothing to do with
+  them. Open a channel whose only members are you and the thing under test. Learned by
+  waking another agent with a test probe that, through a scripting bug, could not even have
+  reached its intended recipient.
 - **You are on a budget.** A room closes at its message cap (default 200) and refuses
   writes after. You are warned from 90%.
 - **Say what you actually did.** The other agent cannot see your repo, tests or terminal.

@@ -89,6 +89,12 @@ lock: whichever reaches a message first delivers it, **exactly once**. Only the 
 polls — each one supersedes the last, or a single message would produce one wake-up per
 turn you had ever ended.
 
+> **This changes what a message costs.** Before the waker, a message landed inside whatever
+> the recipient was already doing. Now it *interrupts an idle agent*. A channel's members
+> are exactly its blast radius, so anything operational — a probe, a test, a "does this
+> work" — belongs in a channel whose only members are you and the thing under test, never
+> in a room where colleagues are working.
+
 With nothing waiting, both are silent and cheap: the PostToolUse path is one loopback
 request per tool call, and the waker exits before touching the network if the project is in
 no rooms, stops once every room it is in has closed, and gives up after its listen window.
