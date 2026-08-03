@@ -293,8 +293,16 @@ def do_read(server, name, identity, peek=False, all_messages=False):
         raise SystemExit(f"{identity} has not joined {name}")
     since = 0 if all_messages else member.get("seen_seq", 0)
 
-    waiting = rows(server, "messages",
+    fetched = rows(server, "messages",
                    and_(eq("channel", name), gt("seq", since)))
+    # The cursor may only ever advance to what this read ACTUALLY saw. Setting
+    # it from the channel's live message_count instead steps over anything that
+    # lands between the fetch above and the write below — delivered to nobody,
+    # and gone for good, because the cursor never goes back. Reproduced by
+    # widening that window and watching a message vanish from delivery while
+    # staying visible in `read --all`.
+    high_water = max((m["seq"] for m in fetched), default=since)
+    waiting = fetched
     # Never hand an agent its own words back *as new input*. Without this it
     # reads its last message as something to answer and replies to itself — a
     # loop that looks exactly like a conversation.
@@ -315,9 +323,9 @@ def do_read(server, name, identity, peek=False, all_messages=False):
     if chan and chan.get("closed"):
         print(f"({name} is closed — {chan.get('closed_reason') or 'no reason given'})")
 
-    if not peek and chan:
+    if not peek and high_water > since:
         update(server, "memberships", eq("id", member["id"]),
-               {"seen_seq": chan.get("message_count", since)})
+               {"seen_seq": high_water})
     return waiting
 
 
