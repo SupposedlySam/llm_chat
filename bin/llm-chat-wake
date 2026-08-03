@@ -155,6 +155,17 @@ def main() -> int:
     except Exception:
         pass
 
+    # Proof this hook ran. Its ABSENCE is the only readable evidence that a
+    # registered hook has never fired — which is exactly the "correct on disk,
+    # never loaded by the session" failure. Before any early return.
+    try:
+        d = os.path.join(STATE, "probe")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "stop"), "w") as f:
+            f.write(str(int(time.time())))
+    except OSError:
+        pass
+
     rooms = joined_rooms()
     if not rooms:
         return 0  # in no rooms — exit before touching the network

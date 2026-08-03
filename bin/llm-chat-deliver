@@ -20,6 +20,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLI = os.path.join(HERE, "llm_chat")
@@ -37,22 +38,105 @@ JOINED = os.path.join(PROJECT, ".llm_chat", "joined.json")
 # message.
 MAX_PER_DELIVERY = 15
 
+# Every hook a current install registers. Checked against what this repo
+# actually has, because upgrading llm_chat does NOT upgrade a repo already set
+# up: hooks are registered once, at install, so a repo wired before a hook
+# existed silently never gets it and nothing says so. That is not theoretical —
+# this project's own checkout ran for a day without the Stop waker, because it
+# was installed before the waker was written. The owner did not notice; nobody
+# else would either.
+EXPECTED_HOOKS = ("llm-chat-deliver", "llm-chat-wake")
+
+
+def mark_fired(hook_name):
+    """Leave proof this hook ran, so its ABSENCE can be read as a diagnosis.
+
+    Whether a hook is REGISTERED is readable from settings.json. Whether it has
+    ever FIRED is not readable from anything — and that is the failure that cost
+    this project a day: the file was correct on disk, the session had simply
+    never loaded it, and every inspection said "configured". The only way to
+    tell "configured and working" from "configured and inert" is a mark the hook
+    itself writes when it runs. Borrowed from game_loop's probe/stop-payload,
+    which exists because a page sat unspent for 22 hours the same way.
+
+    Best-effort: never let bookkeeping break delivery.
+    """
+    try:
+        d = os.path.join(PROJECT, ".llm_chat", "probe")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, hook_name), "w") as f:
+            f.write(str(int(time.time())))
+    except OSError:
+        pass
+
+
+def missing_hooks() -> list:
+    """Which of our hooks this repo has not got registered."""
+    found = set()
+    for name in ("settings.local.json", "settings.json"):
+        try:
+            with open(os.path.join(PROJECT, ".claude", name)) as f:
+                settings = json.load(f)
+        except (OSError, ValueError):
+            continue
+        for groups in (settings.get("hooks") or {}).values():
+            if not isinstance(groups, list):
+                continue
+            for group in groups:
+                for h in group.get("hooks", []):
+                    command = h.get("command") or ""
+                    found.update(e for e in EXPECTED_HOOKS if e in command)
+    return [e for e in EXPECTED_HOOKS if e not in found]
+
+
+def upgrade_notice(session_id) -> str:
+    """Say it ONCE per session, or a standing gap becomes standing noise."""
+    gap = missing_hooks()
+    if not gap:
+        return ""
+    marker = os.path.join(PROJECT, ".llm_chat", f"wiring.{session_id or 'nosession'}")
+    if os.path.exists(marker):
+        return ""
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+    except OSError:
+        return ""   # cannot record it, so do not risk repeating it every call
+    return (
+        "llm_chat: this repo is running an OLDER wiring than the checkout it "
+        f"points at — {', '.join(gap)} "
+        + ("is" if len(gap) == 1 else "are")
+        + " not registered here. Hooks are\nregistered once at install, so a "
+        "repo set up before a hook existed never gets it.\n"
+        f"Without llm-chat-wake, nothing reaches this session while it is idle.\n"
+        f"Fix it with:\n  {os.path.join(ROOT, 'install.sh')} {PROJECT}\n"
+        "then RELOAD THE WINDOW (VSCode registers hooks at window load, so a "
+        "newly\nwritten hook stays inert until you do)."
+    )
+
 
 def main() -> int:
-    # The hook is handed the tool-call payload on stdin. We don't care what the
-    # tool was, but leaving it unread can break the pipe on the caller.
+    # The hook is handed the tool-call payload on stdin. Leaving it unread can
+    # break the pipe on the caller; the session id in it is what keeps the
+    # upgrade notice to once per session.
+    session_id = None
     try:
-        sys.stdin.read()
-    except Exception:
+        payload = json.loads(sys.stdin.read() or "{}")
+        session_id = payload.get("session_id")
+    except (ValueError, Exception):
         pass
+
+    # Before any early return: the point of the mark is that it happens on
+    # EVERY invocation, including the silent common case of nothing waiting.
+    mark_fired("post-tool-use")
+
+    notice = upgrade_notice(session_id)
 
     try:
         with open(JOINED) as f:
-            joined = json.load(f)
+            joined = json.load(f) or {}
     except (OSError, ValueError):
-        return 0  # this machine is in no rooms; nothing to do
-    if not joined:
-        return 0
+        joined = {}   # in no rooms — but a wiring notice still has to get out
 
     blocks = []
     for channel, entry in joined.items():
@@ -81,7 +165,7 @@ def main() -> int:
             f"#{channel} (you are '{identity}')\n" + "\n".join(f"  {ln}" for ln in lines)
         )
 
-    if not blocks:
+    if not blocks and not notice:
         return 0
 
     header = (
@@ -92,10 +176,15 @@ def main() -> int:
         "and when you have nothing left to add:\n"
         f"  {CLI} leave <channel>"
     )
+    parts = []
+    if notice:
+        parts.append(notice)
+    if blocks:
+        parts.append(header + "\n\n" + "\n\n".join(blocks))
     print(json.dumps({
         "hookSpecificOutput": {
             "hookEventName": "PostToolUse",
-            "additionalContext": header + "\n\n" + "\n\n".join(blocks),
+            "additionalContext": "\n\n".join(parts),
         }
     }))
     return 0

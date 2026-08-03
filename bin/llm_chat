@@ -467,6 +467,169 @@ def do_reopen(server, name, max_messages=None):
         print(f"  still marked done: {', '.join(done)}")
 
 
+EXPECTED_HOOKS = ("llm-chat-deliver", "llm-chat-wake")
+
+
+def host() -> str:
+    """Which shell is this session living in — because the remedy differs.
+
+    `CLAUDE_CODE_ENTRYPOINT` is the honest signal: it says how the SESSION was
+    started. `TERM_PROGRAM=vscode` is not enough on its own — it is equally
+    true of a plain `claude` run inside VSCode's integrated terminal, which
+    restarts rather than reloads.
+    """
+    entry = (os.environ.get("CLAUDE_CODE_ENTRYPOINT") or "").lower()
+    if "vscode" in entry:
+        return "vscode-extension"
+    if entry:
+        return "cli"
+    return "vscode-terminal" if os.environ.get("TERM_PROGRAM") == "vscode" else "cli"
+
+
+RELOAD_ADVICE = {
+    "vscode-extension": "VSCode: run `Developer: Reload Window` (Cmd+Shift+P), "
+                        "or `llm_chat reload`",
+    "vscode-terminal":  "restart the `claude` session in this terminal",
+    "cli":              "restart the `claude` session",
+}
+
+
+def do_reload(force=False):
+    """Reload the VSCode window, so newly-written hooks are registered.
+
+    There is NO supported way to do this. Verified against the CLI shipped with
+    1.128.1: no --command, no URI/--open-url, nothing that runs
+    `workbench.action.reloadWindow`. VSCODE_IPC_HOOK is a real socket, but its
+    protocol is internal and reverse-engineering it would break on any update.
+
+    What is left is driving the command palette, which is UI automation: it
+    types into whatever is focused. That is why it is a separate, explicit verb
+    and never something another command does on your behalf — and why it
+    activates VSCode first rather than trusting the current focus.
+
+    It ends this session's turn abruptly, by design. Nothing is lost that was
+    written to disk, and `llm_chat read` never depended on the hooks anyway.
+    """
+    where = host()
+    if where != "vscode-extension":
+        raise SystemExit(
+            f"this session is {where} — there is nothing to reload.\n"
+            f"  {RELOAD_ADVICE[where]}"
+        )
+    if sys.platform != "darwin":
+        raise SystemExit(
+            "automated reload is macOS-only (it drives the command palette via "
+            "AppleScript).\n  Run `Developer: Reload Window` from the palette "
+            "instead."
+        )
+    if not force:
+        raise SystemExit(
+            "This drives the VSCode UI: it focuses the window, opens the "
+            "command palette,\nand runs `Developer: Reload Window`. It will end "
+            "the current turn.\n\nRe-run with --force if that is what you want:"
+            "\n  llm_chat reload --force"
+        )
+
+    script = '''
+    tell application "Visual Studio Code" to activate
+    delay 0.5
+    tell application "System Events"
+        keystroke "p" using {command down, shift down}
+        delay 0.5
+        keystroke ">Developer: Reload Window"
+        delay 0.5
+        key code 36
+    end tell
+    '''
+    done = subprocess.run(["osascript", "-e", script],
+                          capture_output=True, text=True, timeout=30)
+    if done.returncode != 0:
+        raise SystemExit(
+            "reload failed: " + (done.stderr or done.stdout).strip()[:300]
+            + "\n  Needs Accessibility permission for whatever runs it "
+              "(System Settings → Privacy & Security → Accessibility).\n"
+              "  Run `Developer: Reload Window` from the palette instead."
+        )
+    print("reload requested — the window should be reloading now")
+
+
+def hook_report(project):
+    """(registered, fired) for each hook this project should have.
+
+    Two DIFFERENT questions, and conflating them is what cost this project a
+    day. `registered` is readable from settings.json — it says a hook is
+    configured. `fired` is readable from nothing except a mark the hook writes
+    when it runs, and it is the one that matters: a session that never loaded
+    its settings has perfectly correct config and an inert hook, and every
+    inspection of the config says it is fine.
+    """
+    registered = set()
+    for name in ("settings.local.json", "settings.json"):
+        try:
+            with open(os.path.join(project, ".claude", name)) as f:
+                settings = json.load(f)
+        except (OSError, ValueError):
+            continue
+        for groups in (settings.get("hooks") or {}).values():
+            if not isinstance(groups, list):
+                continue
+            for group in groups:
+                for h in group.get("hooks", []):
+                    cmd = h.get("command") or ""
+                    registered.update(e for e in EXPECTED_HOOKS if e in cmd)
+
+    probe = os.path.join(project, ".llm_chat", "probe")
+    fired = {
+        "llm-chat-deliver": os.path.exists(os.path.join(probe, "post-tool-use")),
+        "llm-chat-wake": os.path.exists(os.path.join(probe, "stop")),
+    }
+    return registered, fired
+
+
+def do_doctor(server):
+    """Why is nothing arriving? Answer it without guessing."""
+    project = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    print(f"llm_chat doctor — {project}\n")
+
+    registered, fired = hook_report(project)
+    for hook in EXPECTED_HOOKS:
+        reg = hook in registered
+        state = ("registered, and has fired" if reg and fired[hook]
+                 else "REGISTERED BUT HAS NEVER FIRED" if reg
+                 else "NOT REGISTERED")
+        print(f"  {hook:20} {state}")
+
+    print()
+    if not registered:
+        print("This repo is not set up. Run:")
+        print(f"  {os.path.abspath(__file__)} setup <channel> --as <identity>")
+        return
+    missing = [h for h in EXPECTED_HOOKS if h not in registered]
+    if missing:
+        print(f"Older wiring: {', '.join(missing)} missing. Hooks are registered "
+              f"once at\ninstall, so a repo set up before a hook existed never "
+              f"gets it. Re-run:\n  {os.path.join(ROOT, 'install.sh')} {project}")
+        print()
+    inert = [h for h in EXPECTED_HOOKS if h in registered and not fired[h]]
+    if inert:
+        # The whole reason `fired` is tracked separately. Config inspection
+        # cannot see this, and it looks identical to a working install.
+        print("Configured but INERT — the config is right and the session never "
+              "loaded it.\nClaude Code reads hooks when a session starts; in the "
+              "VSCode extension that\nmeans a window reload. Until then a "
+              "newly-written hook does nothing, silently.\n")
+        print(f"  this session is: {host()}")
+        print(f"  fix: {RELOAD_ADVICE[host()]}")
+        print("\nNothing is lost meanwhile — `llm_chat read <channel>` never "
+              "depends on a hook.")
+    elif not missing:
+        print("Wiring looks right: both hooks are registered and both have fired "
+              "in this checkout.")
+
+    joined = read_joined()
+    print(f"\nrooms: {', '.join(joined) if joined else '(none joined)'}")
+
+
 def do_channels(server):
     chans = rows(server, "channels")
     if not chans:
@@ -645,6 +808,10 @@ def main() -> int:
     p.add_argument("channel")
 
     sub.add_parser("channels", help="what rooms exist")
+    sub.add_parser("doctor", help="why is nothing arriving?")
+    p = sub.add_parser("reload", help="reload the VSCode window (registers hooks)")
+    p.add_argument("--force", action="store_true",
+                   help="actually do it; it drives the UI and ends this turn")
 
     args = ap.parse_args()
     server = args.server
@@ -660,6 +827,12 @@ def main() -> int:
         return 0
     if args.cmd == "reopen":
         do_reopen(server, args.channel, args.max_messages)
+        return 0
+    if args.cmd == "reload":
+        do_reload(args.force)
+        return 0
+    if args.cmd == "doctor":
+        do_doctor(server)
         return 0
     if args.cmd == "channels":
         do_channels(server)

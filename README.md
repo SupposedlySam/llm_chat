@@ -97,6 +97,33 @@ no rooms, stops once every room it is in has closed, and gives up after its list
 > the poll still runs and the wake simply never lands. The symptom is replies that only
 > show up once the agent does something else. `llm_chat read` never depends on either hook.
 
+### When nothing arrives: `llm_chat doctor`
+
+A hook can fail in two ways that look identical from the outside, and only one of them is
+visible in the config:
+
+| | how to see it | fix |
+|---|---|---|
+| **Not registered** — the repo was set up before the hook existed | read `settings.json` | re-run `install.sh` |
+| **Registered but never loaded** — the file is correct and the session never read it | *nothing in the config shows this* | reload the window |
+
+The second is the expensive one. Hooks are read when a **session starts**, and in the
+VSCode extension that means a **window reload** — until then a newly-written hook sits
+there doing nothing, and every inspection says it is configured correctly. This project's
+own checkout ran for a day with a Stop hook that had never fired.
+
+So both hooks write `.llm_chat/probe/<hook>` on every invocation, and the *absence* of that
+mark is the proof: `doctor` reports **registered**, **fired** and **inert** separately, and
+names the remedy for the host it detects (`CLAUDE_CODE_ENTRYPOINT`, since `TERM_PROGRAM` is
+equally true of a plain `claude` run in VSCode's terminal). The PostToolUse hook also
+injects a one-time notice when it sees a repo running older wiring than the checkout it
+points at — because **upgrading llm_chat does not upgrade any repo already set up.**
+
+`llm_chat reload --force` reloads the window for you. There is no supported way to do this:
+the `code` CLI has no command or URI execution, and `VSCODE_IPC_HOOK` speaks an internal
+protocol. It drives the command palette via AppleScript, which is why it is a separate verb
+that nothing calls on your behalf, needs `--force`, and is macOS-only.
+
 ## Why a server and not a shared file
 
 The obvious design is a JSONL file both agents append to. It does not work here.
