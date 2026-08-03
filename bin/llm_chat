@@ -35,6 +35,8 @@ Stdlib only. An agent should not need a `pip install` to say hello.
 from __future__ import annotations
 
 import argparse
+import contextlib
+import fcntl
 import json
 import os
 import re
@@ -182,6 +184,53 @@ def identity_for(channel, explicit):
     return entry["identity"]
 
 
+@contextlib.contextmanager
+def read_lock(timeout=5.0):
+    """Serialise one project's read-modify-write of its cursor.
+
+    Two deliverers exist now — the PostToolUse hook while working, and the
+    Stop-hook waker while idle — and both run `read` around turn-end. Unlocked,
+    they both see the same `seen_seq`, both deliver the same messages, and the
+    cursor advances once: the other agent appears to repeat itself.
+
+    Per calling project, beside `joined.json`, because that is the scope of a
+    cursor. Two different projects reading their own channels must not block
+    each other.
+
+    `flock` rather than a lockfile: the kernel drops it when a holder dies, so
+    there is no stale lock to detect or steal. It FAILS OPEN — a lock we cannot
+    take within `timeout` lets the read proceed anyway, because a wedged
+    delivery is worse than a rare duplicate.
+    """
+    path = os.path.join(os.path.dirname(joined_path()), "read.lock")
+    fd, held = None, False
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o644)
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                held = True
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    break
+                time.sleep(0.01)
+    except OSError:
+        pass
+    try:
+        yield held
+    finally:
+        if fd is not None:
+            if held:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_UN)
+                except OSError:
+                    pass
+            os.close(fd)
+
+
 # ── operations ───────────────────────────────────────────────────────────────
 def get_channel(server, name):
     found = rows(server, "channels", eq("name", name))
@@ -288,20 +337,29 @@ def do_say(server, name, identity, text):
 
 
 def do_read(server, name, identity, peek=False, all_messages=False):
-    member = get_membership(server, name, identity)
-    if member is None:
-        raise SystemExit(f"{identity} has not joined {name}")
-    since = 0 if all_messages else member.get("seen_seq", 0)
+    # Claiming the messages and advancing the cursor is ONE decision and has to
+    # be atomic against the other deliverer; rendering them is not, and happens
+    # after the lock is dropped.
+    with read_lock():
+        member = get_membership(server, name, identity)
+        if member is None:
+            raise SystemExit(f"{identity} has not joined {name}")
+        since = 0 if all_messages else member.get("seen_seq", 0)
 
-    fetched = rows(server, "messages",
-                   and_(eq("channel", name), gt("seq", since)))
-    # The cursor may only ever advance to what this read ACTUALLY saw. Setting
-    # it from the channel's live message_count instead steps over anything that
-    # lands between the fetch above and the write below — delivered to nobody,
-    # and gone for good, because the cursor never goes back. Reproduced by
-    # widening that window and watching a message vanish from delivery while
-    # staying visible in `read --all`.
-    high_water = max((m["seq"] for m in fetched), default=since)
+        fetched = rows(server, "messages",
+                       and_(eq("channel", name), gt("seq", since)))
+
+        # The cursor may only ever advance to what this read ACTUALLY saw.
+        # Setting it from the channel's live message_count instead steps over
+        # anything that lands between the fetch and the write — delivered to
+        # nobody, and gone for good, because the cursor never goes back.
+        # Reproduced by widening that window and watching a message vanish from
+        # delivery while staying visible in `read --all`.
+        high_water = max((m["seq"] for m in fetched), default=since)
+        if not peek and high_water > since:
+            update(server, "memberships", eq("id", member["id"]),
+                   {"seen_seq": high_water})
+
     waiting = fetched
     # Never hand an agent its own words back *as new input*. Without this it
     # reads its last message as something to answer and replies to itself — a
@@ -323,9 +381,6 @@ def do_read(server, name, identity, peek=False, all_messages=False):
     if chan and chan.get("closed"):
         print(f"({name} is closed — {chan.get('closed_reason') or 'no reason given'})")
 
-    if not peek and high_water > since:
-        update(server, "memberships", eq("id", member["id"]),
-               {"seen_seq": high_water})
     return waiting
 
 

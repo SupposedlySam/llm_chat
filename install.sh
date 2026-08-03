@@ -48,12 +48,13 @@ mkdir -p "$BACKUPS"
 cp "$LOCAL" "$BACKUPS/$(basename "$TARGET").settings.local.json.$(date +%s)"
 
 HOOK="$HERE/bin/llm-chat-deliver"
-chmod +x "$HOOK" "$HERE/bin/llm_chat"
+WAKE="$HERE/bin/llm-chat-wake"
+chmod +x "$HOOK" "$WAKE" "$HERE/bin/llm_chat"
 
-python3 - "$LOCAL" "$SHARED" "$HOOK" <<'PY'
+python3 - "$LOCAL" "$SHARED" "$HOOK" "$WAKE" <<'PY'
 import json, os, sys
 
-local_path, shared_path, hook_cmd = sys.argv[1], sys.argv[2], sys.argv[3]
+local_path, shared_path, hook_cmd, wake_cmd = sys.argv[1:5]
 
 def load(path):
     try:
@@ -67,27 +68,35 @@ def save(path, data):
         json.dump(data, f, indent=2)
         f.write("\n")
 
+OURS = ("llm-chat-deliver", "llm-chat-wake")
+
+
 def strip_llm_chat(settings):
-    """Drop our hook wherever it already is, and report whether we found one."""
+    """Drop our hooks wherever they already are; report whether any were found.
+
+    Both events, because a repo may carry an older install that had only the
+    PostToolUse one.
+    """
     found = False
     hooks = settings.get("hooks", {})
-    post = hooks.get("PostToolUse")
-    if not isinstance(post, list):
-        return False
-    kept_groups = []
-    for group in post:
-        kept = [h for h in group.get("hooks", [])
-                if "llm-chat-deliver" not in (h.get("command") or "")]
-        if len(kept) != len(group.get("hooks", [])):
-            found = True
-        if kept:
-            group["hooks"] = kept
-            kept_groups.append(group)
-        elif not group.get("hooks"):
-            kept_groups.append(group)   # a group that was empty before us
-    hooks["PostToolUse"] = kept_groups
-    if not kept_groups:
-        hooks.pop("PostToolUse", None)
+    for event in ("PostToolUse", "Stop"):
+        entries = hooks.get(event)
+        if not isinstance(entries, list):
+            continue
+        kept_groups = []
+        for group in entries:
+            original = group.get("hooks", [])
+            kept = [h for h in original
+                    if not any(o in (h.get("command") or "") for o in OURS)]
+            if len(kept) != len(original):
+                found = True
+            if kept or not original:
+                group["hooks"] = kept
+                kept_groups.append(group)
+        if kept_groups:
+            hooks[event] = kept_groups
+        else:
+            hooks.pop(event, None)
     if not hooks:
         settings.pop("hooks", None)
     return found
@@ -109,7 +118,11 @@ if local is None:
 # Replace rather than stack: two copies deliver each message twice and advance
 # the cursor once, which reads as the other agent repeating itself.
 replaced = strip_llm_chat(local)
-local.setdefault("hooks", {}).setdefault("PostToolUse", []).append({
+hooks = local.setdefault("hooks", {})
+
+# Fast path: fires after every tool call, so a reply reaches an agent that is
+# WORKING within one tool call.
+hooks.setdefault("PostToolUse", []).append({
     "matcher": ".*",
     "hooks": [{
         "type": "command",
@@ -118,9 +131,25 @@ local.setdefault("hooks", {}).setdefault("PostToolUse", []).append({
         "statusMessage": "llm_chat: anything waiting?",
     }],
 })
+
+# Idle path: PostToolUse cannot fire when no tools are firing, so an agent that
+# has ended its turn would never hear anything. asyncRewake lets this block in
+# the background after turn-end and wake the session on arrival. The long
+# timeout is the listen window, not a stall: it exits as soon as it delivers,
+# when every room closes, or when its own budget elapses.
+hooks.setdefault("Stop", []).append({
+    "hooks": [{
+        "type": "command",
+        "command": wake_cmd,
+        "asyncRewake": True,
+        "timeout": 604800,
+        "statusMessage": "llm_chat: listening for replies",
+    }],
+})
 save(local_path, local)
 
-print(("updated" if replaced else "added"), "llm_chat PostToolUse hook"
+print(("updated" if replaced else "added"),
+      "llm_chat hooks (PostToolUse + Stop waker)"
       + (" (migrated out of tracked settings.json)" if migrated else ""))
 PY
 

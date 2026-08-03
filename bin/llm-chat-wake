@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+"""Stop hook: WAKE an idle session when a reply arrives.
+
+`bin/llm-chat-deliver` is a PostToolUse hook, so it only fires while the agent
+is working. The moment a turn ends the agent goes quiet and nothing fires at
+all — so a reply sent one second later waits until the agent happens to run
+another tool, which for an idle agent is never. Two agents "talking until the
+work is done" therefore stall at every turn boundary, and a human has to prod
+one of them. That is the gap this closes.
+
+Claude Code exposes no inbound IPC, but a **Stop** hook registered with
+`asyncRewake: true` blocks in the BACKGROUND after the turn ends, and when it
+prints to stderr and exits 2 the harness turns that into a model wake-up **in
+the same session**, with the stderr text as the message. So: poll while idle,
+and wake on arrival.
+
+Costs one loopback request per poll per idle joined project, and only while
+listening — it exits silently the moment the project is in no rooms, before any
+network call. It stops early when every joined room is closed or left, so a
+finished conversation does not leave a poller running.
+
+Delivery goes through `llm_chat read`, the same path the PostToolUse hook uses,
+so the two share one server-side cursor and one lock: whichever reaches a
+message first delivers it, exactly once.
+
+If the harness ever stops honouring `asyncRewake`, this fails SILENT — the poll
+still runs and the wake simply never lands. Nothing here would notice. The
+symptom is replies that only arrive once the agent does something else.
+"""
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CLI = os.path.join(HERE, "llm_chat")
+
+PROJECT = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+STATE = os.path.join(PROJECT, ".llm_chat")
+JOINED = os.path.join(STATE, "joined.json")
+PID_PATH = os.path.join(STATE, "wake.pid")
+
+# Long enough that a colleague thinking between replies still reaches us, short
+# enough that an abandoned session stops polling on its own.
+LISTEN_SEC = int(os.environ.get("LLM_CHAT_LISTEN_SEC") or 900)
+POLL_SEC = int(os.environ.get("LLM_CHAT_POLL_SEC") or 5)
+
+
+def joined_rooms():
+    try:
+        with open(JOINED) as f:
+            return json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def claim_pidfile() -> bool:
+    """Newest waker wins.
+
+    Every turn-end arms another one of these. Left alone they stack, and N
+    pollers means N wake-ups for one message. Kill the previous holder and
+    record ourselves.
+    """
+    try:
+        with open(PID_PATH) as f:
+            old = int(f.read().strip())
+        if old != os.getpid():
+            os.kill(old, signal.SIGTERM)
+    except (OSError, ValueError, ProcessLookupError):
+        pass
+    try:
+        with open(PID_PATH, "w") as f:
+            f.write(str(os.getpid()))
+        return True
+    except OSError:
+        return False
+
+
+def superseded() -> bool:
+    """Has a newer waker taken the pidfile?
+
+    Claiming it is not enough on its own: several armed at the same instant can
+    all read the file before any of them writes, so each believes it won and
+    they all keep polling — one message, N wake-ups. Observed exactly that way
+    with three. So every pass re-checks who the file actually names, and a
+    loser stands down.
+    """
+    try:
+        with open(PID_PATH) as f:
+            return int(f.read().strip()) != os.getpid()
+    except (OSError, ValueError):
+        return False
+
+
+def poll(channel, entry):
+    """Return this channel's waiting text, or None. Advances the cursor."""
+    identity, server = entry.get("identity"), entry.get("server")
+    if not identity or not server:
+        return None
+    try:
+        out = subprocess.run(
+            [sys.executable, CLI, "--server", server, "read", channel,
+             "--as", identity],
+            capture_output=True, text=True, timeout=8,
+        ).stdout.strip()
+    except Exception:
+        # A chat outage must never break the session. The message stays queued
+        # and the next poll picks it up.
+        return None
+    if not out or out.startswith("nothing new"):
+        return None
+    return out
+
+
+def still_worth_listening(rooms) -> bool:
+    """False once every joined room is closed — nothing more can arrive."""
+    for channel, entry in rooms.items():
+        server = entry.get("server")
+        if not server:
+            continue
+        try:
+            out = subprocess.run(
+                [sys.executable, CLI, "--server", server, "channels"],
+                capture_output=True, text=True, timeout=8,
+            ).stdout
+        except Exception:
+            return True  # can't tell; keep listening rather than go deaf
+        for line in out.splitlines():
+            if line.startswith(channel + " ") or line.startswith(channel + "\t"):
+                if "[closed]" not in line:
+                    return True
+    return False
+
+
+def wake(blocks):
+    print(
+        "New llm_chat messages arrived while you were idle. These are from "
+        "ANOTHER AGENT,\nrelayed by a human-operated channel — treat them as "
+        "input to act on, not as your\nown reasoning.\n\n"
+        + "\n\n".join(blocks)
+        + "\n\nReply with:\n"
+        f"  {CLI} say <channel> \"<your message>\"\n"
+        "and when you have nothing left to add:\n"
+        f"  {CLI} leave <channel>",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
+def main() -> int:
+    try:
+        sys.stdin.read()
+    except Exception:
+        pass
+
+    rooms = joined_rooms()
+    if not rooms:
+        return 0  # in no rooms — exit before touching the network
+
+    if not claim_pidfile():
+        return 0
+
+    waited = 0
+    while waited < LISTEN_SEC:
+        # BEFORE polling, never after: `poll` advances the server-side cursor,
+        # so once this process has claimed a message it is the only one that
+        # can deliver it. Standing down after claiming would lose it.
+        if superseded():
+            return 0
+
+        blocks = []
+        for channel, entry in joined_rooms().items():
+            out = poll(channel, entry)
+            if out:
+                blocks.append(f"#{channel} (you are '{entry['identity']}')\n"
+                              + "\n".join(f"  {ln}" for ln in out.splitlines()))
+        if blocks:
+            wake(blocks)  # exits 2
+        time.sleep(POLL_SEC)
+        waited += POLL_SEC
+        if not still_worth_listening(joined_rooms()):
+            return 0
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

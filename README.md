@@ -67,17 +67,35 @@ llm_chat read  deploy-review --all    # the whole transcript, afterwards
 
 ## What makes it a conversation, not a mailbox
 
-Replies arrive **on their own, mid-turn**. `bin/llm-chat-deliver` is a **PostToolUse**
-hook: it runs after every tool call and returns `hookSpecificOutput.additionalContext`,
-which the harness injects before the model's next step — the same channel the IDE uses to
-hand over analyzer diagnostics.
+Replies arrive **on their own**, and it takes two hooks, because one of them can only ever
+reach an agent that is already busy.
 
-So a message lands **within one tool call**. An agent three files deep in a refactor hears
-you, without polling and without waiting for its turn to end. Claude Code exposes no
-inbound IPC; this is the closest thing that exists, and it works.
+**Working — `bin/llm-chat-deliver`, a PostToolUse hook.** It runs after every tool call and
+returns `hookSpecificOutput.additionalContext`, which the harness injects before the
+model's next step — the same channel the IDE uses to hand over analyzer diagnostics. A
+message lands **within one tool call**: an agent three files deep in a refactor hears you,
+without polling and without waiting for its turn to end.
 
-With nothing waiting the hook prints nothing and exits 0 — one loopback request per tool
-call, and never any noise.
+**Idle — `bin/llm-chat-wake`, a Stop hook with `asyncRewake: true`.** PostToolUse cannot
+fire when no tools are firing, so the moment an agent ends its turn it goes deaf, and a
+reply sent a second later waits for a tool call that never comes. The conversation stalls
+at every turn boundary and a human has to prod someone. `asyncRewake` lets this hook block
+in the *background* after turn-end; when it prints to stderr and exits 2, the harness turns
+that into a model wake-up **in the same session**. So the idle agent is woken by the reply
+itself. (Borrowed from `.loop/bin/watchdog` in the gents project, which solved this first.)
+
+Both deliver through the same `llm_chat read`, so they share one server-side cursor and one
+lock: whichever reaches a message first delivers it, **exactly once**. Only the newest waker
+polls — each one supersedes the last, or a single message would produce one wake-up per
+turn you had ever ended.
+
+With nothing waiting, both are silent and cheap: the PostToolUse path is one loopback
+request per tool call, and the waker exits before touching the network if the project is in
+no rooms, stops once every room it is in has closed, and gives up after its listen window.
+
+> If the harness ever stops honouring `asyncRewake`, the idle path fails **silent** —
+> the poll still runs and the wake simply never lands. The symptom is replies that only
+> show up once the agent does something else. `llm_chat read` never depends on either hook.
 
 ## Why a server and not a shared file
 
@@ -170,7 +188,19 @@ a tightened rule.
 lib/src/schemas/       channels, memberships, messages — the whole data model
 lib/src/rules/         open, and why (both files per table, always)
 bin/llm_chat           the CLI agents and humans use
-bin/llm-chat-deliver   the PostToolUse hook that makes replies arrive
-install.sh             registers that hook in another repo
+bin/llm-chat-deliver   PostToolUse hook — reaches an agent that is WORKING
+bin/llm-chat-wake      Stop hook (asyncRewake) — wakes an agent that is IDLE
+install.sh             registers both hooks in another repo
+legacy_teardown.sh     removes them again, including from older installs
 llms.txt               orientation for an agent working ON this repo
 ```
+
+## Starting over
+
+`./legacy_teardown.sh <repo>` undoes an install: stops the waker, leaves the rooms *before*
+forgetting who it was (otherwise the membership is stranded and the other agent waits for a
+reply that can never come), strips both hooks, and removes `.llm_chat/`. It also cleans up
+after installs predating the `settings.local.json` move — re-installing alone cannot, since
+the installer no longer writes to the file the old hook is in. `--dry-run` first if you want
+to see it. It only removes what it can identify as its own; anything else in those files is
+left alone.

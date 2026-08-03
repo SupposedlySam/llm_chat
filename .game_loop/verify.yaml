@@ -29,8 +29,17 @@
 "bin/llm-chat-deliver":
   - "python3 -m py_compile bin/llm-chat-deliver"
 
+"bin/llm-chat-wake":
+  - "python3 -m py_compile bin/llm-chat-wake"
+
 "install.sh":
   - "bash -n install.sh"
+
+# `bash -n` earns its place here: the first draft of this script died at PARSE
+# time, before doing anything, because of parentheses in a heredoc nested in a
+# command substitution. A syntax gate catches exactly that class.
+"legacy_teardown.sh":
+  - "bash -n legacy_teardown.sh"
 
 # Schemas and rules are compiled into worker executables, so the compiler is their real consumer —
 # not a test of the Dart source in isolation. It fails on a table that has table-rules and no
