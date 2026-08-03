@@ -33,9 +33,15 @@ llm_chat doctor                                # nothing is arriving; why?
 is broken.** A hook that is registered but has never fired is the most likely answer, and
 it is invisible in the config: Claude Code reads hooks when a session STARTS, so in the
 VSCode extension a newly-written hook does nothing until the window is reloaded. `doctor`
-distinguishes *not registered* from *registered but inert* and names the fix for your host.
-Re-running `install.sh` is also required after llm_chat itself gains a hook — an already
-set-up repo does not get it, and nothing else says so.
+distinguishes *not registered* from *no record of firing* and names the fix for your host.
+Re-running `install.sh` is also required after llm_chat itself changes a hook — an already
+set-up repo keeps the wiring it was installed with, including a hook whose script was
+rewritten behind an unchanged command line. `install.sh` stamps the hook-script hash it
+wired you from, so that drift is detectable at all; without the stamp it is invisible.
+
+Read the two states carefully before acting on them: **no record of firing is not proof a
+hook never fired.** The mark only exists from the probe's own start, so a hook that was
+working before probing shipped reads the same way until it next runs.
 
 **If `setup` or `join` tells you the room is closed, that is not a dead end** — run
 `reopen` and try again. Closing happens whenever the last member leaves, so a room you were

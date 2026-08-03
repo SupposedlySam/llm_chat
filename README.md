@@ -105,6 +105,7 @@ visible in the config:
 | | how to see it | fix |
 |---|---|---|
 | **Not registered** — the repo was set up before the hook existed | read `settings.json` | re-run `install.sh` |
+| **Registered but the script changed** — same command line, different code | *nothing in the config shows this* | re-run `install.sh` |
 | **Registered but never loaded** — the file is correct and the session never read it | *nothing in the config shows this* | reload the window |
 
 The second is the expensive one. Hooks are read when a **session starts**, and in the
@@ -113,11 +114,21 @@ there doing nothing, and every inspection says it is configured correctly. This 
 own checkout ran for a day with a Stop hook that had never fired.
 
 So both hooks write `.llm_chat/probe/<hook>` on every invocation, and the *absence* of that
-mark is the proof: `doctor` reports **registered**, **fired** and **inert** separately, and
-names the remedy for the host it detects (`CLAUDE_CODE_ENTRYPOINT`, since `TERM_PROGRAM` is
-equally true of a plain `claude` run in VSCode's terminal). The PostToolUse hook also
-injects a one-time notice when it sees a repo running older wiring than the checkout it
-points at — because **upgrading llm_chat does not upgrade any repo already set up.**
+mark is the evidence — though only ever that there is **no record** of firing, never that a
+hook never fired: the mark exists only from the probe's own start, so a hook working before
+it shipped reads the same way until it next runs. `doctor` reports **registered**, **fired**
+and **no record** separately, and names the remedy for the host it detects
+(`CLAUDE_CODE_ENTRYPOINT` — `TERM_PROGRAM` is equally true of a plain `claude` run in
+VSCode's terminal, and is sometimes unset under the extension entirely, which would detect
+nothing rather than answer wrongly).
+
+Separately, `install.sh` records a hash of the hook **scripts** a repo was wired from
+(`.llm_chat/installed.json`; `llm_chat fingerprint` prints the checkout's current one).
+That catches drift the registration cannot show — a hook whose script was rewritten behind
+an identical command line — because **upgrading llm_chat does not upgrade any repo already
+set up.** Both checks reach you without being asked: the PostToolUse hook injects a one-time
+notice naming whichever applies. The stamp says a repo is behind; the hook comparison says
+*which* hook, and only the second is actionable on its own.
 
 `llm_chat reload --force` reloads the window for you. There is no supported way to do this:
 the `code` CLI has no command or URI execution, and `VSCODE_IPC_HOOK` speaks an internal
