@@ -9,10 +9,11 @@ hook in YOUR repo, and puts you in the room:
 
 Then:
 
-    llm_chat say   deploy-review "the pins are the problem"
-    llm_chat read  deploy-review                  # pull anything waiting
+    llm_chat say    deploy-review "the pins are the problem"
+    llm_chat read   deploy-review                 # pull anything waiting
     llm_chat channels                             # what rooms exist
-    llm_chat leave deploy-review                  # I have said my piece
+    llm_chat leave  deploy-review                 # I have said my piece
+    llm_chat reopen deploy-review                 # it closed; bring it back
 
 `open` and `join` are the lower-level pair `setup` is built from, for when a
 repo is already wired up.
@@ -248,6 +249,16 @@ def do_join(server, name, identity, topic, max_messages, announce):
         raise SystemExit("channel and identity must be 1-64 chars of [a-z0-9._-]")
 
     chan = get_channel(server, name)
+    # Refuse rather than report a success the room cannot honour. Joining a
+    # closed room used to print "joined (members: ...)" and only fail later, at
+    # the first `say` — so an agent believed it was connected, said its piece
+    # into an error, and had no idea the room had ended before it arrived.
+    if chan is not None and chan.get("closed"):
+        raise SystemExit(
+            f"{name} is closed — {chan.get('closed_reason') or 'no reason given'}\n"
+            f"  Nothing can be said in it until it is reopened:\n"
+            f"    llm_chat reopen {name}"
+        )
     if chan is None:
         chan = create(server, "channels", {
             "name": name, "topic": topic, "created_by": identity,
@@ -402,6 +413,58 @@ def do_leave(server, name, identity):
     else:
         waiting = [m["identity"] for m in members if not m.get("done")]
         print(f"{identity} is done with {name} (still talking: {', '.join(waiting)})")
+
+
+def do_reopen(server, name, max_messages=None):
+    """Bring a closed room back.
+
+    Closing is cheap to trigger and was impossible to undo: the last member
+    leaving does it, and `legacy_teardown.sh` leaves on an agent's behalf, so
+    two teardowns ended a room permanently. Every other verb then reported
+    success into it while `say` failed, which is the worst way to find out.
+
+    Anyone may reopen. The trust model here is already two people at one desk;
+    requiring a particular identity to revive a room they were not in would
+    just be friction with no security to show for it.
+    """
+    chan = get_channel(server, name)
+    if chan is None:
+        raise SystemExit(f"no such channel: {name}")
+    if not chan.get("closed"):
+        print(f"{name} is already open")
+        return
+
+    was = chan.get("closed_reason") or "no reason given"
+    count = chan.get("message_count", 0)
+    cap = max_messages if max_messages is not None else chan.get(
+        "max_messages", DEFAULT_MAX_MESSAGES)
+    # Reopening a room that is at its cap would close it again on the very next
+    # message. Say so now instead of handing back a room with one dead end.
+    if count >= cap:
+        raise SystemExit(
+            f"{name} holds {count} messages against a cap of {cap}, so it would "
+            f"close again\n  on the next one. Reopen with room to talk:\n"
+            f"    llm_chat reopen {name} --max-messages {count + DEFAULT_MAX_MESSAGES}"
+        )
+
+    fields = {"closed": b(False), "closed_reason": None}
+    if max_messages is not None:
+        fields["max_messages"] = max_messages
+    update(server, "channels", eq("id", chan["id"]), fields)
+    print(f"{name} reopened (was closed: {was})")
+    if max_messages is not None:
+        print(f"  cap raised to {max_messages}; {count} used")
+
+    members = rows(server, "memberships", eq("channel", name))
+    done = sorted(m["identity"] for m in members if m.get("done"))
+    if done and len(done) == len(members):
+        # Every membership still says "finished", so the next `leave` by anyone
+        # satisfies "all members are done" and closes it straight back.
+        print(f"  every member is still marked done ({', '.join(done)}) — rejoin "
+              f"before talking,\n  or the next `leave` closes it again:")
+        print(f"    llm_chat join {name} --as <identity>")
+    elif done:
+        print(f"  still marked done: {', '.join(done)}")
 
 
 def do_channels(server):
@@ -572,6 +635,12 @@ def main() -> int:
     p.add_argument("channel")
     p.add_argument("--as", dest="identity")
 
+    p = sub.add_parser("reopen", help="bring a closed channel back")
+    p.add_argument("channel")
+    p.add_argument("--max-messages", type=int,
+                   help="raise the cap at the same time; required if the room "
+                        "closed by hitting it")
+
     p = sub.add_parser("invite", help="reprint the invite for a channel")
     p.add_argument("channel")
 
@@ -588,6 +657,9 @@ def main() -> int:
         do_join(server, args.channel, args.identity, args.topic,
                 args.max_messages, announce=(args.cmd == "open"))
         remember(args.channel, args.identity, server)
+        return 0
+    if args.cmd == "reopen":
+        do_reopen(server, args.channel, args.max_messages)
         return 0
     if args.cmd == "channels":
         do_channels(server)

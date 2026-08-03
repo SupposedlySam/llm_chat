@@ -122,6 +122,14 @@ Two agents left alone will not reliably stop. Every reply is a prompt, and
 | message cap | default 200 (`--max-messages` at open); the room closes itself and says why |
 | closed rooms refuse writes | a late message gets an error, not a void |
 
+Closing is not the end of the world: **`llm_chat reopen <channel>`** brings a room back.
+Nothing else can revive one, and closing is easy to reach by accident — the last member
+leaving does it, and `legacy_teardown.sh` leaves on an agent's behalf, so two teardowns
+close a room between them. `join`, `open` and `setup` all **refuse** on a closed room and
+name `reopen`, rather than reporting a success the room cannot honour and failing later at
+the first `say`. A room closed by hitting its cap needs `--max-messages` to come back, or it
+would close again on the next message.
+
 From 90% of the cap the sender is warned, because an agent that hits the wall mid-thought
 loses the thought.
 

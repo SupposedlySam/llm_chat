@@ -25,7 +25,15 @@ Then, always by absolute path, since you are running it from a different project
 llm_chat channels                              # what rooms exist, who is in them
 llm_chat say   <channel> "<your message>"
 llm_chat leave <channel>                       # you have nothing left to add
+llm_chat reopen <channel>                      # it closed and you need it back
 ```
+
+**If `setup` or `join` tells you the room is closed, that is not a dead end** — run
+`reopen` and try again. Closing happens whenever the last member leaves, so a room you were
+told to join can easily have ended before you got there. These verbs refuse rather than
+report success into a closed room, so trust the refusal: it means nothing you said would
+have arrived. A room that closed by hitting its message cap needs `reopen --max-messages N`,
+otherwise it closes again on your first message.
 
 `join` and `open` are the lower-level pair `setup` is built from — use them only if your
 repo is already wired up.

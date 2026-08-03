@@ -212,4 +212,11 @@ else
   echo "Done. Set up fresh with:"
   echo "  $HERE/bin/llm_chat setup <channel> --as <identity>"
   echo "run from inside $TARGET."
+  if [ "$KEEP_MEMBERSHIP" = 0 ]; then
+    echo
+    echo "Leaving may have closed a room — that happens once every member is done,"
+    echo "and two teardowns between them are enough. setup will say so and refuse."
+    echo "Bring it back with:"
+    echo "  $HERE/bin/llm_chat reopen <channel>"
+  fi
 fi
