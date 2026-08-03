@@ -89,10 +89,40 @@ def missing_hooks() -> list:
     return [e for e in EXPECTED_HOOKS if e not in found]
 
 
+def stale_install():
+    """(recorded, current) hook-script hashes if this repo is behind, else None.
+
+    Asking only "is a hook missing" is blind to a hook whose SCRIPT changed
+    behind an unchanged command line — the registration is identical, so
+    nothing in settings.json moves. The stamp catches that.
+
+    Shells out to the CLI rather than reimplementing the hash here: two copies
+    of a fingerprint algorithm drift, and a drift detector that has drifted is
+    worse than none. Affordable because this runs at most once per session —
+    the cheap marker check above short-circuits every other invocation.
+    """
+    try:
+        with open(os.path.join(PROJECT, ".llm_chat", "installed.json")) as f:
+            recorded = (json.load(f) or {}).get("fingerprint")
+    except (OSError, ValueError):
+        return None
+    if not recorded:
+        return None
+    try:
+        current = subprocess.run(
+            [sys.executable, CLI, "fingerprint"],
+            capture_output=True, text=True, timeout=8,
+        ).stdout.strip()
+    except Exception:
+        return None
+    return (recorded, current) if current and current != recorded else None
+
+
 def upgrade_notice(session_id) -> str:
     """Say it ONCE per session, or a standing gap becomes standing noise."""
     gap = missing_hooks()
-    if not gap:
+    drift = stale_install()
+    if not gap and not drift:
         return ""
     marker = os.path.join(PROJECT, ".llm_chat", f"wiring.{session_id or 'nosession'}")
     if os.path.exists(marker):
@@ -102,17 +132,23 @@ def upgrade_notice(session_id) -> str:
         open(marker, "w").close()
     except OSError:
         return ""   # cannot record it, so do not risk repeating it every call
-    return (
-        "llm_chat: this repo is running an OLDER wiring than the checkout it "
-        f"points at — {', '.join(gap)} "
-        + ("is" if len(gap) == 1 else "are")
-        + " not registered here. Hooks are\nregistered once at install, so a "
-        "repo set up before a hook existed never gets it.\n"
-        f"Without llm-chat-wake, nothing reaches this session while it is idle.\n"
-        f"Fix it with:\n  {os.path.join(ROOT, 'install.sh')} {PROJECT}\n"
-        "then RELOAD THE WINDOW (VSCode registers hooks at window load, so a "
-        "newly\nwritten hook stays inert until you do)."
-    )
+    lines = ["llm_chat: this repo is running an OLDER wiring than the checkout "
+             "it points at."]
+    if gap:
+        lines.append(
+            f"  missing hook(s): {', '.join(gap)} — registered once at install, "
+            "so a repo\n  set up before a hook existed never gets it."
+            + ("\n  Without llm-chat-wake, nothing reaches this session while it "
+               "is idle." if "llm-chat-wake" in gap else "")
+        )
+    if drift:
+        lines.append(f"  hook scripts changed: wired from {drift[0]}, checkout "
+                     f"now has {drift[1]}.\n  The command line is identical, so "
+                     "nothing in settings.json shows this.")
+    lines.append(f"Fix it with:\n  {os.path.join(ROOT, 'install.sh')} {PROJECT}\n"
+                 "then RELOAD THE WINDOW — hooks are read when a session starts, "
+                 "so a newly\nwritten one stays inert until then.")
+    return "\n".join(lines)
 
 
 def main() -> int:
