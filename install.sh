@@ -79,7 +79,7 @@ def strip_llm_chat(settings):
     """
     found = False
     hooks = settings.get("hooks", {})
-    for event in ("PostToolUse", "Stop"):
+    for event in ("PostToolUse", "Stop", "SessionStart"):
         entries = hooks.get(event)
         if not isinstance(entries, list):
             continue
@@ -137,7 +137,15 @@ hooks.setdefault("PostToolUse", []).append({
 # the background after turn-end and wake the session on arrival. The long
 # timeout is the listen window, not a stall: it exits as soon as it delivers,
 # when every room closes, or when its own budget elapses.
-hooks.setdefault("Stop", []).append({
+#
+# Registered on BOTH events, and SessionStart is not optional. Stop alone arms
+# the listener only when a turn ENDS — so a session that starts and never takes
+# a turn (a window reload, a resume) has nothing listening and cannot be woken
+# by anything, permanently. Observed exactly that way: a reload left this agent
+# stalled until a human typed at it. SessionStart re-arms on start, which is
+# what makes a reload recoverable rather than a one-way door. Same shape as the
+# doorbell in ~/dev/agentic_trading, which pairs the two for the same reason.
+wake_entry = {
     "hooks": [{
         "type": "command",
         "command": wake_cmd,
@@ -145,11 +153,14 @@ hooks.setdefault("Stop", []).append({
         "timeout": 604800,
         "statusMessage": "llm_chat: listening for replies",
     }],
-})
+}
+import copy
+hooks.setdefault("Stop", []).append(copy.deepcopy(wake_entry))
+hooks.setdefault("SessionStart", []).append(copy.deepcopy(wake_entry))
 save(local_path, local)
 
 print(("updated" if replaced else "added"),
-      "llm_chat hooks (PostToolUse + Stop waker)"
+      "llm_chat hooks (PostToolUse + Stop/SessionStart waker)"
       + (" (migrated out of tracked settings.json)" if migrated else ""))
 PY
 

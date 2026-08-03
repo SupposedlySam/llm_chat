@@ -72,7 +72,7 @@ except (OSError, ValueError):
     print("skip malformed"); raise SystemExit
 removed = 0
 hooks = s.get("hooks", {})
-for event in ("PostToolUse", "Stop"):
+for event in ("PostToolUse", "Stop", "SessionStart"):
     entries = hooks.get(event)
     if not isinstance(entries, list):
         continue

@@ -554,11 +554,26 @@ def do_reload(force=False):
             "AppleScript).\n  Run `Developer: Reload Window` from the palette "
             "instead."
         )
+    # The foolproof part. Reloading ends the turn; if nothing re-arms at
+    # SessionStart, the session comes back with no listener, takes no turn, and
+    # sits there forever — recoverable only by a human typing at it. Observed
+    # exactly that way once. Refuse rather than strand it.
+    project = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    _, _, evts = hook_report(project)
+    if "SessionStart" not in evts.get("llm-chat-wake", set()):
+        raise SystemExit(
+            "refusing: llm-chat-wake is not registered on SessionStart in this "
+            "repo, so a\nreload would leave this session with nothing listening "
+            "and no way to be woken.\nWire it first:\n"
+            f"  {os.path.join(ROOT, 'install.sh')} {project}"
+        )
     if not force:
         raise SystemExit(
             "This drives the VSCode UI: it focuses the window, opens the "
-            "command palette,\nand runs `Developer: Reload Window`. It will end "
-            "the current turn.\n\nRe-run with --force if that is what you want:"
+            "command palette,\nand runs `Developer: Reload Window`. It ends the "
+            "current turn.\n\nThat is recoverable: llm-chat-wake IS on "
+            "SessionStart here, so the reloaded\nsession re-arms on start and "
+            "any waiting message will wake it.\n\nRe-run with --force:"
             "\n  llm_chat reload --force"
         )
 
@@ -629,20 +644,23 @@ def hook_report(project):
     its settings has perfectly correct config and an inert hook, and every
     inspection of the config says it is fine.
     """
-    registered = set()
+    registered, events = set(), {h: set() for h in EXPECTED_HOOKS}
     for name in ("settings.local.json", "settings.json"):
         try:
             with open(os.path.join(project, ".claude", name)) as f:
                 settings = json.load(f)
         except (OSError, ValueError):
             continue
-        for groups in (settings.get("hooks") or {}).values():
+        for event, groups in (settings.get("hooks") or {}).items():
             if not isinstance(groups, list):
                 continue
             for group in groups:
                 for h in group.get("hooks", []):
                     cmd = h.get("command") or ""
-                    registered.update(e for e in EXPECTED_HOOKS if e in cmd)
+                    for e in EXPECTED_HOOKS:
+                        if e in cmd:
+                            registered.add(e)
+                            events[e].add(event)
 
     # A mark's ABSENCE means "has not fired since the probe existed" — never
     # "has not fired". Any repo wired before probing shipped reads as unfired
@@ -655,7 +673,7 @@ def hook_report(project):
         "llm-chat-deliver": os.path.exists(os.path.join(probe, "post-tool-use")),
         "llm-chat-wake": os.path.exists(os.path.join(probe, "stop")),
     }
-    return registered, fired
+    return registered, fired, events
 
 
 def do_doctor(server):
@@ -663,13 +681,21 @@ def do_doctor(server):
     project = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
     print(f"llm_chat doctor — {project}\n")
 
-    registered, fired = hook_report(project)
+    registered, fired, events = hook_report(project)
     for hook in EXPECTED_HOOKS:
         reg = hook in registered
         state = ("registered, and has fired" if reg and fired[hook]
                  else "REGISTERED, NO RECORD OF FIRING" if reg
                  else "NOT REGISTERED")
-        print(f"  {hook:20} {state}")
+        where = ",".join(sorted(events[hook])) if events[hook] else "-"
+        print(f"  {hook:20} {state}  [{where}]")
+    no_sessionstart = ("llm-chat-wake" in registered
+                       and "SessionStart" not in events["llm-chat-wake"])
+    if no_sessionstart:
+        print("\n  ! wake is not on SessionStart. It arms only when a TURN ENDS, so a "
+              "session that\n    starts and never takes a turn — a window reload, a "
+              "resume — has nothing\n    listening and cannot be woken at all. Re-run "
+              "install.sh.")
 
     print()
     if not registered:
@@ -698,7 +724,7 @@ def do_doctor(server):
         print(f"  fix: {RELOAD_ADVICE[host()]}")
         print("\nNothing is lost meanwhile — `llm_chat read <channel>` never "
               "depends on a hook.")
-    elif not missing:
+    elif not missing and not no_sessionstart:
         print("Wiring looks right: both hooks are registered and both have fired "
               "in this checkout.")
 
