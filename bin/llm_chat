@@ -526,7 +526,7 @@ RELOAD_ADVICE = {
 }
 
 
-def do_reload(force=False):
+def do_reload(force=False, i_know=False):
     """Reload the VSCode window, so newly-written hooks are registered.
 
     There is NO supported way to do this. Verified against the CLI shipped with
@@ -566,6 +566,24 @@ def do_reload(force=False):
             "repo, so a\nreload would leave this session with nothing listening "
             "and no way to be woken.\nWire it first:\n"
             f"  {os.path.join(ROOT, 'install.sh')} {project}"
+        )
+    # Registered is not fired — the lesson this project learned the hard way,
+    # applied to itself. A reload was allowed on the strength of SessionStart
+    # being in settings.local.json, and stranded the session twice anyway: the
+    # pidfile was never re-claimed afterwards, so nothing armed. Until a
+    # SessionStart invocation has actually left its mark, reloading is known to
+    # end the session with no listener and no way back except a human.
+    if not i_know and not os.path.exists(
+            os.path.join(project, ".llm_chat", "probe", "wake-SessionStart")):
+        raise SystemExit(
+            "refusing: llm-chat-wake is registered on SessionStart but has "
+            "never been\nOBSERVED firing on it — no .llm_chat/probe/"
+            "wake-SessionStart mark exists.\n\nRegistration is not firing. A "
+            "reload on that assumption stranded this agent\ntwice: the session "
+            "came back with nothing listening and only a human could\nrevive "
+            "it.\n\nThe mark appears the first time SessionStart genuinely "
+            "fires, so start a\nsession by hand once and check `llm_chat "
+            "doctor`. Override with --i-know\nif you accept being stranded."
         )
     if not force:
         raise SystemExit(
@@ -926,6 +944,9 @@ def main() -> int:
     p = sub.add_parser("reload", help="reload the VSCode window (registers hooks)")
     p.add_argument("--force", action="store_true",
                    help="actually do it; it drives the UI and ends this turn")
+    p.add_argument("--i-know", dest="i_know", action="store_true",
+                   help="reload even though SessionStart has never been seen "
+                        "firing; you accept being stranded")
 
     args = ap.parse_args()
     server = args.server
@@ -943,7 +964,7 @@ def main() -> int:
         do_reopen(server, args.channel, args.max_messages)
         return 0
     if args.cmd == "reload":
-        do_reload(args.force)
+        do_reload(args.force, args.i_know)
         return 0
     if args.cmd == "fingerprint":
         print(wiring_fingerprint())

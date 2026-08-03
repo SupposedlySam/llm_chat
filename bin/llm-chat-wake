@@ -150,19 +150,29 @@ def wake(blocks):
 
 
 def main() -> int:
+    # The payload names the event that invoked us. Recording only "it ran" was
+    # not enough: this hook is registered on BOTH Stop and SessionStart, wrote
+    # the same mark either way, and so could not answer the one question that
+    # mattered after a reload — did SessionStart fire at all, or only Stop? A
+    # diagnostic that cannot separate its own two callers cannot diagnose them.
+    event = "unknown"
     try:
-        sys.stdin.read()
+        event = (json.loads(sys.stdin.read() or "{}")
+                 .get("hook_event_name") or "unknown")
     except Exception:
         pass
 
-    # Proof this hook ran. Its ABSENCE is the only readable evidence that a
-    # registered hook has never fired — which is exactly the "correct on disk,
-    # never loaded by the session" failure. Before any early return.
+    # Proof this hook ran, per event, with pid and time so a lifecycle is
+    # readable afterwards. Before any early return. The bare "stop" mark is kept
+    # so an older `doctor` keeps working against a newer hook.
     try:
         d = os.path.join(STATE, "probe")
         os.makedirs(d, exist_ok=True)
+        stamp = "%d %d\n" % (int(time.time()), os.getpid())
         with open(os.path.join(d, "stop"), "w") as f:
-            f.write(str(int(time.time())))
+            f.write(stamp)
+        with open(os.path.join(d, "wake-%s" % event), "w") as f:
+            f.write(stamp)
     except OSError:
         pass
 
