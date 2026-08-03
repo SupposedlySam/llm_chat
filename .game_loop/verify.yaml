@@ -1,0 +1,51 @@
+# WHAT MUST BE RUN WHEN A THING CHANGES.
+#
+# The rule this encodes: if a change has an OUTPUT that is not the thing you edited — a code
+# generator, template, migration, schema, serializer, IaC, build script — no verification counts
+# until the output's real consumer has consumed it. A generator's own test comparing emitted text to
+# emitted text, an analyzer configured to exclude the output dir, a downstream that exercises none of
+# the changed code: three green signals, all vacuous, none lying.
+#
+# FORMAT:  <glob>: [<command>, ...]   — commands run from the repo root.
+# A `<glob>/**` entry matches anything under that directory.
+# The commands must FAIL when the change is broken. A command that cannot fail is not a check.
+#
+# Coverage is computed the other way round from the map: every changed path counts as UNCHECKED
+# until a rule claims it or `unchecked-ok` excludes it. Ask at any time:
+#
+#     ./.game_loop/bin/verify --coverage
+#
+# WHAT THESE CHECKS MISS — stated here because a rail goes quiet exactly where it is blind:
+# `py_compile` is a SYNTAX gate. It does not resolve names, so it would NOT have caught the missing
+# `import subprocess` that shipped in `setup` and crashed on its first real call — a NameError at
+# runtime, not a parse error. Catching that class needs an undefined-name linter (pyflakes, which is
+# not stdlib, and this project is stdlib-only on purpose) or a smoke test that actually executes the
+# setup path against a throwaway repo. Neither exists yet. Until one does, green here means "it
+# parses", never "it works".
+
+"bin/llm_chat":
+  - "python3 -m py_compile bin/llm_chat"
+
+"bin/llm-chat-deliver":
+  - "python3 -m py_compile bin/llm-chat-deliver"
+
+"install.sh":
+  - "bash -n install.sh"
+
+# Schemas and rules are compiled into worker executables, so the compiler is their real consumer —
+# not a test of the Dart source in isolation. It fails on a table that has table-rules and no
+# row-rules, which is a runtime error this project has already hit once.
+"lib/**":
+  - "./zonai compile"
+
+# Genuinely nothing to check. Anything neither listed here nor matched above stays UNCHECKED and
+# says so on every commit that touches it — including `.zonai/migrations/**`, deliberately: the only
+# real check for a migration is applying it, and a commit gate that mutates the database is worse
+# than an honest "unchecked".
+"unchecked-ok":
+  - "*.md"
+  - "llms.txt"
+  - ".gitignore"
+  - "zonai"
+  - "pubspec.lock"
+  - ".game_loop/**"

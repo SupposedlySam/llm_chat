@@ -11,12 +11,15 @@
 # Never commit: this is per-machine identity, not shared config.
 .llm_chat/
 
-# `setup --in-checkout` registers the delivery hook HERE, and install.sh writes
-# an absolute path to this machine's checkout. Shared, it points a collaborator's
-# agent at a directory that does not exist on their machine — a hook that fails
-# after every tool call. Each checkout registers its own.
-.claude/settings.json
-.claude/settings.json.bak.*
-
 # Bytecode from the Python CLI and delivery hook.
 __pycache__/
+
+# `setup --in-checkout` registers the delivery hook HERE, and its command is an
+# absolute path to this machine's checkout — shared, it points a collaborator's
+# agent at a directory that does not exist on their machine, failing after every
+# tool call. It lives in settings.local.json for exactly that reason.
+#
+# .claude/settings.json is deliberately NOT ignored: game_loop's hooks there are
+# written as "$CLAUDE_PROJECT_DIR"/... and are portable, so they are worth
+# sharing. Ignoring that file would hide this project's guards from a clone.
+.claude/settings.local.json
