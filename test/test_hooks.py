@@ -17,6 +17,21 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from support import load, write_settings  # noqa: E402
 
 
+class FakeSubprocess:
+    """Stands in for the whole `subprocess` module.
+
+    Never assign to `mod.subprocess.run` — `mod.subprocess` IS the real,
+    shared module, so that swaps subprocess.run process-wide for every test
+    that follows and nothing restores it. It happened: the shell tests then
+    "ran" install.sh, got a canned exit 0, and asserted against files nothing
+    had written. Replacing the ATTRIBUTE on the module under test leaves the
+    real one alone.
+    """
+
+    def __init__(self, *outputs):
+        self.run = Stub(*outputs)
+
+
 class Stub:
     """Stands in for subprocess.run, returning canned CLI output."""
 
@@ -96,7 +111,7 @@ class DeliverTest(HookTestCase):
 
     def test_waiting_messages_are_returned_as_additional_context(self):
         self.joined(room="me")
-        self.mod.subprocess.run = Stub("[other] hello there")
+        self.mod.subprocess = FakeSubprocess("[other] hello there")
         _, out = self.run_hook()
         payload = json.loads(out)
         context = payload["hookSpecificOutput"]["additionalContext"]
@@ -109,7 +124,7 @@ class DeliverTest(HookTestCase):
 
     def test_nothing_new_is_not_a_delivery(self):
         self.joined(room="me")
-        self.mod.subprocess.run = Stub("nothing new in room")
+        self.mod.subprocess = FakeSubprocess("nothing new in room")
         code, out = self.run_hook()
         self.assertEqual(out, "")
 
@@ -117,7 +132,7 @@ class DeliverTest(HookTestCase):
         def explode(*a, **kw):
             raise OSError("server gone")
         self.joined(room="me")
-        self.mod.subprocess.run = explode
+        self.mod.subprocess = type('M', (), {'run': staticmethod(explode)})
         code, out = self.run_hook()
         self.assertEqual(code, 0)
         self.assertEqual(out, "")
@@ -125,7 +140,7 @@ class DeliverTest(HookTestCase):
     def test_one_delivery_is_capped_so_it_cannot_derail_a_turn(self):
         self.joined(room="me")
         many = "\n".join("[other] line %d" % i for i in range(50))
-        self.mod.subprocess.run = Stub(many)
+        self.mod.subprocess = FakeSubprocess(many)
         _, out = self.run_hook()
         context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         delivered = [l for l in context.splitlines() if "line " in l]
@@ -164,7 +179,7 @@ class DeliverTest(HookTestCase):
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "installed.json"), "w") as f:
             json.dump({"fingerprint": "0000000000000000"}, f)
-        self.mod.subprocess.run = Stub("ffffffffffffffff")
+        self.mod.subprocess = FakeSubprocess("ffffffffffffffff")
         _, out = self.run_hook('{"session_id": "s1"}')
         self.assertIn("hook scripts changed", out)
         self.assertIn("0000000000000000", out)
@@ -177,7 +192,7 @@ class DeliverTest(HookTestCase):
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "installed.json"), "w") as f:
             json.dump({"fingerprint": "abcdef0123456789"}, f)
-        self.mod.subprocess.run = Stub("abcdef0123456789")
+        self.mod.subprocess = FakeSubprocess("abcdef0123456789")
         _, out = self.run_hook('{"session_id": "s1"}')
         self.assertEqual(out, "")
 
@@ -255,29 +270,29 @@ class WakeTest(HookTestCase):
                          "cannot tell orphaned from normal, so do not claim to")
 
     def test_a_closed_room_is_not_worth_listening_to(self):
-        self.mod.subprocess.run = Stub("room  [closed]  —  no topic")
+        self.mod.subprocess = FakeSubprocess("room  [closed]  —  no topic")
         self.assertFalse(self.mod.still_worth_listening(
             {"room": {"identity": "me", "server": "http://x"}}))
 
     def test_an_open_room_is(self):
-        self.mod.subprocess.run = Stub("room  —  a topic")
+        self.mod.subprocess = FakeSubprocess("room  —  a topic")
         self.assertTrue(self.mod.still_worth_listening(
             {"room": {"identity": "me", "server": "http://x"}}))
 
     def test_an_unreachable_server_keeps_us_listening_rather_than_deaf(self):
         def explode(*a, **kw):
             raise OSError("down")
-        self.mod.subprocess.run = explode
+        self.mod.subprocess = type('M', (), {'run': staticmethod(explode)})
         self.assertTrue(self.mod.still_worth_listening(
             {"room": {"identity": "me", "server": "http://x"}}))
 
     def test_polling_returns_none_when_nothing_is_waiting(self):
-        self.mod.subprocess.run = Stub("nothing new in room")
+        self.mod.subprocess = FakeSubprocess("nothing new in room")
         self.assertIsNone(self.mod.poll("room", {"identity": "me",
                                                  "server": "http://x"}))
 
     def test_polling_returns_the_waiting_text(self):
-        self.mod.subprocess.run = Stub("[other] wake up")
+        self.mod.subprocess = FakeSubprocess("[other] wake up")
         self.assertEqual(self.mod.poll("room", {"identity": "me",
                                                 "server": "http://x"}),
                          "[other] wake up")

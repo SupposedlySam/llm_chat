@@ -103,20 +103,32 @@ class SetupTest(unittest.TestCase):
 
     def test_running_it_inside_the_checkout_is_refused(self):
         """Identity is per calling project. Two agents set up here would share
-        one identity and receive each other's messages."""
+        one identity and receive each other's messages.
+
+        ROOT is redirected at a throwaway directory rather than pointed at the
+        real checkout: an earlier version of this test set CLAUDE_PROJECT_DIR to
+        the actual repo, and its sibling below then wrote a junk room into this
+        project's own .llm_chat/joined.json — which the live hooks would have
+        polled on every tool call. A suite must not touch what it tests.
+        """
         cli.server_up = Recorder(True)
-        os.environ["CLAUDE_PROJECT_DIR"] = cli.ROOT
-        with self.assertRaises(SystemExit) as caught:
-            self.setup()
+        real_root = cli.ROOT
+        cli.ROOT = self.project
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                self.setup()
+        finally:
+            cli.ROOT = real_root
         self.assertIn("--in-checkout", str(caught.exception))
 
     def test_the_maintainer_may_opt_in_explicitly(self):
         cli.server_up = Recorder(True)
-        os.environ["CLAUDE_PROJECT_DIR"] = cli.ROOT
+        real_root = cli.ROOT
+        cli.ROOT = self.project
         try:
             self.setup(in_checkout=True)
         finally:
-            os.environ["CLAUDE_PROJECT_DIR"] = self.project
+            cli.ROOT = real_root
         self.assertIsNotNone(self.fake.get_membership("room", "me"))
 
     def test_bad_names_are_refused_before_anything_is_touched(self):

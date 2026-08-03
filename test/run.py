@@ -21,6 +21,7 @@ output, and the first real one then goes unread.
 """
 import argparse
 import ast
+import hashlib
 import os
 import sys
 import trace
@@ -77,6 +78,66 @@ def executable_lines(path):
     return lines
 
 
+# Directories in THIS repo that the suite must never modify. A test that writes
+# here has escaped its temp directory: one did, setting CLAUDE_PROJECT_DIR to the
+# real checkout and leaving a junk room in .llm_chat/joined.json that the live
+# hooks would then have polled on every tool call. Nothing in the run failed;
+# it was found by accident. So the suite now proves it kept its hands to itself.
+GUARDED = (".llm_chat", ".claude")
+
+# Shared callables a test might swap and forget to restore. Reaching into a
+# module the code under test imported — `mod.subprocess.run = stub` — patches
+# the REAL module for every test that follows, and nothing puts it back. That
+# happened here: the shell tests then "ran" install.sh, received a canned exit
+# 0, and asserted against files nothing had written. Nineteen failures with one
+# cause, and none of them pointed at it.
+def shared_callables():
+    import subprocess
+    return {"subprocess.run": subprocess.run, "os.kill": os.kill,
+            "os.makedirs": os.makedirs}
+
+
+def report_global_leaks(before):
+    after = shared_callables()
+    leaked = [name for name in before if before[name] is not after[name]]
+    if not leaked:
+        return False
+    print("\nTHE SUITE LEFT SHARED CALLABLES PATCHED: %s" % ", ".join(leaked),
+          file=sys.stderr)
+    print("  A test patched a module the code under test imported, so every"
+          "\n  test after it ran against the stub. Patch the attribute on the"
+          "\n  module under test instead, or restore it.", file=sys.stderr)
+    return True
+
+
+def fingerprint_repo():
+    state = {}
+    for relative in GUARDED:
+        base = os.path.join(ROOT, relative)
+        for dirpath, _, filenames in os.walk(base):
+            for name in filenames:
+                path = os.path.join(dirpath, name)
+                try:
+                    with open(path, "rb") as f:
+                        state[path] = hashlib.sha256(f.read()).hexdigest()
+                except OSError:
+                    state[path] = "unreadable"
+    return state
+
+
+def report_repo_damage(before, after):
+    changed = sorted(set(before) ^ set(after))
+    changed += sorted(k for k in set(before) & set(after) if before[k] != after[k])
+    if not changed:
+        return False
+    print("\nTHE SUITE MODIFIED THE REPO IT TESTS:", file=sys.stderr)
+    for path in changed:
+        print("  %s" % os.path.relpath(path, ROOT), file=sys.stderr)
+    print("  A test escaped its temp directory. Fix the test, not this check.",
+          file=sys.stderr)
+    return True
+
+
 def suite():
     loader = unittest.TestLoader()
     return loader.discover(start_dir=HERE, pattern="test_*.py", top_level_dir=HERE)
@@ -119,10 +180,20 @@ def main():
     ap.add_argument("--tests-only", action="store_true")
     args = ap.parse_args()
 
+    before = fingerprint_repo()
+    globals_before = shared_callables()
+
     if args.tests_only:
-        return 0 if run_tests() else 1
+        passed = run_tests()
+        if report_repo_damage(before, fingerprint_repo()):
+            return 1
+        if report_global_leaks(globals_before):
+            return 1
+        return 0 if passed else 1
 
     ok, report = measure()
+    damaged = (report_repo_damage(before, fingerprint_repo())
+               or report_global_leaks(globals_before))
     print("\n=== line coverage (executed / executable) ===")
     total_hit = total = 0
     for script, (hit, count, missing) in sorted(report.items()):
@@ -137,6 +208,8 @@ def main():
     print("\n  Coverage says what nobody LOOKED at. It cannot say whether a"
           "\n  test would fail if the behaviour broke — read the tests for that.")
 
+    if damaged:
+        return 1
     if not ok:
         print("\nTESTS FAILED", file=sys.stderr)
         return 1
