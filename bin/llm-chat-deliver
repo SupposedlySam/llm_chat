@@ -29,7 +29,29 @@ ROOT = os.path.dirname(HERE)
 # Per calling project — see `joined_path()` in the CLI. Two agents on one
 # machine share the llm_chat checkout but not their identities, and a shared
 # record would deliver A's messages to B.
-PROJECT = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+def _project_dir():
+    """Root of the calling repo — never the raw cwd.
+
+    Mirrors project_dir() in bin/llm_chat; kept inline because this runs on
+    every tool call and cannot afford a subprocess to ask. `.llm_chat/` lives at
+    a project's root, so resolving to a subdirectory splits one project into
+    two identities and this hook would then read the wrong one.
+    """
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        return os.path.abspath(env)
+    here = probe = os.path.abspath(os.getcwd())
+    while True:
+        if (os.path.isdir(os.path.join(probe, ".llm_chat"))
+                or os.path.isdir(os.path.join(probe, ".git"))):
+            return probe
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return here
+        probe = parent
+
+
+PROJECT = _project_dir()
 JOINED = os.path.join(PROJECT, ".llm_chat", "joined.json")
 
 # A single delivery must never be big enough to derail a turn. Two agents that

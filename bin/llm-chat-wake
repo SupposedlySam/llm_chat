@@ -37,7 +37,29 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLI = os.path.join(HERE, "llm_chat")
 
-PROJECT = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
+def _project_dir():
+    """Root of the calling repo — never the raw cwd.
+
+    Mirrors project_dir() in bin/llm_chat; kept inline because this runs on
+    every tool call and cannot afford a subprocess to ask. `.llm_chat/` lives at
+    a project's root, so resolving to a subdirectory splits one project into
+    two identities and this hook would then read the wrong one.
+    """
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        return os.path.abspath(env)
+    here = probe = os.path.abspath(os.getcwd())
+    while True:
+        if (os.path.isdir(os.path.join(probe, ".llm_chat"))
+                or os.path.isdir(os.path.join(probe, ".git"))):
+            return probe
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return here
+        probe = parent
+
+
+PROJECT = _project_dir()
 STATE = os.path.join(PROJECT, ".llm_chat")
 JOINED = os.path.join(STATE, "joined.json")
 PID_PATH = os.path.join(STATE, "wake.pid")

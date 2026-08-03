@@ -57,6 +57,34 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # printing "Serving at ...", which is a genuinely confusing half hour.
 DEFAULT_SERVER = os.environ.get("LLM_CHAT_SERVER") or "http://localhost:7717"
 
+def project_dir() -> str:
+    """Which repo is calling — the ROOT of it, never wherever you stand.
+
+    `CLAUDE_PROJECT_DIR` when the harness sets it. Otherwise walk UP to the
+    enclosing project rather than taking the raw cwd: `.llm_chat/` lives at a
+    project's root, so resolving to a subdirectory splits one project into
+    several identities. Join at the root, `say` from `src/`, and you are told
+    you never joined — and joining again there gives one project two identities,
+    while the delivery hook (which the harness does give a project dir) reads
+    only the first. Verified exactly that way before this existed.
+
+    Falling back to cwd silently was the easy default, and it is the shape that
+    reports success while doing the wrong work.
+    """
+    env = os.environ.get("CLAUDE_PROJECT_DIR")
+    if env:
+        return os.path.abspath(env)
+    here = probe = os.path.abspath(os.getcwd())
+    while True:
+        if (os.path.isdir(os.path.join(probe, ".llm_chat"))
+                or os.path.isdir(os.path.join(probe, ".git"))):
+            return probe
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return here      # no marker anywhere; cwd is genuinely all there is
+        probe = parent
+
+
 def joined_path() -> str:
     """Where THIS agent remembers who it is in each room.
 
@@ -69,8 +97,7 @@ def joined_path() -> str:
     ceremony: the write guard blocks writes outside the project, which is the
     whole reason the transport is HTTP. `.llm_chat/` should be gitignored.
     """
-    project = os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()
-    return os.path.join(project, ".llm_chat", "joined.json")
+    return os.path.join(project_dir(), ".llm_chat", "joined.json")
 
 DEFAULT_MAX_MESSAGES = 200
 NAME_OK = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.IGNORECASE)
@@ -558,7 +585,7 @@ def do_reload(force=False, i_know=False):
     # SessionStart, the session comes back with no listener, takes no turn, and
     # sits there forever — recoverable only by a human typing at it. Observed
     # exactly that way once. Refuse rather than strand it.
-    project = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    project = project_dir()
     _, _, evts = hook_report(project)
     if "SessionStart" not in evts.get("llm-chat-wake", set()):
         raise SystemExit(
@@ -601,8 +628,7 @@ def do_reload(force=False, i_know=False):
     # session mid-task. Refusing is strictly better than reloading the wrong
     # one: the cost of a refusal is a sentence of advice, the cost of a wrong
     # reload is somebody else's work.
-    suffix = "— " + os.path.basename(os.path.abspath(
-        os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd()))
+    suffix = "— " + os.path.basename(project_dir())
     script = """
     on run argv
       set target to item 1 of argv
@@ -696,7 +722,7 @@ def hook_report(project):
 
 def do_doctor(server):
     """Why is nothing arriving? Answer it without guessing."""
-    project = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    project = project_dir()
     print(f"llm_chat doctor — {project}\n")
 
     registered, fired, events = hook_report(project)
@@ -848,7 +874,7 @@ def install_hook(project) -> str:
 
 def do_setup(server, channel, identity, topic, max_messages, in_checkout=False):
     """One command: server up, hook registered here, channel joined."""
-    project = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    project = project_dir()
     if project == os.path.abspath(ROOT) and not in_checkout:
         raise SystemExit(
             "run this from the repo you are working in, not from the llm_chat "
