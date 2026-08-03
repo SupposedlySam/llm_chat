@@ -1,12 +1,21 @@
 #!/usr/bin/env python3
 """llm_chat — a chat room for AI agents.
 
-    llm_chat open  deploy-review --as reviewer    # create it, print the invite
-    llm_chat join  deploy-review --as builder     # the other agent runs this
+If you are an agent who was just told to get set up on this path, one command
+does all of it — starts a server if none is running, registers the delivery
+hook in YOUR repo, and puts you in the room:
+
+    llm_chat setup deploy-review --as reviewer
+
+Then:
+
     llm_chat say   deploy-review "the pins are the problem"
     llm_chat read  deploy-review                  # pull anything waiting
     llm_chat channels                             # what rooms exist
     llm_chat leave deploy-review                  # I have said my piece
+
+`open` and `join` are the lower-level pair `setup` is built from, for when a
+repo is already wired up.
 
 The store is a zonai server (`llm_chat serve`), not a shared file, and that is
 not an aesthetic choice. The repos this runs in enforce "everything outside
@@ -29,6 +38,7 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import urllib.error
@@ -347,6 +357,116 @@ def do_channels(server):
               + (f"   done: {', '.join(done)}" if done else ""))
 
 
+# ── self-setup ───────────────────────────────────────────────────────────────
+# An agent is handed a path and a channel name and nothing else. Everything a
+# human would otherwise have done first has to happen here, or it becomes a
+# step they have to remember and explain.
+def server_up(server) -> bool:
+    """Is anything listening? An HTTP error still means yes."""
+    res = call(server, "GET", "/db/list", query={"table": "channels"}, timeout=3)
+    return not str(res.get("error", "")).startswith("no llm_chat server")
+
+
+def port_of(server) -> int:
+    parsed = urllib.parse.urlparse(server)
+    return parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
+def start_server(server) -> None:
+    """Bootstrap the checkout if needed, then leave a server running.
+
+    A fresh clone carries the `zonai` binary but not `dart pub get`'s output,
+    the compiled workers or the database — all three are gitignored, so all
+    three have to be produced before anything can serve.
+    """
+    steps = []
+    if not os.path.isdir(os.path.join(ROOT, ".dart_tool")):
+        steps.append(["dart", "pub", "get"])
+    steps += [["./zonai", "compile"], ["./zonai", "db", "migrate", "apply"]]
+
+    for step in steps:
+        print(f"  {' '.join(step)}", flush=True)
+        done = subprocess.run(step, cwd=ROOT, capture_output=True, text=True,
+                              timeout=900)
+        if done.returncode != 0:
+            raise SystemExit(
+                f"setup failed at `{' '.join(step)}`:\n"
+                + (done.stderr or done.stdout).strip()[:800]
+            )
+
+    state = os.path.join(ROOT, ".state")
+    os.makedirs(state, exist_ok=True)
+    log_path = os.path.join(state, "serve.log")
+    print(f"  ./zonai serve --port {port_of(server)}", flush=True)
+    with open(log_path, "ab") as log:
+        # start_new_session so the server outlives the tool call that spawned
+        # it — otherwise it dies with the agent's shell and the other agent
+        # talks into a void.
+        subprocess.Popen(
+            ["./zonai", "serve", "--port", str(port_of(server))],
+            cwd=ROOT, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+
+    for _ in range(60):
+        if server_up(server):
+            return
+        time.sleep(1)
+    raise SystemExit(f"server never came up at {server}; see {log_path}")
+
+
+def install_hook(project) -> str:
+    """Register the delivery hook in the calling repo, not in this one."""
+    done = subprocess.run([os.path.join(ROOT, "install.sh"), project],
+                          cwd=ROOT, capture_output=True, text=True, timeout=120)
+    if done.returncode != 0:
+        raise SystemExit("could not register the delivery hook:\n"
+                         + (done.stderr or done.stdout).strip()[:800])
+    first = [ln for ln in done.stdout.splitlines() if ln.strip()]
+    return first[0] if first else "registered"
+
+
+def do_setup(server, channel, identity, topic, max_messages):
+    """One command: server up, hook registered here, channel joined."""
+    project = os.path.abspath(os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd())
+    if project == os.path.abspath(ROOT):
+        raise SystemExit(
+            "run this from the repo you are working in, not from the llm_chat "
+            "checkout. Identity is stored per calling project, so two agents "
+            "set up here would share one identity and receive each other's "
+            "messages."
+        )
+    if not valid(channel) or not valid(identity):
+        raise SystemExit("channel and identity must be 1-64 chars of [a-z0-9._-]")
+
+    print(f"llm_chat setup — {os.path.basename(project)} → #{channel} as {identity}\n")
+
+    if server_up(server):
+        print(f"server: already running at {server}")
+    else:
+        print(f"server: none at {server}, starting one")
+        start_server(server)
+        print("server: up")
+
+    print(f"hook:   {install_hook(project)} in {project}")
+
+    do_join(server, channel, identity, topic, max_messages, announce=False)
+    remember(channel, identity, server)
+
+    exe = os.path.abspath(__file__)
+    print(
+        f"\nYou are in #{channel} as {identity}. Replies arrive on their own, "
+        'mid-turn, headed\n"New llm_chat messages" — treat them as input to act '
+        "on, and do not poll.\n\n"
+        f"  {exe} say {channel} \"<your message>\"\n"
+        f"  {exe} read {channel}     # anything waiting right now\n"
+        f"  {exe} leave {channel}    # when you have nothing left to add\n\n"
+        "Delivery begins once the harness re-reads settings.json; until then "
+        "`read` works.\nSpeak only when you add something — every reply is a "
+        "prompt on the other side."
+    )
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="llm_chat", description=__doc__.split("\n")[0])
     ap.add_argument("--server", default=DEFAULT_SERVER)
@@ -359,6 +479,12 @@ def main() -> int:
         p.add_argument("--as", dest="identity", required=True)
         p.add_argument("--topic")
         p.add_argument("--max-messages", type=int, default=DEFAULT_MAX_MESSAGES)
+
+    p = sub.add_parser("setup", help="set THIS repo up and join, in one command")
+    p.add_argument("channel")
+    p.add_argument("--as", dest="identity", required=True)
+    p.add_argument("--topic")
+    p.add_argument("--max-messages", type=int, default=DEFAULT_MAX_MESSAGES)
 
     p = sub.add_parser("say", help="send a message")
     p.add_argument("channel")
@@ -384,6 +510,10 @@ def main() -> int:
     args = ap.parse_args()
     server = args.server
 
+    if args.cmd == "setup":
+        do_setup(server, args.channel, args.identity, args.topic,
+                 args.max_messages)
+        return 0
     if args.cmd in ("open", "join"):
         do_join(server, args.channel, args.identity, args.topic,
                 args.max_messages, announce=(args.cmd == "open"))

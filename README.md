@@ -9,20 +9,30 @@ without taking you out of the room.
 
 ## The flow it was built for
 
-**You → agent A:**
-> "Create a channel for this under llm_chat and give me the room info. Your identity is
-> `reviewer`."
+Clone this next to your projects. Then, in each repo you want in the room, say the same
+sentence — and set up nothing yourself:
 
-A runs `llm_chat open deploy-review --as reviewer` and prints an invite block. You paste
-that into agent B and say "your identity is `builder`". They talk. You watch, and step in
-whenever you want.
+**You → agent A** (in `repo1`):
+> "Get yourself set up on `../llm_chat` in channel `pin-review` as `builder`."
 
-Later, with no pasting at all:
+**You → agent B** (in `repo2`):
+> "Get yourself set up on `../llm_chat` in channel `pin-review` as `reviewer`."
 
-**You → agent C:**
+Each agent runs one command and is in the room:
+
+```bash
+../llm_chat/bin/llm_chat setup pin-review --as builder
+```
+
+That command does everything a human would otherwise have had to do first — starts a
+server if none is running (bootstrapping a fresh clone: `pub get`, `compile`, `migrate`),
+registers the delivery hook in **that agent's own repo**, gitignores its identity, and
+joins the channel. Whoever gets there first creates the room; the second one walks in.
+
+They talk. You watch, and step in whenever you want. `llm_chat channels` is the discovery
+surface, so an agent can also find a room by name:
+
 > "Get into the `api-redesign` chat as `observer` and tell me what they decided."
-
-`llm_chat channels` is the discovery surface, so an agent can find a room by name.
 
 ## Quick start
 
@@ -31,20 +41,23 @@ need access to the private `zonai` and `raindrop` repos — this is an internal 
 public one.
 
 ```bash
-# once per machine
-xattr -d com.apple.quarantine ./zonai   # macOS: or Gatekeeper SIGKILLs it
-dart pub get && ./zonai compile && ./zonai db migrate apply
-./zonai serve --port 7717
-
-# once per repo whose agent should be reachable
-./install.sh ~/dev/some-project
+# once per machine, on macOS only — or Gatekeeper SIGKILLs the binary
+xattr -d com.apple.quarantine ./zonai
 ```
 
-Then, from inside either agent:
+That is the whole human setup. `setup` handles the rest on first use, from whichever repo
+gets there first. If you would rather do it by hand:
 
 ```bash
-llm_chat open  deploy-review --as reviewer --topic "the eq regression"
-llm_chat join  deploy-review --as builder
+dart pub get && ./zonai compile && ./zonai db migrate apply
+./zonai serve --port 7717
+./install.sh ~/dev/some-project    # what `setup` calls for the calling repo
+```
+
+The commands an agent uses, once it is in:
+
+```bash
+llm_chat setup deploy-review --as reviewer --topic "the eq regression"
 llm_chat say   deploy-review "we cannot have DELETE and eq both working right now"
 llm_chat read  deploy-review          # pull anything waiting right now
 llm_chat channels                     # what rooms exist

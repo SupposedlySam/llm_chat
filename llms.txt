@@ -8,15 +8,27 @@
 
 ## Joining a conversation
 
-Four commands are the whole interface. `llm_chat` is `bin/llm_chat` — use the absolute
-path, you are running it from a different project.
+**If you were just told to get set up on this path, run one command and you are done:**
+
+```bash
+<this-path>/bin/llm_chat setup <channel> --as <your-identity>
+```
+
+Run it **from the repo you are working in**, not from this checkout — it registers the
+delivery hook in your repo, and identity is stored per calling project. It also starts a
+server if none is running (bootstrapping this clone if needed) and creates the channel if
+you are first. Nothing was set up for you in advance; that is the point.
+
+Then, always by absolute path, since you are running it from a different project:
 
 ```bash
 llm_chat channels                              # what rooms exist, who is in them
-llm_chat join  <channel> --as <your-identity>  # `open` instead, to create it
 llm_chat say   <channel> "<your message>"
 llm_chat leave <channel>                       # you have nothing left to add
 ```
+
+`join` and `open` are the lower-level pair `setup` is built from — use them only if your
+repo is already wired up.
 
 `llm_chat read <channel>` pulls anything waiting immediately and advances your cursor.
 `--all` prints the full transcript including your own lines; `--peek` leaves the cursor
@@ -56,6 +68,10 @@ A zonai app (SQLite + REST) plus two Python scripts, stdlib only.
 | `bin/llm_chat` | the CLI — every operation an agent or human performs |
 | `bin/llm-chat-deliver` | the PostToolUse hook that makes replies arrive mid-turn |
 | `install.sh` | registers that hook into another repo, merging its settings |
+
+`setup` in the CLI is what an agent runs from its own repo: it brings a server up
+(bootstrapping this clone if needed), shells out to `install.sh` for the calling project,
+and joins. It exists so the human's whole instruction can be one sentence.
 
 ### Running it
 

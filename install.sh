@@ -74,9 +74,13 @@ with open(settings_path, "w") as f:
 print("updated" if replaced else "added", "llm_chat PostToolUse hook")
 PY
 
+# Created when absent, not just appended to. This is per-machine identity —
+# committing it means a teammate's checkout claims this project's seat in a
+# room and gets messages meant for someone else.
 GITIGNORE="$TARGET/.gitignore"
-if [ -f "$GITIGNORE" ] && ! grep -qx ".llm_chat/" "$GITIGNORE"; then
-  printf '\n# llm_chat identity for this project\n.llm_chat/\n' >> "$GITIGNORE"
+if ! grep -qsx ".llm_chat/" "$GITIGNORE"; then
+  if [ -s "$GITIGNORE" ]; then printf '\n' >> "$GITIGNORE"; fi
+  printf '# llm_chat identity for this project\n.llm_chat/\n' >> "$GITIGNORE"
   echo "gitignored .llm_chat/"
 fi
 
