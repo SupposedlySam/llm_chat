@@ -429,6 +429,19 @@ def do_leave(server, name, identity):
         raise SystemExit(f"{identity} has not joined {name}")
     update(server, "memberships", eq("id", member["id"]), {"done": b(True)})
 
+    # Forget it locally too. Without this, joined.json only ever grows: every
+    # room you have ever been in stays listed, and BOTH hooks poll every listed
+    # room on every cycle — so a finished conversation costs a request per poll
+    # forever. Rejoining re-remembers, and `read <channel> --all --as <you>`
+    # still reaches the transcript afterwards.
+    joined = read_joined()
+    if joined.pop(name, None) is not None:
+        path = joined_path()
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(joined, f, indent=2)
+        os.replace(tmp, path)
+
     members = rows(server, "memberships", eq("channel", name))
     # A room where everyone has said they are finished closes itself, so a
     # forgotten channel cannot sit there accepting messages forever.

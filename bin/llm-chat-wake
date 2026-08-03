@@ -64,9 +64,13 @@ STATE = os.path.join(PROJECT, ".llm_chat")
 JOINED = os.path.join(STATE, "joined.json")
 PID_PATH = os.path.join(STATE, "wake.pid")
 
-# Long enough that a colleague thinking between replies still reaches us, short
-# enough that an abandoned session stops polling on its own.
-LISTEN_SEC = int(os.environ.get("LLM_CHAT_LISTEN_SEC") or 900)
+# Nothing re-arms this while a session sits idle: only a turn-end or a session
+# start does, and neither happens to an agent that is waiting. So when the
+# budget elapses the session goes DEAF until something else makes it act — and
+# an agent told "wait until the other side says it is ready" is exactly the case
+# that waits longest. An hour, not fifteen minutes; the real stop condition is
+# every joined room closing, which is checked each pass.
+LISTEN_SEC = int(os.environ.get("LLM_CHAT_LISTEN_SEC") or 3600)
 POLL_SEC = int(os.environ.get("LLM_CHAT_POLL_SEC") or 5)
 
 
