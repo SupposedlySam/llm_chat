@@ -1,0 +1,277 @@
+#!/usr/bin/env python3
+"""Bridge one llm_chat room to Slack, so an agent can escalate to a human.
+
+    llm-chat-slack --check        # is the wiring live? sends nothing
+    llm-chat-slack                # run the bridge
+
+WHAT IT IS FOR. An agent that genuinely needs its human has nowhere to put the
+question: the human is not in the room, and waiting for them to look is the
+thing autonomy was supposed to remove. This makes the human a PARTICIPANT —
+agents `join` a room, ask, and get an answer back in the same room, while the
+human answers from a phone.
+
+Agents join and leave it like any other room. It is deliberately NOT a broadcast
+room: an answer to an escalation SHOULD wake the agent that asked, which is the
+whole point, and a room nobody opted into should not be able to do that.
+
+THE LOOP, AND THE TWO WAYS IT COULD EAT ITSELF:
+
+  llm_chat --> Slack   `read` as the human's identity. The self-filter already
+                       excludes the human's own lines, so relayed answers cannot
+                       be relayed back out. One reader of that rule, not two:
+                       this shells out to the CLI rather than querying the store.
+
+  Slack --> llm_chat   Slack has no such filter, so the bridge's OWN posts would
+                       come back and be re-posted forever. Bot messages carry
+                       `bot_id`; those are skipped. That check is the only thing
+                       standing between this and an infinite loop, so it is
+                       asserted rather than assumed.
+
+CREDENTIALS live in `.llm_chat/slack.json` (gitignored), and if that is absent
+it falls back to `.game_loop/notify.json` — same shape, so a machine that has
+already configured Slack once does not do it twice.
+
+    {"room": "someone_human", "identity": "someone",
+     "slack": {"bot_token": "xoxb-...", "channel": "C0123456789",
+               "poll_sec": 10}}
+
+A bot token is REQUIRED, not a webhook: webhooks are send-only, and the reply
+direction is the entire feature. The bot must be a member of the channel and
+carry `chat:write` plus the history scope matching the channel TYPE —
+`channels:history` for public, `groups:history` for private, `im:history` for a
+DM. A `C` id is not proof of a public channel; Slack issues `C` to private ones
+too.
+
+CONTENT LEAVES THE MACHINE. Everything else here is loopback with no auth
+because it never goes anywhere. This does. Whatever agents say in the bridged
+room reaches Slack, and Slack's retention, workspace admins and search apply to
+it from then on. Bridge a room you opened for the purpose; do not bridge a
+working channel and discover afterwards what was in it.
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CLI = os.path.join(HERE, "llm_chat")
+ROOT = os.path.dirname(HERE)
+STATE = os.path.join(ROOT, ".llm_chat")
+CONFIG = os.path.join(STATE, "slack.json")
+FALLBACK = os.path.join(ROOT, ".game_loop", "notify.json")
+CURSOR = os.path.join(STATE, "slack-cursor.json")
+
+DEFAULT_POLL_SEC = 10
+
+
+def load_config():
+    """Bridge config, with credentials falling back to game_loop's if present."""
+    try:
+        with open(CONFIG) as f:
+            config = json.load(f) or {}
+    except (OSError, ValueError):
+        return None
+    slack = dict(config.get("slack") or {})
+    if not slack.get("bot_token"):
+        try:
+            with open(FALLBACK) as f:
+                slack = {**(json.load(f) or {}).get("slack", {}), **slack}
+        except (OSError, ValueError):
+            pass
+    config["slack"] = slack
+    missing = [k for k in ("room", "identity") if not config.get(k)]
+    missing += ["slack.%s" % k for k in ("bot_token", "channel")
+                if not slack.get(k)]
+    if missing:
+        config["missing"] = missing
+    return config
+
+
+class Slack:
+    """The seam. Everything network lives behind this so the bridge is testable."""
+
+    def __init__(self, token, channel, api="https://slack.com/api"):
+        self.token = token
+        self.channel = channel
+        self.api = api
+
+    def _call(self, method, params=None, body=None):
+        url = "%s/%s" % (self.api, method)
+        data = None
+        headers = {"Authorization": "Bearer " + self.token}
+        if body is not None:
+            data = json.dumps(body).encode()
+            headers["Content-Type"] = "application/json; charset=utf-8"
+        elif params:
+            url += "?" + urllib.parse.urlencode(params)
+        request = urllib.request.Request(url, data=data, headers=headers)
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read().decode())
+
+    def post(self, text):
+        return self._call("chat.postMessage", body={"channel": self.channel,
+                                                    "text": text})
+
+    def history(self, oldest=None):
+        params = {"channel": self.channel, "limit": 50}
+        if oldest:
+            params["oldest"] = oldest
+        return self._call("conversations.history", params=params)
+
+
+def read_cursor():
+    try:
+        with open(CURSOR) as f:
+            return (json.load(f) or {}).get("oldest")
+    except (OSError, ValueError):
+        return None
+
+
+def write_cursor(ts):
+    os.makedirs(os.path.dirname(CURSOR), exist_ok=True)
+    tmp = CURSOR + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"oldest": ts}, f)
+    os.replace(tmp, CURSOR)
+
+
+def waiting_for_human(room, identity):
+    """Agent messages in the room, via the CLI so the self-filter applies."""
+    try:
+        out = subprocess.run(
+            [sys.executable, CLI, "read", room, "--as", identity],
+            capture_output=True, text=True, timeout=15).stdout.strip()
+    except Exception:
+        return []
+    if not out or out.startswith("nothing new"):
+        return []
+    return [line for line in out.splitlines() if line.strip()]
+
+
+def say(room, identity, text):
+    """Post as the human. Via --file, so shell metacharacters in a Slack
+    message cannot be eaten before the CLI sees them."""
+    path = os.path.join(STATE, "slack-inbound.txt")
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        subprocess.run([sys.executable, CLI, "say", room, "--file", path,
+                        "--as", identity],
+                       capture_output=True, text=True, timeout=15)
+        return True
+    except Exception:
+        return False
+
+
+def is_from_a_human(message):
+    """Skip anything this bridge posted.
+
+    Slack applies no self-filter, so the bridge's own relays would come back
+    and be relayed into llm_chat, which would deliver them to the agents, which
+    changes nothing — but every one is a message, a wake, and a cap increment,
+    forever. Bot posts carry `bot_id`; a person's do not.
+    """
+    if message.get("bot_id") or message.get("subtype") == "bot_message":
+        return False
+    return bool(message.get("text"))
+
+
+def pump_out(config, slack):
+    """llm_chat -> Slack. Returns how many were relayed."""
+    lines = waiting_for_human(config["room"], config["identity"])
+    for line in lines:
+        try:
+            slack.post(line)
+        except Exception as problem:
+            # The message is already consumed from llm_chat's cursor at this
+            # point, so a Slack failure loses it. Say so loudly rather than
+            # dropping it silently — silence from a bridge is indistinguishable
+            # from nobody having said anything.
+            print("LOST relaying to Slack: %s\n  %s" % (problem, line),
+                  file=sys.stderr)
+    return len(lines)
+
+
+def pump_in(config, slack):
+    """Slack -> llm_chat. Returns how many were relayed."""
+    try:
+        payload = slack.history(oldest=read_cursor())
+    except Exception:
+        return 0
+    if not payload.get("ok"):
+        print("Slack refused conversations.history: %s"
+              % payload.get("error"), file=sys.stderr)
+        return 0
+    messages = sorted(payload.get("messages") or [],
+                      key=lambda m: float(m.get("ts", 0)))
+    relayed = 0
+    for message in messages:
+        ts = message.get("ts")
+        if is_from_a_human(message):
+            if say(config["room"], config["identity"], message["text"]):
+                relayed += 1
+        if ts:
+            write_cursor(ts)
+    return relayed
+
+
+def check(config):
+    if config is None:
+        print("no config — create %s" % CONFIG)
+        print('  {"room": "<llm_chat room>", "identity": "<you>",')
+        print('   "slack": {"bot_token": "xoxb-...", "channel": "C..."}}')
+        return 1
+    if config.get("missing"):
+        print("config incomplete: missing %s" % ", ".join(config["missing"]))
+        return 1
+    slack = Slack(config["slack"]["bot_token"], config["slack"]["channel"],
+                  config["slack"].get("api_base", "https://slack.com/api"))
+    try:
+        payload = slack.history()
+    except Exception as problem:
+        print("cannot reach Slack: %s" % problem)
+        return 1
+    if not payload.get("ok"):
+        error = payload.get("error")
+        print("Slack refused: %s" % error)
+        if error == "missing_scope":
+            print("  add the history scope matching the channel TYPE, then "
+                  "REINSTALL the app —\n  a token keeps its old scopes until "
+                  "you do. channels:history for public,\n  groups:history for "
+                  "private, im:history for a DM.")
+        elif error == "not_in_channel":
+            print("  invite the bot to the channel; membership is separate "
+                  "from scope.")
+        return 1
+    print("Slack reachable, bot is in the channel, history readable")
+    print("bridging #%s as '%s'" % (config["room"], config["identity"]))
+    return 0
+
+
+def main() -> int:
+    config = load_config()
+    if "--check" in sys.argv:
+        return check(config)
+    if config is None or config.get("missing"):
+        return check(config)
+
+    slack = Slack(config["slack"]["bot_token"], config["slack"]["channel"],
+                  config["slack"].get("api_base", "https://slack.com/api"))
+    poll = int(config["slack"].get("poll_sec") or DEFAULT_POLL_SEC)
+    print("bridging #%s as '%s' every %ds — Ctrl-C to stop"
+          % (config["room"], config["identity"], poll))
+    while True:
+        out = pump_out(config, slack)
+        back = pump_in(config, slack)
+        if out or back:
+            print("  -> Slack %d, <- llm_chat %d" % (out, back))
+        time.sleep(poll)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

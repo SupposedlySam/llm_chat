@@ -90,6 +90,12 @@ MUTATIONS = [
      "an agent is a member server-side and never polls the room, because both "
      "hooks read the LOCAL record to decide what to poll"),
 
+    ("the Slack bridge skips its own posts", "bin/llm-chat-slack",
+     '    if message.get("bot_id") or message.get("subtype") == "bot_message":\n        return False',
+     '    if False:\n        return False',
+     "every relay comes back from Slack, is posted into llm_chat, wakes the "
+     "room and relays again — forever"),
+
     ("upgrade notice fires once per session", "bin/llm-chat-deliver",
      "    if os.path.exists(marker):\n        return \"\"",
      "    if False:\n        return \"\"",
@@ -161,6 +167,31 @@ NOT_SWEPT = {
         "write is atomic the way remember's is",
     "bin/llm_chat:remember": "atomicity asserted directly — the temp file must "
         "not survive the rename",
+
+    # The Slack bridge. Everything network- or CLI-facing is behind a seam and
+    # asserted directly against a fake; what is swept is the one check whose
+    # absence is an infinite loop.
+    "bin/llm-chat-slack:__init__": "field assignment on the Slack client",
+    "bin/llm-chat-slack:_call": "URL, body, query and auth header asserted "
+        "directly by inspecting the request that would have gone out",
+    "bin/llm-chat-slack:post": "asserted directly — endpoint, body and token",
+    "bin/llm-chat-slack:history": "asserted directly — query form and cursor",
+    "bin/llm-chat-slack:load_config": "every branch asserted directly, "
+        "including the game_loop fallback and precedence between them",
+    "bin/llm-chat-slack:read_cursor": "missing and corrupt asserted directly",
+    "bin/llm-chat-slack:write_cursor": "atomicity asserted directly",
+    "bin/llm-chat-slack:waiting_for_human": "asserted directly, including that "
+        "it never passes --all, which would relay the human's own answers back",
+    "bin/llm-chat-slack:say": "asserted directly, including that it sends via "
+        "--file so a Slack message containing backticks survives",
+    "bin/llm-chat-slack:check": "every Slack error branch asserted directly, "
+        "and that --check posts nothing",
+    "bin/llm-chat-slack:main": "both entry paths and the loop asserted directly",
+    "bin/llm-chat-slack:pump_out": "SHOULD BE SWEPT — the lost-message report "
+        "on a Slack outage is the only thing standing between a dropped "
+        "escalation and silence",
+    "bin/llm-chat-slack:pump_in": "SHOULD BE SWEPT — cursor advance past bot "
+        "messages is asserted, but nothing proves the ordering guarantee",
 
     # Honest gaps. These SHOULD be swept and are not yet. Saying so beats an
     # exclusion that is technically true and practically a dodge.

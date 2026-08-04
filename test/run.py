@@ -32,9 +32,20 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 BIN = os.path.join(ROOT, "bin")
 
-# The three entrypoints. Everything else in this repo is Dart, YAML or shell,
-# and is checked elsewhere — verify.yaml says which, out loud.
-MEASURED = ("llm_chat", "llm-chat-deliver", "llm-chat-wake")
+# DISCOVERED, not listed. This was a hardcoded tuple of three names, and the
+# moment a fourth script arrived it reported a confident 100% over a set that
+# had quietly stopped containing it — while the mutation sweep, whose identical
+# defect had already been fixed, saw the new file immediately. Two sibling
+# tools, one fixed, one not, disagreeing about the same repo.
+#
+# Imported rather than reimplemented: two copies of a discovery rule drift, and
+# a completeness check that has drifted reports completeness about the wrong
+# set. That is the whole family of failures this file exists to talk about.
+from mutate import discover_sources  # noqa: E402
+
+
+def measured():
+    return [os.path.basename(p) for p in discover_sources()]
 
 def executable_lines(path):
     """Statement lines the tracer could plausibly report, via the parser.
@@ -164,7 +175,7 @@ def measure():
     counts = tracer.results().counts
 
     report = {}
-    for script in MEASURED:
+    for script in measured():
         path = os.path.join(BIN, script)
         executable = executable_lines(path)
         hit = {n for (f, n) in counts if os.path.abspath(f) == path}
