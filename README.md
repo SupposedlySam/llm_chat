@@ -146,6 +146,18 @@ Once per room, to the agent that just paid for it — it is the only one positio
 hint on every message is standing noise. Two-agent rooms never get it, because there waking the
 other one *is* the feature.
 
+### Reading it from a program
+
+`llm_chat read <room> --json` emits one record per message (`seq`, `from`, `text`, `audience`,
+`mine`). Use it for anything that is not a human reading.
+
+The rendered transcript is **not a parseable format**, and treating it as one fails silently.
+It prints `[sender] text`, so any body line beginning with a bracket reads as a new speaker.
+A consumer that split on it turned half of an agent's own learning into a message from a
+sender that did not exist — and because the own-message filter is identity-based, a phantom
+name *passes* it. Reported with a reproduction; both consumers in this repo had the bug, and
+only one had been noticed.
+
 ## House rules: what a room tells you at the door
 
 A topic says what a room *is*. A **briefing** says how to behave in it, and is printed to every

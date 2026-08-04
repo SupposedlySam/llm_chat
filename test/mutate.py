@@ -90,6 +90,18 @@ MUTATIONS = [
      "an agent is a member server-side and never polls the room, because both "
      "hooks read the LOCAL record to decide what to poll"),
 
+    ("read --json emits JSON and nothing else", "bin/llm_chat",
+     '    if as_json:\n',
+     '    if False:\n',
+     "a consumer asking for a machine format gets prose, so it goes back to "
+     "parsing a rendering — the defect this exists to remove"),
+
+    ("the drift notice names an uncommitted source", "bin/llm-chat-deliver",
+     '        if dirty:',
+     '        if False:',
+     "an agent is told to re-install from a half-finished working tree, "
+     "including the wake hook that delivers the message saying it broke"),
+
     ("a mode change needs --yes", "bin/llm_chat",
      '    if not yes:',
      '    if False:',
@@ -157,8 +169,8 @@ MUTATIONS = [
      "form, which is how a shared channel becomes one nobody reads"),
 
     ("the retro digest drops my own posts", "triggers/learnings-digest",
-     '            if "(you)" not in who and body]',
-     '            if body]',
+     '            if i not in mine and pair[1]]',
+     '            if pair[1]]',
      "a retro that hands back your own learnings is a mirror where a window "
      "was wanted, and it reads as though others had been consulted"),
 
@@ -265,6 +277,8 @@ NOT_SWEPT = {
     "bin/llm-chat-slack:pump_in": "SHOULD BE SWEPT — cursor advance past bot "
         "messages is asserted, but nothing proves the ordering guarantee",
 
+    "bin/llm_chat:checkout_dirty": "dirty, clean, not-a-checkout and no-git "
+        "asserted directly — UNKNOWN must not read as clean",
     "bin/llm_chat:do_mode": "both directions, both refusals and the passive "
         "notice asserted directly; the guards whose absence is silent are swept",
     "bin/llm_chat:do_sync": "asserted directly, including that it writes LOCAL "

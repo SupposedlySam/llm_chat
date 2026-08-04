@@ -186,27 +186,28 @@ def remember_thread(ts, sender):
 def waiting_for_human(room, identity):
     """Agent messages in the room, as (sender, line) pairs.
 
-    Reads the rendered transcript through the CLI so the self-filter applies —
-    one reader of that rule, not two. The sender is parsed back off the line
-    because the bridge has to know whose thread it is creating; a relay whose
-    author is unknown is one a threaded reply can never be routed to.
+    Reads through the CLI so the self-filter applies — one reader of that rule,
+    not two — and asks for --json, because the sender has to be exactly right:
+    it is the key the thread map is written under, and a threaded reply is
+    routed by it.
+
+    THE RENDERED TRANSCRIPT IS NOT A PARSEABLE FORMAT. Splitting it on
+    "^[name]" reads any body line starting with a bracket as a new speaker, so
+    an [INFO] log line pasted as evidence became a separate Slack post
+    attributed to a sender that does not exist — and a thread map keyed on a
+    phantom routes the human's reply to nobody. Reported against the sibling
+    consumer of the same rendering, with a reproduction; this one had the same
+    defect and had not been caught yet.
     """
     try:
         out = subprocess.run(
-            [sys.executable, CLI, "read", room, "--as", identity],
+            [sys.executable, CLI, "read", room, "--as", identity, "--json"],
             capture_output=True, text=True, timeout=15).stdout.strip()
+        records = json.loads(out or "[]")
     except Exception:
         return []
-    if not out or out.startswith("nothing new"):
-        return []
-    pairs = []
-    for line in out.splitlines():
-        if not line.strip():
-            continue
-        match = re.match(r"^\[([^\]\s]+)[^\]]*\]\s?(.*)$", line)
-        pairs.append((match.group(1), match.group(2)) if match
-                     else (None, line))
-    return pairs
+    return [(r.get("from"), r.get("text") or "")
+            for r in records if isinstance(r, dict) and (r.get("text") or "").strip()]
 
 
 def route(message, threads):

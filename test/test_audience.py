@@ -314,10 +314,85 @@ class PendingTest(ServerTest):
         self.assertIn("no such channel", str(caught.exception))
 
 
+class JsonReadTest(ServerTest):
+    """`read --json`, which exists because a rendering is not a format.
+
+    Reported against a consumer that split the transcript on '^[name]': a shell
+    test inside a learning became a phantom speaker, and since the own-post
+    filter is identity-based a phantom name PASSES it — so half of somebody's
+    own learning came back to them as another agent's."""
+
+    def read_json(self, identity, **kw):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_read("srv", "room", identity, as_json=True, **kw)
+        return json.loads(out.getvalue())
+
+    def test_one_record_per_message_however_it_is_punctuated(self):
+        self.say('stamp it:\n[ "$(git rev-parse HEAD)" = "$SRC" ]\nnot the ref')
+        records = self.read_json("bob")
+        self.assertEqual(len(records), 1)
+        self.assertIn("rev-parse", records[0]["text"])
+
+    def test_the_body_is_carried_verbatim(self):
+        body = "line one\n\n[INFO] two\n[tool.poetry]"
+        self.say(body)
+        self.assertEqual(self.read_json("bob")[0]["text"], body)
+
+    def test_it_carries_sender_audience_and_seq(self):
+        self.say("hi", audience="bob")
+        record = self.read_json("bob")[0]
+        self.assertEqual(record["from"], "alice")
+        self.assertEqual(record["audience"], "bob")
+        self.assertEqual(record["seq"], 1)
+
+    def test_mine_is_a_flag_not_a_marker_in_the_text(self):
+        """A consumer matching '(you)' in the rendering treats a message that
+        merely mentions it as its own."""
+        self.say("the docs say (you) here", identity="alice")
+        self.assertFalse(self.read_json("bob")[0]["mine"])
+
+    def test_my_own_messages_are_flagged_under_all(self):
+        self.say("mine", identity="bob")
+        records = self.read_json("bob", all_messages=True)
+        self.assertTrue(records[0]["mine"])
+
+    def test_it_still_advances_the_cursor(self):
+        """--json changes the FORMAT, not the semantics. A consumer switching
+        to it must not silently stop consuming."""
+        self.say("one")
+        self.read_json("bob")
+        self.assertEqual(
+            self.server.get_membership("room", "bob")["seen_seq"], 1)
+
+    def test_peek_still_does_not(self):
+        self.say("one")
+        self.read_json("bob", peek=True)
+        self.assertEqual(
+            self.server.get_membership("room", "bob")["seen_seq"], 0)
+
+    def test_an_empty_room_is_an_empty_list_not_prose(self):
+        """'nothing new in room' is not JSON, and a consumer that has to
+        special-case it is back to parsing prose."""
+        self.assertEqual(self.read_json("bob"), [])
+
+
 class DispatchTest(ServerTest):
     """`pending` reachable as a command. The waker shells out to it, so a verb
     wired into argparse but not into dispatch would leave every agent deciding
     it was never addressed — silently, and forever."""
+
+    def test_read_json_is_reachable_as_a_flag(self):
+        self.say("hi")
+        argv = sys.argv
+        sys.argv = ["llm_chat", "read", "room", "--as", "bob", "--json"]
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                self.assertEqual(cli.main(), 0)
+        finally:
+            sys.argv = argv
+        self.assertEqual(json.loads(out.getvalue())[0]["from"], "alice")
 
     def test_the_verb_reaches_do_pending(self):
         self.say("for bob", audience="bob")

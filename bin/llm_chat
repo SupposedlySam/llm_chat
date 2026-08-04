@@ -861,7 +861,8 @@ def do_say(server, name, identity, text, audience=None):
         print(f"  ({cap - seq} messages left before {name} closes)")
 
 
-def do_read(server, name, identity, peek=False, all_messages=False):
+def do_read(server, name, identity, peek=False, all_messages=False,
+            as_json=False):
     # Claiming the messages and advancing the cursor is ONE decision and has to
     # be atomic against the other deliverer; rendering them is not, and happens
     # after the lock is dropped.
@@ -895,6 +896,26 @@ def do_read(server, name, identity, peek=False, all_messages=False):
     if not all_messages:
         waiting = [m for m in waiting if m["from_identity"] != identity]
     waiting = sorted(waiting, key=lambda m: m["seq"])
+
+    if as_json:
+        # ONE RECORD PER MESSAGE, because the rendered transcript is not a
+        # parseable format and pretending otherwise silently corrupts content.
+        #
+        # A consumer splitting the rendering on "^[name]" reads any body line
+        # starting with a bracket as a new speaker — a shell test, a TOML
+        # table, a JSON array, an [INFO] log line pasted as evidence. Reported
+        # against triggers/learnings-digest with a real reproduction: half of
+        # somebody's own learning came back to them under a phantom name, so
+        # the own-post filter passed it and the window became a mirror. A
+        # learnings room is exactly where bracketed lines live.
+        #
+        # The parser was re-deriving, out of formatted text, a fact the sender
+        # already knew. This hands over the fact.
+        print(json.dumps([{"seq": m["seq"], "from": m["from_identity"],
+                           "text": m["text"], "audience": m.get("audience"),
+                           "mine": m["from_identity"] == identity}
+                          for m in waiting]))
+        return waiting
 
     if not waiting:
         print(f"nothing new in {name}")
@@ -1025,6 +1046,32 @@ def wiring_fingerprint() -> str:
     return h.hexdigest()[:16]
 
 
+def checkout_dirty(root=None):
+    """Does THIS checkout have uncommitted changes? None when git cannot say.
+
+    The drift notice used to prescribe "re-install from the checkout" without
+    asking what state the checkout was in. Reported by an agent that got the
+    notice twice in minutes, checked, and found the source HEAD had not moved
+    at all — the fingerprint was being shifted by eight uncommitted files, one
+    of them the wake hook itself. They declined the fix, correctly: re-installing
+    would have wired a live session to a half-finished hook, and the wake hook
+    is what delivers the message telling you it broke.
+
+    Three instances of one shape in a day, per their report: the thing you
+    RECORD and the thing you ACT ON come from different places, and nothing
+    checks they agree. This is the two-line version of checking.
+    """
+    root = root or ROOT
+    try:
+        done = subprocess.run(["git", "-C", root, "status", "--porcelain"],
+                              capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    if done.returncode != 0:
+        return None      # not a checkout, or no git — an unknown, not a "no"
+    return bool(done.stdout.strip())
+
+
 def installed_fingerprint(project):
     """What this repo recorded when it was last installed, if anything."""
     try:
@@ -1049,6 +1096,15 @@ def host() -> str:
         return "cli"
     return "vscode-terminal" if os.environ.get("TERM_PROGRAM") == "vscode" else "cli"
 
+
+# What to do when SessionStart has NEVER been observed. Deliberately does not
+# offer `llm_chat reload`: it refuses in precisely this state, by design.
+FIRST_RELOAD_ADVICE = {
+    "vscode-extension": "ask your human to run `Developer: Reload Window` "
+                        "(Cmd+Shift+P) once",
+    "vscode-terminal":  "restart the `claude` session in this terminal",
+    "cli":              "restart the `claude` session",
+}
 
 RELOAD_ADVICE = {
     "vscode-extension": "VSCode: run `Developer: Reload Window` (Cmd+Shift+P), "
@@ -1294,7 +1350,18 @@ def do_doctor(server):
               "hook that\n  fired before probing shipped also reads this way until "
               "it next runs.\n")
         print(f"  this session is: {host()}")
-        print(f"  fix: {RELOAD_ADVICE[host()]}")
+        # NOT `llm_chat reload` here, and that was a real contradiction:
+        # reload refuses without an observed SessionStart mark, which is
+        # exactly the state being reported. On a FIRST setup no such mark can
+        # exist — hooks load when a session STARTS, and this session started
+        # before they were written — so naming reload as the fix pointed at the
+        # one command guaranteed to refuse. Reported by an agent that hit the
+        # loop on its first setup and asked rather than passing --i-know on a
+        # guess. The gate is right; the advice was wrong.
+        print(f"  fix: {FIRST_RELOAD_ADVICE[host()]}")
+        print("       (`llm_chat reload` will REFUSE while this says NO "
+              "RECORD OF FIRING —\n        it needs an observed mark, and "
+              "only a real session start can create one)")
         print("\nNothing is lost meanwhile — `llm_chat read <channel>` never "
               "depends on a hook.")
     elif not missing and not no_sessionstart:
@@ -1304,6 +1371,12 @@ def do_doctor(server):
     stamp = installed_fingerprint(project)
     current = wiring_fingerprint()
     if stamp and stamp != current:
+        if checkout_dirty():
+            print("\nNOTE: that checkout has UNCOMMITTED changes. Re-installing "
+                  "would wire you to\n  them, not to a commit anybody blessed — "
+                  "including the wake hook, which is\n  what delivers the "
+                  "message telling you it broke. Being one fingerprint behind "
+                  "on\n  a committed hook is usually the safer side.")
         print(f"\nSTALE: installed from hook scripts {stamp}, checkout now has "
               f"{current}.\nA hook's script changed since this repo was wired, "
               f"which no reading of\nsettings.json can see — the command line is "
@@ -1555,6 +1628,10 @@ def main() -> int:
     p.add_argument("--as", dest="identity")
 
     p = sub.add_parser("read", help="pull anything waiting for you")
+    p.add_argument("--json", dest="as_json", action="store_true",
+                   help="one record per message, for programs. The rendered "
+                        "transcript is NOT a parseable format: a body line "
+                        "starting with a bracket reads as a new speaker")
     p.add_argument("channel")
     p.add_argument("--as", dest="identity")
     p.add_argument("--peek", action="store_true", help="do not advance your cursor")
@@ -1662,7 +1739,8 @@ def main() -> int:
         do_say(server, args.channel, identity, args.text,
                audience_for(args.to, args.to_all, args.to_none))
     elif args.cmd == "read":
-        do_read(server, args.channel, identity, args.peek, args.all_messages)
+        do_read(server, args.channel, identity, args.peek, args.all_messages,
+                args.as_json)
     elif args.cmd == "leave":
         do_leave(server, args.channel, identity)
     return 0

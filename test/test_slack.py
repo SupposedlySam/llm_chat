@@ -358,7 +358,10 @@ class CliSeamTest(unittest.TestCase):
         self.mod.subprocess = Fake
 
     def test_it_reads_through_the_cli_as_the_human(self):
-        self.stub("[builder] a question\n[reviewer] another")
+        self.stub('[{"seq": 1, "from": "builder", "text": "a question", '
+                  '"audience": null, "mine": false}, '
+                  '{"seq": 2, "from": "reviewer", "text": "another", '
+                  '"audience": null, "mine": false}]')
         lines = self.mod.waiting_for_human("human", "me")
         self.assertEqual(len(lines), 2)
         argv = self.calls[0]

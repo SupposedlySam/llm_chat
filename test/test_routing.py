@@ -158,32 +158,54 @@ class SenderParseTest(unittest.TestCase):
         bridge.subprocess.run = lambda *a, **kw: done
         return bridge.waiting_for_human("room", "me")
 
-    def test_it_splits_sender_from_text(self):
-        self.assertEqual(self.feed("[builder] ship it?"),
+    @staticmethod
+    def records(*items):
+        return json.dumps([{"seq": i + 1, "from": who, "text": text,
+                            "audience": None, "mine": False}
+                           for i, (who, text) in enumerate(items)])
+
+    def test_it_asks_for_json(self):
+        """The rendering is not a parseable format, and the sender here is the
+        KEY the thread map is written under — a phantom name routes the human's
+        reply to nobody."""
+        seen = {}
+
+        class Done:
+            stdout, returncode, stderr = "[]", 0, ""
+
+        bridge.subprocess.run = lambda argv, **kw: (
+            seen.setdefault("argv", argv), Done())[1]
+        bridge.waiting_for_human("room", "me")
+        self.assertIn("--json", seen["argv"])
+
+    def test_it_carries_sender_and_text(self):
+        self.assertEqual(self.feed(self.records(("builder", "ship it?"))),
                          [("builder", "ship it?")])
 
-    def test_it_survives_the_audience_arrow(self):
-        """Lines now read '[alice → you] ...'. Taking the whole bracket as the
-        name would map threads to an identity that does not exist."""
-        self.assertEqual(self.feed("[builder → you] ship it?"),
-                         [("builder", "ship it?")])
+    def test_a_bracketed_line_in_a_body_does_NOT_become_a_second_relay(self):
+        """The defect this replaced: an [INFO] log line pasted as evidence
+        became its own Slack post, attributed to a sender that does not exist,
+        and written into the thread map under that phantom."""
+        body = "the log said\n[INFO] starting up\nso it ran"
+        self.assertEqual(self.feed(self.records(("builder", body))),
+                         [("builder", body)])
 
-    def test_an_unparseable_line_is_relayed_with_no_sender(self):
-        """Better an unattributed relay than a dropped one — the human still
-        needs to see it, they just cannot thread-reply to it."""
-        self.assertEqual(self.feed("bare line"), [(None, "bare line")])
+    def test_a_multi_line_message_is_ONE_relay(self):
+        """Otherwise a human gets one notification per paragraph."""
+        body = "one\n\ntwo"
+        self.assertEqual(len(self.feed(self.records(("a", body)))), 1)
 
-    def test_nothing_new_is_nothing(self):
-        self.assertEqual(self.feed("nothing new in room"), [])
+    def test_nothing_waiting_is_nothing(self):
+        self.assertEqual(self.feed("[]"), [])
 
     def test_blank_output_is_nothing(self):
         self.assertEqual(self.feed(""), [])
 
-    def test_blank_lines_between_messages_are_dropped(self):
-        """A multi-line message renders with blank lines in it; relaying those
-        as separate Slack posts would be one notification per paragraph."""
-        self.assertEqual(self.feed("[a] one\n\n[b] two"),
-                         [("a", "one"), ("b", "two")])
+    def test_unparseable_output_is_nothing_rather_than_a_crash(self):
+        self.assertEqual(self.feed("{not json"), [])
+
+    def test_an_empty_message_is_not_relayed(self):
+        self.assertEqual(self.feed(self.records(("a", "   "))), [])
 
     def test_a_crash_is_nothing_rather_than_an_exception(self):
         def explode(*a, **kw):

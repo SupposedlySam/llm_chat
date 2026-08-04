@@ -25,7 +25,6 @@ mirror, and this is here to be a window.
 import argparse
 import json
 import os
-import re
 import subprocess
 import sys
 
@@ -42,32 +41,36 @@ def calling_repo(env=None):
     return env.get("GAME_LOOP_REPO") or os.getcwd()
 
 
-SPEAKER = re.compile(r"^\[([^\]]+)\]\s?(.*)$")
+def split_messages(payload):
+    """(speaker, body) pairs, taken from the store rather than inferred.
 
+    THIS USED TO PARSE THE RENDERED TRANSCRIPT and it was wrong in a way that
+    defeated the one guarantee below. Any body line starting with a bracket read
+    as a new speaker — a shell test, a TOML table, a JSON array, an [INFO] log
+    line pasted as evidence. Reported with a reproduction: half of somebody's
+    own learning came back to them under a phantom name, and because the
+    own-post filter is identity-based, a phantom name PASSES it. The window
+    became a mirror, silently, and the more technical the learning the likelier
+    it was to happen.
 
-def split_messages(transcript):
-    """Group the transcript into (speaker, body) pairs.
-
-    Messages are multi-line — a learning worth reading always is — so slicing the
-    LINES would hand back a message cut in half and attribute its tail to
-    whoever spoke next. Splitting on the speaker prefix keeps a message whole.
+    A rendering is not a parseable format. `read --json` hands over the fact the
+    sender already knew instead of re-deriving it from formatted text.
     """
-    messages = []
-    for line in transcript.splitlines():
-        match = SPEAKER.match(line)
-        if match:
-            messages.append((match.group(1), [match.group(2)]))
-        elif messages:
-            messages[-1][1].append(line)
-    return [(who, "\n".join(body).strip()) for who, body in messages]
+    try:
+        records = json.loads(payload or "[]")
+    except ValueError:
+        return []
+    return [(r.get("from") or "?", (r.get("text") or "").strip())
+            for r in records if isinstance(r, dict)]
 
 
-def from_others(messages):
-    """Drop my own. The CLI marks them '(you)' when --all is in play; that marker
-    is the only signal available here, since this reads a rendered transcript
-    rather than the store."""
-    return [(who, body) for who, body in messages
-            if "(you)" not in who and body]
+def from_others(messages, records):
+    """Drop my own, by the flag the store set rather than by a marker in the
+    text. An agent whose message merely CONTAINS '(you)' used to be treated as
+    itself."""
+    mine = {i for i, r in enumerate(records) if r.get("mine")}
+    return [pair for i, pair in enumerate(messages)
+            if i not in mine and pair[1]]
 
 
 def render(messages, room, limit):
@@ -85,7 +88,8 @@ def render(messages, room, limit):
 
 def fetch(cli, room, identity, repo):
     done = subprocess.run(
-        [sys.executable, cli, "read", room, "--as", identity, "--all", "--peek"],
+        [sys.executable, cli, "read", room, "--as", identity, "--all",
+         "--peek", "--json"],
         cwd=repo, capture_output=True, text=True, timeout=20)
     if done.returncode != 0:
         return None, (done.stderr or done.stdout or "").strip()
@@ -112,7 +116,14 @@ def main(argv=None):
         # from a room where nobody has learned anything.
         print("could NOT read #%s: %s" % (args.room, problem))
         return 1
-    print(render(from_others(split_messages(transcript)), args.room, args.limit))
+    try:
+        records = [r for r in json.loads(transcript or "[]")
+                   if isinstance(r, dict)]
+    except ValueError:
+        print("could NOT parse #%s" % args.room)
+        return 1
+    pairs = from_others(split_messages(transcript), records)
+    print(render(pairs, args.room, args.limit))
     return 0
 
 

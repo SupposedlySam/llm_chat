@@ -213,30 +213,68 @@ class BroadcastMainTest(unittest.TestCase):
         self.assertEqual(self.run.calls, [])
 
 
+def records(*items):
+    """What `read --json` emits."""
+    return json.dumps([{"seq": i + 1, "from": who, "text": text,
+                        "audience": None, "mine": mine}
+                       for i, (who, text, mine) in enumerate(items)])
+
+
 class SplitTest(unittest.TestCase):
-    """Grouping a rendered transcript back into messages."""
+    """Message boundaries come from the STORE, never from the rendering."""
 
     def test_keeps_a_multi_line_message_whole(self):
-        """Slicing LINES would hand back half a message and attribute its tail
-        to whoever spoke next. Every learning worth reading is multi-line."""
-        text = "[a] one\ncontinued\n\nstill a\n[b] two"
-        self.assertEqual(digest.split_messages(text),
+        payload = records(("a", "one\ncontinued\n\nstill a", False),
+                          ("b", "two", False))
+        self.assertEqual(digest.split_messages(payload),
                          [("a", "one\ncontinued\n\nstill a"), ("b", "two")])
 
-    def test_ignores_a_preamble_before_the_first_speaker(self):
-        self.assertEqual(digest.split_messages("header\n[a] one"),
-                         [("a", "one")])
+    def test_a_bracketed_line_inside_a_body_is_NOT_a_new_speaker(self):
+        """THE REPORTED DEFECT, reproduced. The old parser split on any line
+        starting with '[', so a shell test inside a learning became a phantom
+        speaker — and because the own-post filter is identity-based, a phantom
+        name PASSES it and half your own learning comes back to you as somebody
+        else's. Reported with this exact line."""
+        shell = '[ "$(git -C "$SRC" rev-parse --show-toplevel)" = "$SRC" ]'
+        body = "stamp the content:\n%s\nnot the ref" % shell
+        parsed = digest.split_messages(records(("me", body, True)))
+        self.assertEqual(len(parsed), 1, "one message, not two")
+        self.assertEqual(parsed[0], ("me", body))
+
+    def test_the_other_bracket_shapes_that_would_have_split(self):
+        """A learnings room is exactly where these live."""
+        for line in ("[INFO] starting up", "[owner] said otherwise",
+                     "[1] first item", "[tool.poetry]", '["a", "b"]'):
+            with self.subTest(line=line):
+                body = "before\n%s\nafter" % line
+                self.assertEqual(len(digest.split_messages(
+                    records(("me", body, False)))), 1)
 
     def test_empty_transcript(self):
         self.assertEqual(digest.split_messages(""), [])
 
+    def test_unparseable_payload_is_no_messages_rather_than_a_crash(self):
+        self.assertEqual(digest.split_messages("{not json"), [])
+
     def test_drops_my_own_messages(self):
         """A retro that hands you back your own learnings is a mirror."""
-        messages = digest.split_messages("[me (you)] mine\n[them] theirs")
-        self.assertEqual(digest.from_others(messages), [("them", "theirs")])
+        payload = records(("me", "mine", True), ("them", "theirs", False))
+        parsed = digest.split_messages(payload)
+        self.assertEqual(digest.from_others(parsed, json.loads(payload)),
+                         [("them", "theirs")])
+
+    def test_it_uses_the_stores_flag_not_a_marker_in_the_text(self):
+        """An agent whose message merely CONTAINS '(you)' was treated as
+        itself by the old marker-matching filter."""
+        payload = records(("them", "the docs say (you) here", False))
+        parsed = digest.split_messages(payload)
+        self.assertEqual(len(digest.from_others(parsed, json.loads(payload))), 1)
 
     def test_drops_a_speaker_with_an_empty_body(self):
-        self.assertEqual(digest.from_others([("a", "")]), [])
+        payload = records(("a", "", False))
+        self.assertEqual(
+            digest.from_others(digest.split_messages(payload),
+                               json.loads(payload)), [])
 
 
 class RenderTest(unittest.TestCase):
@@ -272,7 +310,8 @@ class DigestMainTest(unittest.TestCase):
         return code, out.getvalue()
 
     def test_reports_other_agents_learnings(self):
-        digest.subprocess.run = FakeRun(stdout="[wcs] capture a real payload")
+        digest.subprocess.run = FakeRun(
+            stdout=records(("wcs", "capture a real payload", False)))
         code, out = self.go(["--as", "owner"])
         self.assertEqual(code, 0)
         self.assertIn("capture a real payload", out)
@@ -282,11 +321,12 @@ class DigestMainTest(unittest.TestCase):
         """The PostToolUse hook already consumes this room and moves the cursor.
         Two readers, one cursor, and the quiet one loses: an unread-only read
         would report 'nothing new' when it means 'somebody else took it'."""
-        run = FakeRun(stdout="[a] x")
+        run = FakeRun(stdout=records(("a", "x", False)))
         digest.subprocess.run = run
         self.go(["--as", "owner"])
         self.assertIn("--peek", run.argv)
         self.assertIn("--all", run.argv)
+        self.assertIn("--json", run.argv)
 
     def test_a_read_failure_is_loud_and_non_zero(self):
         digest.subprocess.run = FakeRun(returncode=1, stderr="no such channel")
@@ -295,6 +335,14 @@ class DigestMainTest(unittest.TestCase):
         self.assertIn("could NOT read", out)
         self.assertIn("no such channel", out)
 
+    def test_unparseable_output_is_reported_rather_than_read_as_empty(self):
+        """'no learnings' and 'I could not read the answer' are different
+        facts, and only one of them means nobody has learned anything."""
+        digest.subprocess.run = FakeRun(stdout="{not json")
+        code, out = self.go(["--as", "owner"])
+        self.assertEqual(code, 1)
+        self.assertIn("could NOT parse", out)
+
     def test_a_failure_falls_back_to_stdout_when_stderr_is_empty(self):
         digest.subprocess.run = FakeRun(returncode=1, stdout="closed")
         code, out = self.go(["--as", "owner"])
@@ -302,13 +350,13 @@ class DigestMainTest(unittest.TestCase):
         self.assertIn("closed", out)
 
     def test_an_empty_room_is_not_an_error(self):
-        digest.subprocess.run = FakeRun(stdout="nothing new in learnings")
+        digest.subprocess.run = FakeRun(stdout="[]")
         code, out = self.go(["--as", "owner"])
         self.assertEqual(code, 0)
         self.assertIn("no learnings", out)
 
     def test_honours_the_limit_and_the_room(self):
-        run = FakeRun(stdout="\n".join("[a] %d" % n for n in range(6)))
+        run = FakeRun(stdout=records(*[("a", str(n), False) for n in range(6)]))
         digest.subprocess.run = run
         code, out = self.go(["--as", "owner", "--room", "elsewhere",
                              "--limit", "2"])
@@ -319,7 +367,7 @@ class DigestMainTest(unittest.TestCase):
         """game_loop writes the payload to this process's stdin. Exiting without
         reading it can hand the writer an EPIPE on a large payload, and the
         trigger would be reported as failing for a reason nothing here explains."""
-        digest.subprocess.run = FakeRun(stdout="[a] x")
+        digest.subprocess.run = FakeRun(stdout=records(("a", "x", False)))
         sys.stdin = io.StringIO("x" * 100000)
         with redirect_stdout(io.StringIO()):
             digest.main(["--as", "owner"])

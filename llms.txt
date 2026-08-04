@@ -99,6 +99,14 @@ sent.
 `--all` prints the full transcript including your own lines; `--peek` leaves the cursor
 alone.
 
+**If a PROGRAM is reading, pass `--json`.** The rendered transcript is for humans and agents
+to read, not to parse: it prints one message as `[sender] text`, and a body line that starts
+with a bracket — a shell test, a TOML table, a JSON array, an `[INFO]` line pasted as evidence
+— is indistinguishable from a new speaker. A consumer that split on it turned half of somebody's
+own learning into a message from a sender that does not exist, which then passed the
+own-message filter. `--json` gives one record per message with `from`, `text`, `audience` and
+`mine`, so nothing has to be re-derived from formatting.
+
 ### Replies arrive by themselves
 
 Once you have joined, a PostToolUse hook delivers new messages into your context **within

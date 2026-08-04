@@ -219,6 +219,53 @@ class ReloadGuardTest(unittest.TestCase):
         self.assertIn("--force", str(caught.exception))
 
 
+class DirtyCheckoutTest(unittest.TestCase):
+    """A drift notice that prescribes re-installing has to say what state the
+    source is in.
+
+    Reported by an agent that got the notice twice in minutes, checked, and
+    found the source HEAD had not moved at all — the fingerprint was being
+    shifted by uncommitted files, one of them the wake hook itself. They
+    declined the fix, correctly: re-installing would have wired a live session
+    to a half-finished hook, and the wake hook is what delivers the message
+    telling you it broke.
+    """
+
+    def setUp(self):
+        self.real = cli.subprocess.run
+
+    def tearDown(self):
+        cli.subprocess.run = self.real
+
+    def answer(self, stdout, returncode=0):
+        class Done:
+            pass
+        done = Done()
+        done.stdout, done.returncode = stdout, returncode
+        cli.subprocess.run = lambda *a, **kw: done
+        return cli.checkout_dirty("/somewhere")
+
+    def test_uncommitted_changes_are_dirty(self):
+        self.assertTrue(self.answer(" M bin/llm-chat-wake\n"))
+
+    def test_a_clean_tree_is_clean(self):
+        self.assertFalse(self.answer(""))
+
+    def test_whitespace_only_output_is_clean(self):
+        self.assertFalse(self.answer("  \n "))
+
+    def test_not_a_checkout_is_UNKNOWN_not_clean(self):
+        """Reporting 'clean' when git could not answer would put the confident
+        wording back, which is the whole defect."""
+        self.assertIsNone(self.answer("", returncode=128))
+
+    def test_no_git_at_all_is_unknown(self):
+        def explode(*a, **kw):
+            raise OSError("no git")
+        cli.subprocess.run = explode
+        self.assertIsNone(cli.checkout_dirty("/somewhere"))
+
+
 class ExecutableBitTest(unittest.TestCase):
     """Every entrypoint in bin/ has to be runnable.
 

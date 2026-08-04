@@ -154,6 +154,20 @@ def upgrade_notice(session_id) -> str:
         open(marker, "w").close()
     except OSError:
         return ""   # cannot record it, so do not risk repeating it every call
+    # Whether the source is CLEAN, asked here rather than assumed. Duplicating
+    # this one git command is fine where duplicating the fingerprint hash was
+    # not: a hash is an algorithm with a convention that can drift out of step,
+    # this is a question with exactly one answer and no convention to disagree
+    # about.
+    dirty = None
+    try:
+        done = subprocess.run(
+            ["git", "-C", ROOT, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=10)
+        dirty = bool(done.stdout.strip()) if done.returncode == 0 else None
+    except Exception:
+        pass
+
     lines = ["llm_chat: this repo is running an OLDER wiring than the checkout "
              "it points at."]
     if gap:
@@ -164,6 +178,12 @@ def upgrade_notice(session_id) -> str:
                "is idle." if "llm-chat-wake" in gap else "")
         )
     if drift:
+        if dirty:
+            lines.append(
+                "  NOTE: that checkout has UNCOMMITTED changes — re-installing "
+                "wires you to them,\n  not to a commit anybody blessed. One "
+                "fingerprint behind on a committed hook is\n  usually the "
+                "safer side of this.")
         lines.append(f"  hook scripts changed: wired from {drift[0]}, checkout "
                      f"now has {drift[1]}.\n  The command line is identical, so "
                      "nothing in settings.json shows this.")

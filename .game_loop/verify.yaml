@@ -40,24 +40,26 @@
 # never read as a claim about correctness.
 #
 # The suite REPLACES the old py_compile gates rather than joining them: it
-# loads all three scripts, so a syntax error fails it too, and it additionally
+# loads every script in bin/, so a syntax error fails it too, and it additionally
 # fails when a behaviour breaks. A syntax gate that a stronger check subsumes is
 # just a second thing to keep passing.
 #
-# Deliberately three specific globs and not a catch-all "*". verify runs each
-# stale pattern independently, so a catch-all makes every commit pay for the
-# whole suite once per changed pattern — reported as game_loop#37, where two
-# rules took a repo from seconds to minutes. This suite is ~40ms, so the
-# repetition is affordable today; it would not stay affordable by accident.
-"bin/llm_chat":
-  - "python3 test/run.py --min 100"
-  - "python3 test/mutate.py"
-
-"bin/llm-chat-deliver":
-  - "python3 test/run.py --min 100"
-  - "python3 test/mutate.py"
-
-"bin/llm-chat-wake":
+# Still not a catch-all "*". verify runs each stale pattern independently, so a
+# single "*" would make every commit pay for the whole suite once per changed
+# pattern — reported as game_loop#37, where two rules took a repo from seconds
+# to minutes. Directory-scoped globs give the completeness without that cost.
+#
+# ONE rule for all of bin/, not one per script. It was three named files, and
+# bin/llm-chat-slack — added later — matched none of them, so the Slack bridge
+# was UNCHECKED from the day it was written while every commit reported clean.
+# That is the same defect already fixed twice in the test tooling this rule
+# invokes: a hand-written list of files is complete today and complete BY
+# ACCIDENT. A glob has no next file to forget.
+#
+# Cheaper too, not more expensive: verify runs each stale PATTERN once, so
+# collapsing three patterns into one means a commit touching two scripts pays
+# for the suite once instead of twice.
+"bin/**":
   - "python3 test/run.py --min 100"
   - "python3 test/mutate.py"
 

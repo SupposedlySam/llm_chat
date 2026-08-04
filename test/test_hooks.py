@@ -235,6 +235,95 @@ class DeliverTest(HookTestCase):
         self.assertEqual(out, "")
 
 
+class DriftNoticeTest(HookTestCase):
+    """What the notice TELLS you to do, given what the source actually is.
+
+    The detector was right and the remedy was not. Reported by an agent that
+    got this twice in minutes: the source HEAD had not moved, the fingerprint
+    was being shifted by uncommitted files — one of them the wake hook — and
+    'fix it with install.sh' would have wired a live session to a half-finished
+    hook. The wake hook is what delivers the message telling you it broke.
+    """
+    script = "llm-chat-deliver"
+
+    def arrange(self, dirty):
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "installed.json"), "w") as f:
+            json.dump({"fingerprint": "old"}, f)
+
+        class Routed:
+            """Answers by ARGV, because this path makes two different calls —
+            `fingerprint` and `git status` — and a positional stub would hand
+            the git answer to the fingerprint call."""
+
+            def __init__(self, dirty):
+                self.dirty = dirty
+
+            def __call__(self, argv, **kwargs):
+                status = "status" in argv
+                text = ((" M bin/llm-chat-wake\n" if self.dirty else "")
+                        if status else "new")
+
+                class Result:
+                    stdout = text
+                    stderr = ""
+                    returncode = 0
+                return Result()
+
+        # The ATTRIBUTE on the module under test, never mod.subprocess.run —
+        # that IS the real shared module, and assigning to it swaps
+        # subprocess.run process-wide for every test that follows. This repo
+        # has paid for that once; I just re-paid for it writing this test, and
+        # the eight shell-test errors had one cause again.
+        fake = FakeSubprocess()
+        fake.run = Routed(dirty)
+        self.mod.subprocess = fake
+        return self.mod.upgrade_notice("session-1")
+
+    def test_a_dirty_source_is_named_in_the_notice(self):
+        notice = self.arrange(dirty=True)
+        self.assertIn("UNCOMMITTED", notice)
+        self.assertIn("blessed", notice)
+
+    def test_a_clean_source_says_nothing_extra(self):
+        """Paired with the test above: a note that always fires teaches
+        nothing, and the usual case is a source somebody committed."""
+        notice = self.arrange(dirty=False)
+        self.assertIn("OLDER wiring", notice)
+        self.assertNotIn("UNCOMMITTED", notice)
+
+    def test_git_being_unavailable_does_not_break_the_notice(self):
+        """The notice is the important part; knowing the source's state is a
+        bonus. An exception here would swallow a real drift warning."""
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "installed.json"), "w") as f:
+            json.dump({"fingerprint": "old"}, f)
+
+        class Exploding:
+            def __call__(self, argv, **kwargs):
+                if "status" in argv:
+                    raise OSError("no git")
+
+                class Result:
+                    stdout, stderr, returncode = "new", "", 0
+                return Result()
+
+        fake = FakeSubprocess()
+        fake.run = Exploding()
+        self.mod.subprocess = fake
+        notice = self.mod.upgrade_notice("session-1")
+        self.assertIn("hook scripts changed", notice)
+        self.assertNotIn("UNCOMMITTED", notice)
+
+    def test_the_drift_itself_is_still_reported_either_way(self):
+        for dirty in (True, False):
+            self.assertIn("hook scripts changed", self.arrange(dirty))
+            os.remove(os.path.join(self.project, ".llm_chat",
+                                   "wiring.session-1"))
+
+
 class WakeTest(HookTestCase):
     script = "llm-chat-wake"
 
