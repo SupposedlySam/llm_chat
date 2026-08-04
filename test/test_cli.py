@@ -366,6 +366,34 @@ class DoctorTest(unittest.TestCase):
             json.dump({"fingerprint": "0000000000000000"}, f)
         self.assertIn("STALE", self.report())
 
+    def joined_with_waker(self, pid):
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "joined.json"), "w") as f:
+            json.dump({"room": {"identity": "me", "server": "http://x"}}, f)
+        with open(os.path.join(d, "wake.pid"), "w") as f:
+            f.write(str(pid))
+        write_settings(self.project,
+                       PostToolUse=["/x/bin/llm-chat-deliver"],
+                       Stop=["/x/bin/llm-chat-wake"],
+                       SessionStart=["/x/bin/llm-chat-wake"])
+        self.mark("post-tool-use")
+        self.mark("stop")
+
+    def test_a_live_waker_is_reported_as_listening(self):
+        self.joined_with_waker(os.getpid())
+        self.assertIn("listening now: yes", self.report())
+
+    def test_a_dead_waker_is_reported_however_green_everything_else_is(self):
+        """The failure this exists for: every other check said 'wiring looks
+        right' while the session was unreachable, because registered and
+        has-fired are both facts about the past."""
+        self.joined_with_waker(999999)
+        text = self.report()
+        self.assertIn("LISTENING NOW: NO", text)
+        self.assertIn("999999 is gone", text)
+        self.assertIn("read", text, "must say the messages are not lost")
+
     def test_a_wired_repo_with_no_stamp_is_told_to_record_one(self):
         write_settings(self.project, PostToolUse=["/x/bin/llm-chat-deliver"],
                        Stop=["/x/bin/llm-chat-wake"],
@@ -377,3 +405,91 @@ class DoctorTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MessageSourceTest(unittest.TestCase):
+    """A payload on a command line is handed to a SHELL first, and that has a
+    failure mode which reports success: backticks are substituted away before
+    this program exists, so the CLI delivers a string that is already wrong."""
+
+    class Args:
+        def __init__(self, text=None, file=None):
+            self.text = text
+            self.file = file
+
+    def test_a_positional_message_is_used(self):
+        self.assertEqual(cli.message_text(self.Args(text="hello")), "hello")
+
+    def test_a_file_is_read_verbatim(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("text with `backticks` and $(substitution)\n")
+            path = f.name
+        try:
+            self.assertEqual(cli.message_text(self.Args(file=path)),
+                             "text with `backticks` and $(substitution)")
+        finally:
+            os.unlink(path)
+
+    def test_stdin_is_accepted_as_a_dash(self):
+        saved = sys.stdin
+        sys.stdin = io.StringIO("from a pipe\n")
+        try:
+            self.assertEqual(cli.message_text(self.Args(file="-")), "from a pipe")
+        finally:
+            sys.stdin = saved
+
+    def test_supplying_both_is_refused_rather_than_silently_preferred(self):
+        """A caller who supplies both has a wrong belief about which was sent,
+        and picking one quietly leaves them holding it."""
+        with self.assertRaises(SystemExit) as caught:
+            cli.message_text(self.Args(text="a", file="b"))
+        self.assertIn("not both", str(caught.exception))
+
+    def test_supplying_neither_names_all_three_forms(self):
+        with self.assertRaises(SystemExit) as caught:
+            cli.message_text(self.Args())
+        message = str(caught.exception)
+        self.assertIn("--file", message)
+        self.assertIn("stdin", message)
+
+    def test_an_unreadable_file_is_reported_not_swallowed(self):
+        with self.assertRaises(SystemExit) as caught:
+            cli.message_text(self.Args(file="/dev/null/nope"))
+        self.assertIn("cannot read", str(caught.exception))
+
+
+class WakerLivenessTest(unittest.TestCase):
+    """Registered and has-fired are facts about the PAST. This agent sat
+    unreachable for two and a half idle hours while every other check was
+    green, because the waker it had armed had died."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project = self.tmp.name
+        os.makedirs(os.path.join(self.project, ".llm_chat"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_pid(self, pid):
+        with open(os.path.join(self.project, ".llm_chat", "wake.pid"), "w") as f:
+            f.write(str(pid))
+
+    def test_no_pidfile_means_nothing_has_been_armed(self):
+        self.assertEqual(cli.waker_alive(self.project), (None, False))
+
+    def test_a_live_pid_reports_listening(self):
+        self.write_pid(os.getpid())
+        pid, alive = cli.waker_alive(self.project)
+        self.assertEqual(pid, os.getpid())
+        self.assertTrue(alive)
+
+    def test_a_dead_pid_reports_not_listening(self):
+        self.write_pid(999999)
+        pid, alive = cli.waker_alive(self.project)
+        self.assertEqual(pid, 999999)
+        self.assertFalse(alive)
+
+    def test_an_unreadable_pidfile_is_not_mistaken_for_a_live_waker(self):
+        self.write_pid("not-a-pid")
+        self.assertEqual(cli.waker_alive(self.project), (None, False))

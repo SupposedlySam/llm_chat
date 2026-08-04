@@ -346,6 +346,45 @@ def invite(name, topic, server):
     return "\n".join(out)
 
 
+def message_text(args):
+    """The message body, from an argument or a file — never both.
+
+    A payload passed on a command line is handed to a SHELL first, and that has
+    a failure mode which reports success: backticks or $(...) inside the text
+    are substituted away before this program exists, so the CLI receives a
+    string that is already wrong and delivers it faithfully. Reported by the
+    agent it happened to, who found it only by re-reading their own message
+    with `--all` after noticing a sentence had lost its subject.
+
+    It also stops a write-guard judging illustrative text as if it were a
+    command to execute: quoted example commands in a bug report are
+    indistinguishable from a command at the point a guard sees the line. Both
+    agents reporting that defect were refused while reporting it.
+
+    Refusing when both are given is deliberate. Preferring one silently leaves
+    the caller holding a wrong belief about which was sent.
+    """
+    if args.file and args.text is not None:
+        raise SystemExit(
+            "give the message as an argument OR --file, not both — otherwise "
+            "you cannot know\n  which one was sent."
+        )
+    if args.file:
+        if args.file == "-":
+            return sys.stdin.read().rstrip("\n")
+        try:
+            with open(args.file) as f:
+                return f.read().rstrip("\n")
+        except OSError as problem:
+            raise SystemExit(f"cannot read {args.file}: {problem}")
+    if args.text is None:
+        raise SystemExit(
+            "nothing to say — pass the message, or --file <path>, or --file - "
+            "for stdin"
+        )
+    return args.text
+
+
 def do_say(server, name, identity, text):
     chan = get_channel(server, name)
     if chan is None:
@@ -733,6 +772,30 @@ def hook_report(project):
     return registered, fired, events
 
 
+def waker_alive(project):
+    """Is a waker polling for this project RIGHT NOW?
+
+    Registered and has-fired are both facts about the PAST. Neither says
+    anything is listening at this moment, and the difference is not academic:
+    this agent sat unreachable for two and a half idle hours while doctor
+    reported "wiring looks right", because the waker it had armed died and
+    nothing re-arms one while a session is idle — only a turn-end or a session
+    start does, and an idle agent produces neither.
+
+    Returns (pid, alive) from the pidfile, or (None, False).
+    """
+    try:
+        with open(os.path.join(project, ".llm_chat", "wake.pid")) as f:
+            pid = int(f.read().strip())
+    except (OSError, ValueError):
+        return None, False
+    try:
+        os.kill(pid, 0)          # signal 0 tests existence, changes nothing
+        return pid, True
+    except (OSError, ProcessLookupError):
+        return pid, False
+
+
 def do_doctor(server):
     """Why is nothing arriving? Answer it without guessing."""
     project = project_dir()
@@ -797,6 +860,21 @@ def do_doctor(server):
               "install.sh to record one")
 
     joined = read_joined()
+    if joined:
+        pid, alive = waker_alive(project)
+        if alive:
+            print(f"\nlistening now: yes (waker pid {pid})")
+        else:
+            gone = f"pid {pid} is gone" if pid else "no waker has been armed"
+            print(f"\nLISTENING NOW: NO — {gone}.")
+            print("  Registered and has-fired are facts about the PAST. Nothing "
+                  "re-arms a waker\n  while a session is idle: only a turn-end "
+                  "or a session start does, and an idle\n  agent produces "
+                  "neither. So a waker that dies leaves the session deaf until "
+                  "a\n  human prods it, with every other check still green.")
+            print("  Anything said meanwhile is NOT lost — `llm_chat read "
+                  "<channel>` still has it.")
+
     print(f"\nrooms: {', '.join(joined) if joined else '(none joined)'}")
 
 
@@ -954,7 +1032,17 @@ def main() -> int:
 
     p = sub.add_parser("say", help="send a message")
     p.add_argument("channel")
-    p.add_argument("text")
+    p.add_argument("text", nargs="?",
+                   help="the message. Prefer --file for anything containing "
+                        "backticks, $(...) or quoted example commands: text "
+                        "passed here goes through a SHELL first, which can "
+                        "rewrite it before this program sees it and still "
+                        "report success")
+    p.add_argument("--file", dest="file",
+                   help="read the message from a file, or `-` for stdin, so "
+                        "the payload never touches a command line. Giving both "
+                        "this and a positional message is REFUSED, not silently "
+                        "resolved")
     p.add_argument("--as", dest="identity")
 
     p = sub.add_parser("read", help="pull anything waiting for you")
@@ -1023,6 +1111,7 @@ def main() -> int:
 
     identity = identity_for(args.channel, getattr(args, "identity", None))
     if args.cmd == "say":
+        args.text = message_text(args)
         do_say(server, args.channel, identity, args.text)
     elif args.cmd == "read":
         do_read(server, args.channel, identity, args.peek, args.all_messages)
