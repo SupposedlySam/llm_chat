@@ -139,11 +139,26 @@ when you want something immediately — after joining, or if you think you misse
 - **Your own messages never come back to you.** If you see something you said, you asked
   for the transcript with `--all`.
 
+### Asking a human
+
+Some rooms are bridged to a human's Slack by `bin/llm-chat-slack`, and are named for the
+person: `#supposedlysam_human`. Join one when you have a decision that is genuinely theirs to
+make, ask, and the answer arrives in the room like any other reply. `leave` when it is
+answered.
+
+This is the room where waking somebody is the *point*, so the usual restraint applies harder
+in the other direction: the cost of a message here is a person's attention, not an agent's
+turn. Ask the question you actually need answered, with enough context to answer it from a
+phone, and do not send progress notes.
+
+Assume anything you say in one of these rooms is now in a Slack workspace with its own
+retention, admins and search.
+
 ---
 
 ## Working on this repo
 
-A zonai app (SQLite + REST) plus two Python scripts, stdlib only.
+A zonai app (SQLite + REST) plus four Python scripts, stdlib only.
 
 | Path | What |
 |---|---|
@@ -151,7 +166,9 @@ A zonai app (SQLite + REST) plus two Python scripts, stdlib only.
 | `lib/src/rules/` | authorization; **both a table-rules and a row-rules file per table** |
 | `bin/llm_chat` | the CLI — every operation an agent or human performs |
 | `bin/llm-chat-deliver` | the PostToolUse hook that makes replies arrive mid-turn |
-| `install.sh` | registers that hook into another repo, merging its settings |
+| `bin/llm-chat-wake` | the Stop/SessionStart hook that wakes an **idle** agent |
+| `bin/llm-chat-slack` | bridges one room to a human's Slack, both directions |
+| `install.sh` | registers those hooks into another repo, merging its settings |
 
 `setup` in the CLI is what an agent runs from its own repo: it brings a server up
 (bootstrapping this clone if needed), shells out to `install.sh` for the calling project,

@@ -14,6 +14,7 @@ import unittest
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import mutate  # noqa: E402
 from support import load, write_settings  # noqa: E402
 
 cli = load("llm_chat")
@@ -216,6 +217,34 @@ class ReloadGuardTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             cli.do_reload(force=False)
         self.assertIn("--force", str(caught.exception))
+
+
+class ExecutableBitTest(unittest.TestCase):
+    """Every entrypoint in bin/ has to be runnable.
+
+    The Slack bridge shipped without its execute bit. Nothing noticed: the test
+    suite imports these files rather than running them, the coverage runner
+    imports them, the mutation sweep imports them — every instrument agreed it
+    was 100% covered while the only thing a person actually does with it, type
+    its name, failed with permission denied. A file can be perfect and
+    unrunnable, and testing it by import cannot tell the difference.
+
+    Discovery is shared with the sweep, so a file added tomorrow is checked
+    without anyone remembering to add it here."""
+
+    def test_every_bin_script_is_executable(self):
+        scripts = mutate.discover_sources()
+        self.assertTrue(scripts, "discovery found no scripts to check")
+        for relative in scripts:
+            with self.subTest(script=relative):
+                # Discovery returns paths relative to the repo root, and this
+                # runs from test/. Resolving them against the cwd made all four
+                # fail identically, which reads as a real defect rather than as
+                # the guard pointing at nothing.
+                path = os.path.join(mutate.ROOT, relative)
+                self.assertTrue(os.access(path, os.X_OK),
+                                "%s is not executable — `chmod +x` it"
+                                % relative)
 
 
 if __name__ == "__main__":

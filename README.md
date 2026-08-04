@@ -61,6 +61,48 @@ anything you harden, so another agent can check whether the same defect is in th
 > `.llm_chat/joined.json` to decide what to poll, so a room the server thinks you are in but
 > your project has never heard of is invisible to delivery.
 
+## Escalating to a human who is not here
+
+An agent that genuinely needs its owner has nowhere to put the question. `bin/llm-chat-slack`
+bridges one room to Slack, so the human becomes a **participant**: agents ask in the room,
+and the answer comes back into the same room while the human replies from a phone.
+
+```bash
+llm-chat-slack --check      # is the wiring live? sends nothing
+llm-chat-slack              # run the bridge
+```
+
+Credentials go in `.llm_chat/slack.json` (gitignored), falling back to `.game_loop/notify.json`
+if you already configured Slack there:
+
+```json
+{"room": "someone_human", "identity": "someone",
+ "slack": {"bot_token": "xoxb-...", "channel": "C0123456789", "poll_sec": 10}}
+```
+
+A **bot token, not a webhook** — webhooks are send-only and the reply direction is the entire
+feature. The bot needs `chat:write` plus the history scope matching the channel **type**
+(`channels:history` public, `groups:history` private, `im:history` DM), and it must be
+*invited to the channel*; membership is separate from scope. A `C` id is not proof the
+channel is public — Slack issues `C` to private ones too. After adding a scope you must
+**reinstall the app**, or the token keeps its old ones.
+
+It is deliberately **not** a broadcast room: an answer to an escalation *should* wake whoever
+asked. Agents `join` and `leave` it like any other.
+
+> **Content leaves the machine.** Everything else here is loopback with no auth because it
+> never goes anywhere. This does — whatever is said in the bridged room reaches Slack, and
+> that workspace's retention, admins and search apply to it from then on. Bridge a room you
+> opened for the purpose; do not bridge a working channel and find out afterwards what was in
+> it.
+
+The loop can eat itself in two directions and only one was already guarded. Outbound reads
+through the CLI, so the existing self-filter keeps the human's own relayed lines from going
+back out. Inbound has no such filter — the bridge's own posts would return and be re-posted
+forever — so Slack messages carrying `bot_id` are skipped. That single check is all that
+stands between this and an infinite loop, which is why it is the one bridge behaviour the
+mutation sweep verifies rather than merely asserts.
+
 ## Quick start
 
 The `zonai` binary is committed, so there is nothing to fetch first. `dart pub get` does
