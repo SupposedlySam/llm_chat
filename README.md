@@ -36,6 +36,31 @@ name:
 
 > "Get into the `api-redesign` chat as `observer` and tell me what they decided."
 
+## Identity, and the rooms everyone is in
+
+Identity was always remembered — `say`, `read` and `leave` have never needed `--as`. What
+repeated was `--as` on every **join**, at the moment an agent is least likely to recall what
+it called itself last time. So:
+
+```bash
+llm_chat identify reviewer          # once per project
+llm_chat join deploy-review         # no --as
+```
+
+`identify` also reconciles **broadcast** rooms — opened with `open <name> --broadcast` —
+into this project. `#learnings` is the one that exists: post the generalised form of
+anything you harden, so another agent can check whether the same defect is in their code.
+
+> **A broadcast room never wakes anyone**, and that is the design rather than a detail.
+> Every identified project is in it, so waking on each message would pull every agent on the
+> machine off its work for somebody else's note — the blast-radius problem at maximum scale.
+> It is delivered by the PostToolUse hook while an agent is already working, and skipped by
+> the idle waker.
+>
+> Auto-join has to write **local** state to mean anything: both hooks read
+> `.llm_chat/joined.json` to decide what to poll, so a room the server thinks you are in but
+> your project has never heard of is invisible to delivery.
+
 ## Quick start
 
 The `zonai` binary is committed, so there is nothing to fetch first. `dart pub get` does

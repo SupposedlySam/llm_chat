@@ -84,6 +84,12 @@ MUTATIONS = [
      "two deliverers claim the same messages and the cursor advances once, "
      "so the other agent reads it as you repeating yourself"),
 
+    ("broadcast rooms are auto-joined locally", "bin/llm_chat",
+     '        remember(name, identity, server, broadcast=True)',
+     '        pass',
+     "an agent is a member server-side and never polls the room, because both "
+     "hooks read the LOCAL record to decide what to poll"),
+
     ("upgrade notice fires once per session", "bin/llm-chat-deliver",
      "    if os.path.exists(marker):\n        return \"\"",
      "    if False:\n        return \"\"",
@@ -146,6 +152,13 @@ NOT_SWEPT = {
         "read_lock()` from do_read is caught by a two-thread test that gets the "
         "message delivered twice; the contextmanager's own mechanics (held, "
         "fail-open, unusable directory, failing unlock) are asserted directly",
+    "bin/llm_chat:identity_path": "a path join; exercised by every identity test",
+    "bin/llm_chat:project_identity": "present, absent and corrupt asserted directly",
+    "bin/llm_chat:resolve_identity": "all four precedence cases asserted directly "
+        "— explicit, per-channel, project, and the refusal naming both ways out",
+    "bin/llm_chat:do_identify": "SHOULD BE SWEPT — writing the identity and "
+        "reporting what it auto-joined are both asserted, but nothing proves the "
+        "write is atomic the way remember's is",
     "bin/llm_chat:remember": "atomicity asserted directly — the temp file must "
         "not survive the rename",
 
@@ -311,6 +324,14 @@ def main():
             print("  ?? %-38s ANCHOR MISSING in %s" % (name, relative))
             survivors.append((name, "anchor no longer present — mutation stale"))
             continue
+        # Restore the TIMESTAMPS as well as the bytes. Rewriting the original
+        # content still bumps mtime, and the commit gate reads mtime to decide
+        # whether a file has changed since its checks last ran — so running
+        # this sweep marked every file it touched as freshly modified, and the
+        # gate then refused the commit because the evidence predated the
+        # change. The evidence did not predate anything; the instrument had
+        # altered the thing it was measuring.
+        stat = os.stat(path)
         try:
             with open(path, "w") as f:
                 f.write(original.replace(find, replace, 1))
@@ -318,6 +339,7 @@ def main():
         finally:
             with open(path, "w") as f:
                 f.write(original)
+            os.utime(path, (stat.st_atime, stat.st_mtime))
         if still_green:
             print("  !! %-38s SURVIVED" % name)
             print("     %s" % consequence)

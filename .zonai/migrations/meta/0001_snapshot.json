@@ -1,0 +1,175 @@
+{
+  "version": "1",
+  "dialect": "sqlite",
+  "id": "22354503-741f-4f52-98a5-b6603129be8e",
+  "prevId": "7c53c668-335a-4188-957c-059511776b1b",
+  "tables": {
+    "channels": {
+      "name": "channels",
+      "columns": {
+        "broadcast": {
+          "name": "broadcast",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "closed": {
+          "name": "closed",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "closed_reason": {
+          "name": "closed_reason",
+          "type": "TEXT",
+          "primaryKey": false,
+          "isNullable": true
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "created_by": {
+          "name": "created_by",
+          "type": "TEXT",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "id": {
+          "name": "id",
+          "type": "TEXT",
+          "primaryKey": true,
+          "isNullable": false
+        },
+        "max_messages": {
+          "name": "max_messages",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "message_count": {
+          "name": "message_count",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "name": {
+          "name": "name",
+          "type": "TEXT",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "topic": {
+          "name": "topic",
+          "type": "TEXT",
+          "primaryKey": false,
+          "isNullable": true
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": true
+        }
+      }
+    },
+    "memberships": {
+      "name": "memberships",
+      "columns": {
+        "channel": {
+          "name": "channel",
+          "type": "TEXT",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "done": {
+          "name": "done",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "id": {
+          "name": "id",
+          "type": "TEXT",
+          "primaryKey": true,
+          "isNullable": false
+        },
+        "identity": {
+          "name": "identity",
+          "type": "TEXT",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "seen_seq": {
+          "name": "seen_seq",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": true
+        }
+      }
+    },
+    "messages": {
+      "name": "messages",
+      "columns": {
+        "channel": {
+          "name": "channel",
+          "type": "TEXT",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "from_identity": {
+          "name": "from_identity",
+          "type": "TEXT",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "id": {
+          "name": "id",
+          "type": "TEXT",
+          "primaryKey": true,
+          "isNullable": false
+        },
+        "seq": {
+          "name": "seq",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "text": {
+          "name": "text",
+          "type": "TEXT",
+          "primaryKey": false,
+          "isNullable": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "INTEGER",
+          "primaryKey": false,
+          "isNullable": true
+        }
+      }
+    }
+  },
+  "indexes": {},
+  "foreignKeys": {}
+}

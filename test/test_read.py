@@ -172,17 +172,20 @@ class ConcurrentDeliveryTest(unittest.TestCase):
         lock = threading.Lock()
 
         def read_once():
-            out = io.StringIO()
-            with redirect_stdout(out):
-                got = cli.do_read("http://x", "room", "me")
+            got = cli.do_read("http://x", "room", "me")
             with lock:
                 delivered.extend(got)
 
-        threads = [threading.Thread(target=read_once) for _ in range(2)]
-        for t in threads:
-            t.start()
-        for t in threads:
-            t.join()
+        # Redirected ONCE around both threads, not inside each: redirect_stdout
+        # swaps sys.stdout globally, so per-thread use races and leaks a line
+        # to the real terminal — which it did, and a suite that prints stray
+        # output is one whose output stops being read.
+        with redirect_stdout(io.StringIO()):
+            threads = [threading.Thread(target=read_once) for _ in range(2)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
 
         self.assertEqual(len(delivered), 1,
                          "the lock must serialise claim-and-advance; delivering "

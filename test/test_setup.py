@@ -335,6 +335,9 @@ class DispatchTest(unittest.TestCase):
                        "get_channel", "remember", "identity_for")}
         for name in self.saved:
             setattr(cli, name, Recorder())
+        # do_join returns the channel row; a stub returning None would not
+        # match that contract, and the dispatch reads `broadcast` off it.
+        cli.do_join = Recorder({"name": "room", "broadcast": 0})
         cli.identity_for = lambda channel, explicit: explicit or "remembered"
         cli.get_channel = lambda server, name: {"topic": "t"}
         self.argv = sys.argv

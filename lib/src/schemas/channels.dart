@@ -20,6 +20,7 @@ final class Channel {
     required this.createdBy,
     required this.closed,
     this.closedReason,
+    required this.broadcast,
     required this.maxMessages,
     required this.messageCount,
     required this.createdAt,
@@ -43,6 +44,22 @@ final class Channel {
   final bool closed;
   final String? closedReason;
 
+  /// A room everyone is in without being invited — announcements, not
+  /// conversation.
+  ///
+  /// Two consequences, and the second is the important one. Any agent that
+  /// identifies itself is reconciled into this room automatically, so a
+  /// learning posted here reaches every project on the machine. And precisely
+  /// because of that reach, a broadcast room NEVER WAKES anyone: it is
+  /// delivered by the PostToolUse hook while an agent is already working, and
+  /// skipped by the idle waker.
+  ///
+  /// Without that second half the feature is an interrupt storm — every
+  /// learning would pull every agent off whatever it was doing, and the cost
+  /// of posting would be paid by people who did not choose to be in the room.
+  /// Reference material must not cost somebody their turn.
+  final bool broadcast;
+
   /// The runaway ceiling. Reached, the room closes and says so rather than
   /// silently continuing to bill for a loop.
   final int maxMessages;
@@ -64,6 +81,7 @@ final class ChannelTable extends Table<Channel> {
       topic = $.text('topic', (s) => s.topic),
       createdBy = $.text('created_by', (s) => s.createdBy),
       closed = $.boolean('closed', (s) => s.closed),
+      broadcast = $.boolean('broadcast', (s) => s.broadcast),
       closedReason = $.text('closed_reason', (s) => s.closedReason),
       maxMessages = $.integer('max_messages', (s) => s.maxMessages),
       messageCount = $.integer('message_count', (s) => s.messageCount),
@@ -77,6 +95,7 @@ final class ChannelTable extends Table<Channel> {
     topic: read(topic),
     createdBy: read(createdBy),
     closed: read(closed),
+    broadcast: read(broadcast),
     closedReason: read(closedReason),
     maxMessages: read(maxMessages),
     messageCount: read(messageCount),
@@ -89,6 +108,7 @@ final class ChannelTable extends Table<Channel> {
   final ColumnType<String?> topic;
   final TextColumn createdBy;
   final ColumnType<bool> closed;
+  final ColumnType<bool> broadcast;
   final ColumnType<String?> closedReason;
   final ColumnType<int> maxMessages;
   final ColumnType<int> messageCount;

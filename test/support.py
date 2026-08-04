@@ -121,6 +121,7 @@ class FakeServer:
     def channel(self, name, **overrides):
         row = {"id": "chan-" + name, "name": name, "topic": None,
                "created_by": "someone", "closed": 0, "closed_reason": None,
+               "broadcast": 0,
                "max_messages": 200, "message_count": 0, "created_at": 0}
         row.update(overrides)
         self.tables.setdefault("channels", []).append(row)

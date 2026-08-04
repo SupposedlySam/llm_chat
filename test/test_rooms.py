@@ -177,3 +177,101 @@ class RoomTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BroadcastTest(RoomTest):
+    """A room everyone is in, which is exactly why it must never wake anyone.
+
+    Auto-join plus the idle waker would mean one note pulls every agent on the
+    machine off its work, and the cost is paid by people who did not choose to
+    be in the room. Delivered while already working; skipped when idle.
+    """
+
+    def test_opening_with_broadcast_marks_the_room(self):
+        self.quiet(cli.do_join, "http://x", "notices", "me", None, 200, False,
+                   True)
+        self.assertEqual(self.fake.get_channel("notices")["broadcast"], 1)
+
+    def test_ordinary_rooms_are_not_broadcast(self):
+        self.quiet(cli.do_join, "http://x", "room", "me", None, 200, False)
+        self.assertEqual(self.fake.get_channel("room")["broadcast"], 0)
+
+    def test_identifying_pulls_in_every_broadcast_room(self):
+        """Server-side membership alone would do nothing — both hooks read the
+        LOCAL record to decide what to poll."""
+        self.fake.channel("notices", broadcast=1, message_count=4)
+        added = cli.reconcile_broadcasts("http://x", "me")
+        self.assertEqual(added, ["notices"])
+        self.assertTrue(cli.read_joined()["notices"]["broadcast"])
+        self.assertIsNotNone(self.fake.get_membership("notices", "me"))
+
+    def test_joining_a_broadcast_room_starts_you_at_the_end(self):
+        """Arriving must not replay every learning ever posted."""
+        self.fake.channel("notices", broadcast=1, message_count=9)
+        cli.reconcile_broadcasts("http://x", "me")
+        self.assertEqual(
+            self.fake.get_membership("notices", "me")["seen_seq"], 9)
+
+    def test_a_closed_broadcast_room_is_not_auto_joined(self):
+        self.fake.channel("notices", broadcast=1, closed=1)
+        self.assertEqual(cli.reconcile_broadcasts("http://x", "me"), [])
+
+    def test_reconciling_twice_does_not_rejoin(self):
+        self.fake.channel("notices", broadcast=1)
+        cli.reconcile_broadcasts("http://x", "me")
+        self.assertEqual(cli.reconcile_broadcasts("http://x", "me"), [])
+
+    def test_ordinary_rooms_are_left_alone_by_reconciliation(self):
+        self.fake.channel("private")
+        self.assertEqual(cli.reconcile_broadcasts("http://x", "me"), [])
+        self.assertNotIn("private", cli.read_joined())
+
+
+class ProjectIdentityTest(RoomTest):
+    """Identity was already remembered per channel — say/read/leave never
+    needed --as. What repeated was --as on every JOIN."""
+
+    def test_an_identified_project_joins_without_naming_itself(self):
+        self.quiet(cli.do_identify, "http://x", "me")
+        self.assertEqual(cli.resolve_identity(None, "brand-new"), "me")
+
+    def test_an_explicit_as_still_wins(self):
+        self.quiet(cli.do_identify, "http://x", "me")
+        self.assertEqual(cli.resolve_identity("someone-else", "room"),
+                         "someone-else")
+
+    def test_a_room_you_already_joined_keeps_its_own_identity(self):
+        """One project holds a different identity per room, which is what the
+        owner-channel convention encourages."""
+        self.quiet(cli.do_identify, "http://x", "me")
+        cli.remember("room", "other-name", "http://x")
+        self.assertEqual(cli.resolve_identity(None, "room"), "other-name")
+
+    def test_with_no_identity_at_all_it_names_both_ways_out(self):
+        with self.assertRaises(SystemExit) as caught:
+            cli.resolve_identity(None, "room")
+        message = str(caught.exception)
+        self.assertIn("--as", message)
+        self.assertIn("identify", message)
+
+    def test_identifying_reports_the_rooms_it_pulled_in(self):
+        """Auto-join is invisible otherwise: an agent would be in a room it
+        was never told about."""
+        self.fake.channel("notices", broadcast=1)
+        _, text = self.quiet(cli.do_identify, "http://x", "me")
+        self.assertIn("auto-joined: notices", text)
+
+    def test_identify_is_reachable_from_the_command_line(self):
+        argv = sys.argv
+        sys.argv = ["llm_chat", "identify", "me"]
+        try:
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(cli.main(), 0)
+        finally:
+            sys.argv = argv
+        self.assertEqual(cli.project_identity(), "me")
+
+    def test_a_bad_identity_is_refused(self):
+        with self.assertRaises(SystemExit):
+            cli.do_identify("http://x", "has space")

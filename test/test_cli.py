@@ -79,10 +79,19 @@ class CallTest(unittest.TestCase):
         self.assertEqual(cli.call("http://x", "GET", "/p"), {})
 
     def test_an_http_error_is_reported_with_its_body(self):
+        # Closed explicitly: HTTPError holds the stream open and warns on gc,
+        # and a suite that prints warnings trains you past its own output.
+        body = io.BytesIO(b"details")
+        error = urllib.error.HTTPError("u", 500, "boom", {}, body)
+
         def raise_http(*a, **kw):
-            raise urllib.error.HTTPError("u", 500, "boom", {}, io.BytesIO(b"details"))
+            raise error
         cli.urllib.request.urlopen = raise_http
-        result = cli.call("http://x", "GET", "/p")
+        try:
+            result = cli.call("http://x", "GET", "/p")
+        finally:
+            error.close()
+            body.close()
         self.assertEqual(result["error"], "HTTP 500")
         self.assertIn("details", result["body"])
 

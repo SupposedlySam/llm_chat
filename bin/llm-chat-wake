@@ -248,6 +248,12 @@ def main() -> int:
 
         blocks = []
         for channel, entry in joined_rooms().items():
+            # A broadcast room reaches every project on the machine, so waking
+            # for it would pull every agent off its work for somebody else's
+            # note. Delivered by the PostToolUse hook while already working;
+            # never a reason to interrupt an idle session.
+            if entry.get("broadcast"):
+                continue
             out = poll(channel, entry)
             if out:
                 blocks.append(f"#{channel} (you are '{entry['identity']}')\n"

@@ -1,0 +1,1 @@
+ALTER TABLE "channels" ADD COLUMN "broadcast" INTEGER NOT NULL DEFAULT 0;

@@ -81,6 +81,35 @@ class WakeLoopTest(unittest.TestCase):
             self.run_main()
         self.assertEqual(clock.slept, 3, "no listen budget: it does not give up")
 
+    def test_a_broadcast_room_never_wakes_the_session(self):
+        """Paired with the test below, which proves the skip is targeted rather
+        than the waker being broken. Measured live too: a broadcast room with an
+        unread message left the waker polling, a normal one exited 2."""
+        with open(os.path.join(self.project, ".llm_chat", "joined.json"), "w") as f:
+            json.dump({"notices": {"identity": "me", "server": "http://x",
+                                   "broadcast": True}}, f)
+        polled = []
+        self.mod.poll = lambda channel, entry: polled.append(channel)
+        self.mod.still_worth_listening = lambda rooms: False
+        self.mod.time = NoSleep()
+        self.assertEqual(self.run_main(), 0)
+        self.assertEqual(polled, [], "a broadcast room must not even be polled")
+
+    def test_an_ordinary_room_alongside_it_still_wakes(self):
+        with open(os.path.join(self.project, ".llm_chat", "joined.json"), "w") as f:
+            json.dump({"notices": {"identity": "me", "server": "http://x",
+                                   "broadcast": True},
+                       "room": {"identity": "me", "server": "http://x"}}, f)
+        self.mod.poll = lambda channel, entry: "[other] wake up"
+        self.mod.time = NoSleep()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            with self.assertRaises(SystemExit) as caught:
+                self.run_main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn("#room", err.getvalue())
+        self.assertNotIn("#notices", err.getvalue())
+
     def test_it_stands_down_once_every_room_has_closed(self):
         """Nothing can arrive any more, so polling forever would be waste."""
         self.mod.poll = lambda channel, entry: None

@@ -85,6 +85,84 @@ def project_dir() -> str:
         probe = parent
 
 
+def identity_path() -> str:
+    return os.path.join(project_dir(), ".llm_chat", "identity.json")
+
+
+def project_identity():
+    """Who this project is, once, rather than once per room.
+
+    Identity was already remembered per CHANNEL — `say`, `read` and `leave`
+    have never needed `--as`. What was repeated was `--as` on every JOIN, which
+    is the moment an agent is least likely to have context about what it called
+    itself last time. A project that has identified itself joins by name.
+    """
+    try:
+        with open(identity_path()) as f:
+            return (json.load(f) or {}).get("identity")
+    except (OSError, ValueError):
+        return None
+
+
+def resolve_identity(explicit, channel=None):
+    """`--as`, else what this channel remembers, else the project identity."""
+    if explicit:
+        return explicit
+    if channel:
+        entry = read_joined().get(channel)
+        if entry:
+            return entry["identity"]
+    known = project_identity()
+    if known:
+        return known
+    raise SystemExit(
+        "no identity — either pass --as <name>, or set one once for this "
+        "project:\n  llm_chat identify <name>"
+    )
+
+
+def do_identify(server, identity):
+    """Record who this project is, and pull in the rooms everyone is in."""
+    if not valid(identity):
+        raise SystemExit("identity must be 1-64 chars of [a-z0-9._-]")
+    path = identity_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump({"identity": identity}, f, indent=2)
+    os.replace(tmp, path)
+    print(f"this project is '{identity}'")
+    print("  join rooms without --as; say/read/leave already did not need it")
+    joined = reconcile_broadcasts(server, identity)
+    if joined:
+        print(f"  auto-joined: {', '.join(joined)}")
+
+
+def reconcile_broadcasts(server, identity):
+    """Join every broadcast room this project is not already in.
+
+    Server-side membership alone would do nothing: BOTH hooks read the LOCAL
+    joined.json to decide what to poll, so a room the server thinks you are in
+    but your project has never heard of is invisible to delivery. Auto-join has
+    to write local state or it is not auto-join.
+    """
+    joined = read_joined()
+    added = []
+    for chan in rows(server, "channels", eq("broadcast", b(True))):
+        name = chan["name"]
+        if chan.get("closed") or name in joined:
+            continue
+        if get_membership(server, name, identity) is None:
+            create(server, "memberships", {
+                "channel": name, "identity": identity,
+                "seen_seq": chan.get("message_count", 0),
+                "done": b(False), "created_at": now_ms(),
+            })
+        remember(name, identity, server, broadcast=True)
+        added.append(name)
+    return added
+
+
 def joined_path() -> str:
     """Where THIS agent remembers who it is in each room.
 
@@ -190,10 +268,13 @@ def read_joined() -> dict:
         return {}
 
 
-def remember(channel, identity, server):
+def remember(channel, identity, server, broadcast=False):
     path = joined_path()
     joined = read_joined()
     joined[channel] = {"identity": identity, "server": server}
+    if broadcast:
+        # Recorded locally so the waker can skip it without a query per poll.
+        joined[channel]["broadcast"] = True
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
@@ -272,7 +353,8 @@ def get_membership(server, channel, identity):
     return found[0] if found else None
 
 
-def do_join(server, name, identity, topic, max_messages, announce):
+def do_join(server, name, identity, topic, max_messages, announce,
+             broadcast=False):
     if not valid(name) or not valid(identity):
         raise SystemExit("channel and identity must be 1-64 chars of [a-z0-9._-]")
 
@@ -290,7 +372,8 @@ def do_join(server, name, identity, topic, max_messages, announce):
     if chan is None:
         chan = create(server, "channels", {
             "name": name, "topic": topic, "created_by": identity,
-            "closed": b(False), "max_messages": max_messages,
+            "closed": b(False), "broadcast": b(broadcast),
+            "max_messages": max_messages,
             "message_count": 0, "created_at": now_ms(),
         })
     elif topic and not chan.get("topic"):
@@ -311,6 +394,10 @@ def do_join(server, name, identity, topic, max_messages, announce):
         # Rejoining after saying you were done is how you come back.
         update(server, "memberships", eq("id", member["id"]), {"done": b(False)})
 
+    if chan.get("broadcast"):
+        print(f"  {name} is a BROADCAST room: everyone who identifies is added, "
+              f"and it never wakes\n  anyone — delivered while working, skipped "
+              f"by the idle waker.")
     members = [m["identity"] for m in rows(server, "memberships", eq("channel", name))]
     print(f"{identity} joined {name} (members: {', '.join(sorted(members))})")
     if announce:
@@ -1037,13 +1124,19 @@ def main() -> int:
                            ("join", "join an existing channel")):
         p = sub.add_parser(name, help=helptext)
         p.add_argument("channel")
-        p.add_argument("--as", dest="identity", required=True)
+        p.add_argument("--as", dest="identity",
+                       help="defaults to this project's identity once you have "
+                            "run `llm_chat identify <name>`")
+        if name == "open":
+            p.add_argument("--broadcast", action="store_true",
+                           help="a room every identified project joins "
+                                "automatically, and which never wakes anyone")
         p.add_argument("--topic")
         p.add_argument("--max-messages", type=int, default=DEFAULT_MAX_MESSAGES)
 
     p = sub.add_parser("setup", help="set THIS repo up and join, in one command")
     p.add_argument("channel")
-    p.add_argument("--as", dest="identity", required=True)
+    p.add_argument("--as", dest="identity")
     p.add_argument("--topic")
     p.add_argument("--max-messages", type=int, default=DEFAULT_MAX_MESSAGES)
     p.add_argument("--in-checkout", dest="in_checkout", action="store_true",
@@ -1088,6 +1181,9 @@ def main() -> int:
     p = sub.add_parser("channels", help="what rooms exist")
     p.add_argument("--all", dest="show_closed", action="store_true",
                    help="include closed rooms, which `join` refuses")
+    p = sub.add_parser("identify", help="set this project's identity, once")
+    p.add_argument("identity")
+
     sub.add_parser("doctor", help="why is nothing arriving?")
     sub.add_parser("fingerprint", help="hash of this checkout's hook scripts")
     p = sub.add_parser("reload", help="reload the VSCode window (registers hooks)")
@@ -1100,14 +1196,22 @@ def main() -> int:
     args = ap.parse_args()
     server = args.server
 
+    if args.cmd == "identify":
+        do_identify(server, args.identity)
+        return 0
     if args.cmd == "setup":
-        do_setup(server, args.channel, args.identity, args.topic,
-                 args.max_messages, args.in_checkout)
+        do_setup(server, args.channel, resolve_identity(args.identity,
+                 args.channel), args.topic, args.max_messages,
+                 args.in_checkout)
         return 0
     if args.cmd in ("open", "join"):
-        do_join(server, args.channel, args.identity, args.topic,
-                args.max_messages, announce=(args.cmd == "open"))
-        remember(args.channel, args.identity, server)
+        identity = resolve_identity(args.identity, args.channel)
+        broadcast = getattr(args, "broadcast", False)
+        chan = do_join(server, args.channel, identity, args.topic,
+                       args.max_messages, announce=(args.cmd == "open"),
+                       broadcast=broadcast)
+        remember(args.channel, identity, server,
+                 broadcast=bool(chan.get("broadcast")))
         return 0
     if args.cmd == "reopen":
         do_reopen(server, args.channel, args.max_messages)
