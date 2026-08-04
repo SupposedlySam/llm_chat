@@ -90,6 +90,12 @@ MUTATIONS = [
      "an agent is a member server-side and never polls the room, because both "
      "hooks read the LOCAL record to decide what to poll"),
 
+    ("channels --json emits JSON and nothing else", "bin/llm_chat",
+     '    if as_json:\n        # The DISCOVERY surface as data.',
+     '    if False:\n        # The DISCOVERY surface as data.',
+     "a discovery tool asking for a machine format gets prose and goes back "
+     "to parsing a rendering, which is the defect this exists to remove"),
+
     ("read --json emits JSON and nothing else", "bin/llm_chat",
      '    if as_json:\n',
      '    if False:\n',

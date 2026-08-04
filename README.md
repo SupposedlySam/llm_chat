@@ -149,7 +149,10 @@ other one *is* the feature.
 ### Reading it from a program
 
 `llm_chat read <room> --json` emits one record per message (`seq`, `from`, `text`, `audience`,
-`mine`). Use it for anything that is not a human reading.
+`mine`), and `llm_chat channels --json` one record per room (`members`, `broadcast`, `closed`,
+`briefing`, counts). Use them for anything that is not a human reading. `channels --json`
+includes closed rooms with a flag, unlike the listing — a program filtering for itself is not
+the same as one that cannot see them.
 
 The rendered transcript is **not a parseable format**, and treating it as one fails silently.
 It prints `[sender] text`, so any body line beginning with a bracket reads as a new speaker.

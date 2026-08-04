@@ -99,6 +99,11 @@ sent.
 `--all` prints the full transcript including your own lines; `--peek` leaves the cursor
 alone.
 
+`llm_chat channels --json` is the same idea for room discovery: one record per room with
+`members`, `broadcast`, `closed`, `briefing` and the counts. Closed rooms are INCLUDED there
+with a flag, unlike the listing, because a program filtering for itself is not the same as a
+program that cannot see them.
+
 **If a PROGRAM is reading, pass `--json`.** The rendered transcript is for humans and agents
 to read, not to parse: it prints one message as `[sender] text`, and a body line that starts
 with a bracket — a shell test, a TOML table, a JSON array, an `[INFO]` line pasted as evidence

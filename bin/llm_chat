@@ -1404,7 +1404,7 @@ def do_doctor(server):
     print(f"\nrooms: {', '.join(joined) if joined else '(none joined)'}")
 
 
-def do_channels(server, show_closed=False):
+def do_channels(server, show_closed=False, as_json=False):
     """The discovery surface — so it must show what can be JOINED.
 
     Closed rooms are hidden by default because `join` refuses them: listing
@@ -1414,6 +1414,35 @@ def do_channels(server, show_closed=False):
     agent who charitably assumed it was mid-development mess. It was.
     """
     chans = rows(server, "channels")
+    members = rows(server, "memberships")
+    if as_json:
+        # The DISCOVERY surface as data. Asked for by an agent whose
+        # room-discovery trigger was parsing the rendering below — which is a
+        # rendering, by the same argument that had just cost this repo a
+        # silently-corrupted digest. Answering "use read --json" would have
+        # been the wrong verb; the gap was that this one had no machine form
+        # at all.
+        #
+        # Everything a tool needs to DECIDE with: whether it can join, who is
+        # in there, what the room does to your attention. Closed rooms are
+        # included with a flag rather than hidden, because a program filtering
+        # for itself is not the same as a program that cannot see them.
+        print(json.dumps([{
+            "name": c["name"],
+            "topic": c.get("topic"),
+            "closed": bool(c.get("closed")),
+            "closed_reason": c.get("closed_reason"),
+            "broadcast": bool(c.get("broadcast")),
+            "briefing": c.get("briefing"),
+            "briefing_by": c.get("briefing_by"),
+            "message_count": c.get("message_count", 0),
+            "max_messages": c.get("max_messages", DEFAULT_MAX_MESSAGES),
+            "members": sorted(m["identity"] for m in members
+                              if m["channel"] == c["name"]),
+            "done": sorted(m["identity"] for m in members
+                           if m["channel"] == c["name"] and m.get("done")),
+        } for c in sorted(chans, key=lambda c: c.get("created_at") or 0)]))
+        return
     if not chans:
         print("no channels yet")
         return
@@ -1426,7 +1455,6 @@ def do_channels(server, show_closed=False):
             print("no open channels (%d closed — `channels --all` to see them)"
                   % hidden)
             return
-    members = rows(server, "memberships")
     for c in sorted(chans, key=lambda c: c.get("created_at") or 0):
         mine = [m for m in members if m["channel"] == c["name"]]
         who = ", ".join(sorted(m["identity"] for m in mine)) or "nobody"
@@ -1652,6 +1680,9 @@ def main() -> int:
     p.add_argument("channel")
 
     p = sub.add_parser("channels", help="what rooms exist")
+    p.add_argument("--json", dest="as_json", action="store_true",
+                   help="one record per room, for programs. The default "
+                        "listing is a rendering, not a format")
     p.add_argument("--all", dest="show_closed", action="store_true",
                    help="include closed rooms, which `join` refuses")
     p = sub.add_parser("briefing",
@@ -1724,7 +1755,7 @@ def main() -> int:
         do_doctor(server)
         return 0
     if args.cmd == "channels":
-        do_channels(server, args.show_closed)
+        do_channels(server, args.show_closed, args.as_json)
         return 0
     if args.cmd == "invite":
         chan = get_channel(server, args.channel)

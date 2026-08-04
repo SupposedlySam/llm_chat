@@ -230,8 +230,62 @@ class ChannelsAndInviteTest(unittest.TestCase):
             cli.do_channels("http://x")
         return out.getvalue()
 
+    def as_json(self, show_closed=False):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_channels("http://x", show_closed, as_json=True)
+        return json.loads(out.getvalue())
+
     def test_an_empty_server_says_so(self):
         self.assertIn("no channels yet", self.show())
+
+    # ── the machine-readable discovery surface ──────────────────────────────
+    # Asked for by an agent whose room-discovery trigger was parsing the
+    # rendering above. It is a rendering — the same argument that had just cost
+    # this repo a silently-corrupted digest — and this verb had no machine form
+    # at all, so "use read --json" would have been the wrong answer to a real gap.
+
+    def test_an_empty_server_is_an_empty_list_not_prose(self):
+        """'no channels yet' is not JSON, and a consumer special-casing it is
+        back to parsing prose."""
+        self.assertEqual(self.as_json(), [])
+
+    def test_it_carries_what_a_tool_decides_with(self):
+        self.fake.channel("room", topic="a topic", message_count=3,
+                          broadcast=1, briefing="rules", briefing_by="bob")
+        self.fake.membership("room", "me", done=0)
+        self.fake.membership("room", "other", done=1)
+        record = self.as_json()[0]
+        self.assertEqual(record["name"], "room")
+        self.assertEqual(record["topic"], "a topic")
+        self.assertTrue(record["broadcast"])
+        self.assertEqual(record["briefing_by"], "bob")
+        self.assertEqual(record["members"], ["me", "other"])
+        self.assertEqual(record["done"], ["other"])
+        self.assertEqual(record["message_count"], 3)
+
+    def test_booleans_come_back_as_booleans_not_the_wire_ints(self):
+        """The store speaks 0/1. A consumer writing `if room["broadcast"]`
+        against a 0 would be right by accident and wrong the day it is "0"."""
+        self.fake.channel("room", broadcast=1, closed=0)
+        record = self.as_json()[0]
+        self.assertIs(record["broadcast"], True)
+        self.assertIs(record["closed"], False)
+
+    def test_closed_rooms_are_INCLUDED_with_a_flag(self):
+        """The opposite of the rendering, deliberately. Hiding them is right
+        for a reader being offered something to join; a program filtering for
+        itself is not the same as one that cannot see them."""
+        self.fake.channel("open-one")
+        self.fake.channel("dead", closed=1, closed_reason="everyone left")
+        names = {c["name"]: c for c in self.as_json()}
+        self.assertIn("dead", names)
+        self.assertTrue(names["dead"]["closed"])
+        self.assertEqual(names["dead"]["closed_reason"], "everyone left")
+
+    def test_a_room_nobody_is_in_has_an_empty_member_list(self):
+        self.fake.channel("empty")
+        self.assertEqual(self.as_json()[0]["members"], [])
 
     def test_rooms_list_members_and_who_is_done(self):
         self.fake.channel("room", topic="a topic", message_count=3)
