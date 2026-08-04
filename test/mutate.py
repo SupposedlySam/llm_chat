@@ -102,6 +102,18 @@ MUTATIONS = [
      "a consumer asking for a machine format gets prose, so it goes back to "
      "parsing a rendering — the defect this exists to remove"),
 
+    ("drift is measured against the tree you were WIRED FROM", "bin/llm_chat",
+     '    wired_from = installed_checkout(project)',
+     '    wired_from = None',
+     "a vendored consumer is permanently STALE against a tree it never used, "
+     "and the remedy repoints its hooks and undoes the vendoring"),
+
+    ("the delivery hook compares the same tree", "bin/llm-chat-deliver",
+     '    source = stamp.get("checkout") or ROOT',
+     '    source = ROOT',
+     "the same false STALE, on every session, from the hook that runs "
+     "automatically rather than the command somebody chooses to run"),
+
     ("the drift notice names an uncommitted source", "bin/llm-chat-deliver",
      '        if dirty:',
      '        if False:',
@@ -296,6 +308,10 @@ NOT_SWEPT = {
     "bin/llm-chat-slack:pump_in": "SHOULD BE SWEPT — cursor advance past bot "
         "messages is asserted, but nothing proves the ordering guarantee",
 
+    "bin/llm_chat:installed_checkout": "present, absent, field-less and "
+        "corrupt asserted directly — none may read as a guess",
+    "bin/llm-chat-deliver:source_checkout": "recorded, absent and corrupt "
+        "asserted directly via the notice that consumes it",
     "bin/llm_chat:waker_exit": "missing, corrupt and reason-less records "
         "asserted directly — none of them may read as healthy",
     "bin/llm-chat-wake:record_exit": "every exit path asserted directly, "

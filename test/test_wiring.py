@@ -219,6 +219,105 @@ class ReloadGuardTest(unittest.TestCase):
         self.assertIn("--force", str(caught.exception))
 
 
+class WiredFromTest(unittest.TestCase):
+    """Drift is measured against the tree a repo was WIRED FROM.
+
+    It was measured against this checkout, full stop, which was fine while
+    every consumer pointed at a sibling clone and wrong the moment one
+    vendored its own copy. Measured on a real one: lamp recorded 53473fcc, its
+    vendored tree hashed 53473fcc, this checkout hashed 999f615d — permanently
+    STALE for a repo that matched its own source exactly, with a remedy that
+    would have repointed its hooks here and undone the vendoring.
+
+    installed.json has recorded `checkout` since the beginning and nothing ever
+    read it. Asked directly whether anything depended on that field, I checked
+    and answered "written by install.sh and read by nothing" — true, and
+    exactly why this was broken.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.project = os.path.join(self.tmp.name, "consumer")
+        os.makedirs(os.path.join(self.project, ".llm_chat"))
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def vendored(self, deliver=b"one", wake=b"two"):
+        tree = os.path.join(self.tmp.name, "vendored")
+        os.makedirs(os.path.join(tree, "bin"), exist_ok=True)
+        for name, body in (("llm-chat-deliver", deliver),
+                           ("llm-chat-wake", wake)):
+            with open(os.path.join(tree, "bin", name), "wb") as f:
+                f.write(body)
+        return tree
+
+    def stamp(self, checkout=None, fingerprint="x"):
+        record = {"fingerprint": fingerprint}
+        if checkout is not None:
+            record["checkout"] = checkout
+        with open(os.path.join(self.project, ".llm_chat",
+                               "installed.json"), "w") as f:
+            json.dump(record, f)
+
+    def test_it_hashes_the_tree_it_is_given(self):
+        tree = self.vendored()
+        self.assertEqual(cli.wiring_fingerprint(tree),
+                         cli.wiring_fingerprint(tree))
+        self.assertNotEqual(cli.wiring_fingerprint(tree),
+                            cli.wiring_fingerprint())
+
+    def test_it_notices_a_change_in_THAT_tree(self):
+        tree = self.vendored()
+        before = cli.wiring_fingerprint(tree)
+        self.vendored(wake=b"rewritten")
+        self.assertNotEqual(cli.wiring_fingerprint(tree), before)
+
+    def test_a_vendored_consumer_matching_its_own_source_is_NOT_stale(self):
+        """The reported false positive, as a test."""
+        tree = self.vendored()
+        self.stamp(checkout=tree, fingerprint=cli.wiring_fingerprint(tree))
+        self.assertEqual(cli.installed_fingerprint(self.project),
+                         cli.wiring_fingerprint(cli.installed_checkout(
+                             self.project)))
+
+    def test_a_vendored_consumer_that_HAS_drifted_still_reads_as_stale(self):
+        """Paired with the test above: a check that stopped firing would pass
+        the first one and be useless."""
+        tree = self.vendored()
+        self.stamp(checkout=tree, fingerprint=cli.wiring_fingerprint(tree))
+        self.vendored(wake=b"upgraded")
+        self.assertNotEqual(cli.installed_fingerprint(self.project),
+                            cli.wiring_fingerprint(cli.installed_checkout(
+                                self.project)))
+
+    def test_the_recorded_checkout_is_read_back(self):
+        self.stamp(checkout="/somewhere/vendored")
+        self.assertEqual(cli.installed_checkout(self.project),
+                         "/somewhere/vendored")
+
+    def test_a_stamp_without_the_field_is_None_not_a_guess(self):
+        """Written before the field existed. The caller must fall back to this
+        checkout and SAY so, not silently compare against whatever is handy."""
+        self.stamp()
+        self.assertIsNone(cli.installed_checkout(self.project))
+
+    def test_no_stamp_at_all_is_None(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(cli.installed_checkout(tmp))
+
+    def test_a_corrupt_stamp_is_None(self):
+        with open(os.path.join(self.project, ".llm_chat",
+                               "installed.json"), "w") as f:
+            f.write("{not json")
+        self.assertIsNone(cli.installed_checkout(self.project))
+
+    def test_hashing_a_tree_that_is_gone_does_not_crash(self):
+        """It must produce a value rather than raise, so the caller can report
+        'wired from a tree that is gone' instead of dying inside doctor."""
+        self.assertTrue(cli.wiring_fingerprint("/no/such/tree"))
+
+
 class DirtyCheckoutTest(unittest.TestCase):
     """A drift notice that prescribes re-installing has to say what state the
     source is in.

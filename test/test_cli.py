@@ -475,6 +475,45 @@ class DoctorTest(unittest.TestCase):
         self.joined()
         self.assertIn("no exit record", self.report())
 
+    def wired(self, checkout, fingerprint="old"):
+        write_settings(self.project,
+                       PostToolUse=["/x/bin/llm-chat-deliver"],
+                       Stop=["/x/bin/llm-chat-wake"],
+                       SessionStart=["/x/bin/llm-chat-wake"])
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "installed.json"), "w") as f:
+            json.dump({"fingerprint": fingerprint, "checkout": checkout}, f)
+
+    def test_a_vendored_consumer_is_told_not_to_reinstall_from_elsewhere(self):
+        """Re-installing from any other tree would repoint their hooks and
+        silently undo the vendoring, so the remedy names THEIR tree and says
+        why anywhere else is wrong."""
+        with tempfile.TemporaryDirectory() as tree:
+            os.makedirs(os.path.join(tree, "bin"))
+            self.wired(tree)
+            text = self.report()
+            self.assertIn("STALE", text)
+            self.assertIn(os.path.join(tree, "install.sh"), text)
+            self.assertIn("undo that", text)
+
+    def test_a_repo_wired_from_THIS_checkout_gets_no_such_warning(self):
+        """Paired: a note that always fires teaches nothing, and the ordinary
+        case is a consumer pointed at this clone."""
+        self.wired(os.path.dirname(os.path.dirname(
+            os.path.abspath(cli.__file__))))
+        text = self.report()
+        self.assertNotIn("undo that", text)
+
+    def test_a_tree_that_is_GONE_is_reported_as_that_rather_than_as_stale(self):
+        """Their hooks point into it, so they cannot be running at all. Calling
+        that 'stale' would send them to re-install from a path that does not
+        exist."""
+        self.wired("/no/such/vendored/tree")
+        text = self.report()
+        self.assertIn("WIRED FROM A TREE THAT IS GONE", text)
+        self.assertNotIn("STALE:", text)
+
     def mark(self, name):
         d = os.path.join(self.project, ".llm_chat", "probe")
         os.makedirs(d, exist_ok=True)

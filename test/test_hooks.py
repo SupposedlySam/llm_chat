@@ -293,6 +293,66 @@ class DriftNoticeTest(HookTestCase):
         self.assertIn("OLDER wiring", notice)
         self.assertNotIn("UNCOMMITTED", notice)
 
+    def test_it_compares_the_tree_the_repo_was_WIRED_FROM(self):
+        """A vendored consumer runs its hooks out of its own copy. Comparing
+        against ROOT reported a permanent STALE for a repo matching its own
+        source exactly — and this hook fires automatically, so it says it on
+        every session rather than only when somebody runs doctor.
+
+        The stub answers BY ARGV: the vendored tree hashes to what the repo
+        recorded, this checkout hashes to something else. If the hook asks
+        about the wrong one it gets a mismatch and the notice fires."""
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "installed.json"), "w") as f:
+            json.dump({"fingerprint": "vendored-hash",
+                       "checkout": "/vendored/tree"}, f)
+
+        class ByTree:
+            def __call__(self, argv, **kwargs):
+                if "status" in argv:
+                    text = ""
+                elif "--of" in argv and argv[argv.index("--of") + 1] == "/vendored/tree":
+                    text = "vendored-hash"
+                else:
+                    text = "this-checkout-hash"
+
+                class Result:
+                    stdout = text
+                    stderr = ""
+                    returncode = 0
+                return Result()
+
+        fake = FakeSubprocess()
+        fake.run = ByTree()
+        self.mod.subprocess = fake
+        self.assertEqual(self.mod.upgrade_notice("s1"), "",
+                         "a repo matching its own source is not stale")
+
+    def test_a_vendored_repo_that_HAS_drifted_still_gets_the_notice(self):
+        """Paired with the test above: a check that stopped firing entirely
+        would pass it and be worthless."""
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "installed.json"), "w") as f:
+            json.dump({"fingerprint": "old-vendored",
+                       "checkout": "/vendored/tree"}, f)
+
+        class Moved:
+            def __call__(self, argv, **kwargs):
+                text = "" if "status" in argv else "new-vendored"
+
+                class Result:
+                    stdout = text
+                    stderr = ""
+                    returncode = 0
+                return Result()
+
+        fake = FakeSubprocess()
+        fake.run = Moved()
+        self.mod.subprocess = fake
+        self.assertIn("OLDER wiring", self.mod.upgrade_notice("s2"))
+
     def test_git_being_unavailable_does_not_break_the_notice(self):
         """The notice is the important part; knowing the source's state is a
         bonus. An exception here would swallow a real drift warning."""

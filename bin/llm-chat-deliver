@@ -111,6 +111,16 @@ def missing_hooks() -> list:
     return [e for e in EXPECTED_HOOKS if e not in found]
 
 
+def source_checkout():
+    """The tree this repo's hooks actually come from, for questions ABOUT that
+    tree — is it dirty, has it moved on. ROOT is only a fallback."""
+    try:
+        with open(os.path.join(PROJECT, ".llm_chat", "installed.json")) as f:
+            return (json.load(f) or {}).get("checkout") or ROOT
+    except (OSError, ValueError):
+        return ROOT
+
+
 def stale_install():
     """(recorded, current) hook-script hashes if this repo is behind, else None.
 
@@ -125,14 +135,21 @@ def stale_install():
     """
     try:
         with open(os.path.join(PROJECT, ".llm_chat", "installed.json")) as f:
-            recorded = (json.load(f) or {}).get("fingerprint")
+            stamp = json.load(f) or {}
     except (OSError, ValueError):
         return None
+    recorded = stamp.get("fingerprint")
     if not recorded:
         return None
+    # Against the tree this repo was WIRED FROM, which is not necessarily the
+    # one this script happens to live in. A consumer that vendored llm_chat
+    # runs its hooks out of its own copy; measuring it against ROOT reported a
+    # permanent STALE for a repo matching its own source exactly, and the
+    # remedy would have repointed it here and undone the vendoring.
+    source = stamp.get("checkout") or ROOT
     try:
         current = subprocess.run(
-            [sys.executable, CLI, "fingerprint"],
+            [sys.executable, CLI, "fingerprint", "--of", source],
             capture_output=True, text=True, timeout=8,
         ).stdout.strip()
     except Exception:
@@ -162,7 +179,7 @@ def upgrade_notice(session_id) -> str:
     dirty = None
     try:
         done = subprocess.run(
-            ["git", "-C", ROOT, "status", "--porcelain"],
+            ["git", "-C", source_checkout(), "status", "--porcelain"],
             capture_output=True, text=True, timeout=10)
         dirty = bool(done.stdout.strip()) if done.returncode == 0 else None
     except Exception:

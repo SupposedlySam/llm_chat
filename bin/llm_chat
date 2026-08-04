@@ -1024,8 +1024,27 @@ def do_reopen(server, name, max_messages=None):
 EXPECTED_HOOKS = ("llm-chat-deliver", "llm-chat-wake")
 
 
-def wiring_fingerprint() -> str:
-    """A hash of the hook SCRIPTS this checkout would install.
+def wiring_fingerprint(root=None) -> str:
+    """A hash of the hook SCRIPTS at `root` — the tree a repo was WIRED FROM,
+    which is not necessarily this one.
+
+    It used to be "this checkout", full stop, and that was wrong the moment a
+    consumer vendored llm_chat instead of pointing at a sibling clone. Their
+    hooks run out of their own vendored tree; comparing their stamp against MY
+    bin/ meant a permanent false STALE for a repo that matched its own source
+    exactly — and the remedy printed alongside it would have re-wired them to
+    my working tree and silently undone the vendoring.
+
+    Measured, not theorised: lamp recorded 53473fcc, its vendored tree hashes
+    53473fcc, and this checkout hashes 999f615d. It was never stale.
+
+    That is this project's own recurring defect, in the check that exists to
+    catch drift: the thing you RECORD and the thing you ACT ON came from
+    different places and nothing compared them. installed.json has recorded
+    `checkout` since the beginning and nothing ever read it. I was asked
+    directly whether anything depended on that field, checked, and answered
+    "written by install.sh and read by nothing" — true, and exactly why this
+    was broken.
 
     Strictly stronger than asking "is a hook missing from settings.json", which
     is all the earlier check did. That catches an absent hook and nothing else —
@@ -1039,7 +1058,7 @@ def wiring_fingerprint() -> str:
     for name in EXPECTED_HOOKS:
         h.update(name.encode())
         try:
-            with open(os.path.join(ROOT, "bin", name), "rb") as f:
+            with open(os.path.join(root or ROOT, "bin", name), "rb") as f:
                 h.update(f.read())
         except OSError:
             h.update(b"<missing>")
@@ -1070,6 +1089,20 @@ def checkout_dirty(root=None):
     if done.returncode != 0:
         return None      # not a checkout, or no git — an unknown, not a "no"
     return bool(done.stdout.strip())
+
+
+def installed_checkout(project):
+    """WHICH tree this repo was wired from, if it said.
+
+    None means a stamp written before the field existed, or none at all. The
+    caller must treat that as "assume this checkout and say so" rather than
+    silently comparing against whatever is convenient, which is the whole bug.
+    """
+    try:
+        with open(os.path.join(project, ".llm_chat", "installed.json")) as f:
+            return (json.load(f) or {}).get("checkout")
+    except (OSError, ValueError):
+        return None
 
 
 def installed_fingerprint(project):
@@ -1386,7 +1419,19 @@ def do_doctor(server):
               "in this checkout.")
 
     stamp = installed_fingerprint(project)
-    current = wiring_fingerprint()
+    # Compare against the tree they were WIRED FROM, not against this one.
+    # A vendored consumer runs hooks out of its own copy, and measuring it
+    # against my bin/ reports a permanent STALE for a repo that matches its
+    # own source exactly.
+    wired_from = installed_checkout(project)
+    source = wired_from or ROOT
+    if wired_from and not os.path.isdir(os.path.join(source, "bin")):
+        print(f"\nWIRED FROM A TREE THAT IS GONE: {source}\n"
+              f"  The hooks registered in this repo point into it, so they "
+              f"cannot be running.\n  Re-install from a checkout that exists:\n"
+              f"    {os.path.join(ROOT, 'install.sh')} {project}")
+        stamp = None            # nothing meaningful to compare against
+    current = wiring_fingerprint(source)
     if stamp and stamp != current:
         if checkout_dirty():
             print("\nNOTE: that checkout has UNCOMMITTED changes. Re-installing "
@@ -1394,10 +1439,16 @@ def do_doctor(server):
                   "including the wake hook, which is\n  what delivers the "
                   "message telling you it broke. Being one fingerprint behind "
                   "on\n  a committed hook is usually the safer side.")
-        print(f"\nSTALE: installed from hook scripts {stamp}, checkout now has "
+        print(f"\nSTALE: installed from hook scripts {stamp}, "
+              f"{'that tree' if (wired_from and os.path.abspath(wired_from) != os.path.abspath(ROOT)) else 'this checkout'} now has "
               f"{current}.\nA hook's script changed since this repo was wired, "
               f"which no reading of\nsettings.json can see — the command line is "
-              f"identical. Re-run:\n  {os.path.join(ROOT, 'install.sh')} {project}")
+              f"identical. Re-run:\n  {os.path.join(source, 'install.sh')} "
+              f"{project}")
+        if wired_from and os.path.abspath(source) != os.path.abspath(ROOT):
+            print(f"  (wired from {source}, not from this checkout — "
+                  f"re-installing from\n  anywhere else would repoint these "
+                  f"hooks and undo that.)")
     elif stamp is None and registered:
         print("\nno install stamp — wired before stamping existed; re-run "
               "install.sh to record one")
@@ -1738,7 +1789,12 @@ def main() -> int:
     p.add_argument("identity")
 
     sub.add_parser("doctor", help="why is nothing arriving?")
-    sub.add_parser("fingerprint", help="hash of this checkout's hook scripts")
+    p = sub.add_parser("fingerprint",
+                       help="hash of a checkout's hook scripts")
+    p.add_argument("--of", dest="of", default=None,
+                   help="which tree to hash. Defaults to this checkout — but a "
+                        "repo wired from a VENDORED copy must be compared "
+                        "against that copy, or it reports stale forever")
     p = sub.add_parser("reload", help="reload the VSCode window (registers hooks)")
     p.add_argument("--force", action="store_true",
                    help="actually do it; it drives the UI and ends this turn")
@@ -1791,7 +1847,7 @@ def main() -> int:
         do_reload(args.force, args.i_know)
         return 0
     if args.cmd == "fingerprint":
-        print(wiring_fingerprint())
+        print(wiring_fingerprint(args.of))
         return 0
     if args.cmd == "doctor":
         do_doctor(server)
