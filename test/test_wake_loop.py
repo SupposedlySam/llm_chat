@@ -120,6 +120,78 @@ class WakeLoopTest(unittest.TestCase):
         self.assertIn("#room", err.getvalue())
         self.assertNotIn("#notices", err.getvalue())
 
+    def exit_record(self):
+        import json as _json
+        with open(os.path.join(self.project, ".llm_chat", "wake.exit")) as f:
+            return _json.load(f)
+
+    def test_it_records_WHY_it_stopped(self):
+        """`doctor` could say "pid is gone" and never why, across five silent
+        exits plus SIGTERM. The reasons have completely different remedies and
+        one of them is not a problem at all, so the bare absence made a healthy
+        handover and a dead session look identical."""
+        self.mod.poll = lambda channel, entry: None
+        self.mod.still_worth_listening = lambda rooms: False
+        self.mod.time = NoSleep()
+        self.assertEqual(self.run_main(), 0)
+        self.assertIn("closed", self.exit_record()["reason"])
+
+    def test_a_superseded_waker_says_it_was_superseded(self):
+        """The healthy case, and the one most likely to be misread as a crash."""
+        self.mod.addressed = lambda channel, entry: None
+        self.mod.superseded = lambda: True
+        self.mod.time = NoSleep()
+        self.run_main()
+        self.assertIn("superseded", self.exit_record()["reason"])
+
+    def test_an_orphaned_waker_says_so(self):
+        self.mod.addressed = lambda channel, entry: None
+        self.mod.orphaned = lambda: True
+        self.mod.time = NoSleep()
+        self.run_main()
+        self.assertIn("orphaned", self.exit_record()["reason"])
+
+    def test_a_waker_with_no_rooms_says_so(self):
+        with open(os.path.join(self.project, ".llm_chat", "joined.json"), "w") as f:
+            json.dump({}, f)
+        self.assertEqual(self.run_main(), 0)
+        self.assertIn("no rooms", self.exit_record()["reason"])
+
+    def test_failing_to_claim_the_pidfile_is_recorded(self):
+        self.mod.claim_pidfile = lambda: False
+        self.run_main()
+        self.assertIn("pidfile", self.exit_record()["reason"])
+
+    def test_a_running_waker_records_running_and_not_a_reason(self):
+        """The discriminating value. If a waker is gone but the record still
+        says 'running', it never chose to stop — something outside killed it,
+        which is a different diagnosis from every other value here."""
+        self.mod.addressed = lambda channel, entry: {"wakes_me": True,
+                                                     "messages": []}
+        self.mod.poll = lambda channel, entry: "[other] hi"
+        self.mod.time = NoSleep()
+        recorded = []
+        real = self.mod.record_exit
+        self.mod.record_exit = lambda reason: recorded.append(reason)
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                self.run_main()
+        self.mod.record_exit = real
+        self.assertEqual(recorded[0], "running")
+        self.assertIn("woke", recorded[-1])
+
+    def test_sigterm_is_recorded_rather_than_looking_like_a_crash(self):
+        handled = []
+        self.mod.record_exit = lambda reason: handled.append(reason)
+        with self.assertRaises(SystemExit):
+            self.mod.on_term(15, None)
+        self.assertIn("terminated", handled[0])
+
+    def test_an_unwritable_state_dir_does_not_break_the_exit(self):
+        """Bookkeeping must never break the thing it describes."""
+        self.mod.EXIT_PATH = "/proc/nope/wake.exit"
+        self.mod.record_exit("whatever")     # must not raise
+
     def test_it_stands_down_once_every_room_has_closed(self):
         """Nothing can arrive any more, so polling forever would be waste."""
         self.mod.poll = lambda channel, entry: None

@@ -1281,6 +1281,23 @@ def hook_report(project):
     return registered, fired, events
 
 
+def waker_exit(project):
+    """Why the last waker stopped, if it said. None when there is no record.
+
+    Turns "pid is gone" into a diagnosis. The reasons have different remedies
+    and one of them is not a problem at all — a newer waker retiring an older
+    one is the design working — so reporting the bare absence made a healthy
+    handover and a dead session look identical.
+    """
+    try:
+        with open(os.path.join(project, ".llm_chat", "wake.exit")) as f:
+            record = json.load(f) or {}
+    except (OSError, ValueError):
+        return None
+    reason = record.get("reason")
+    return (reason, record.get("at"), record.get("pid")) if reason else None
+
+
 def waker_alive(project):
     """Is a waker polling for this project RIGHT NOW?
 
@@ -1388,11 +1405,28 @@ def do_doctor(server):
     joined = read_joined()
     if joined:
         pid, alive = waker_alive(project)
+        last = waker_exit(project)
         if alive:
             print(f"\nlistening now: yes (waker pid {pid})")
         else:
             gone = f"pid {pid} is gone" if pid else "no waker has been armed"
             print(f"\nLISTENING NOW: NO — {gone}.")
+            if last:
+                reason, when, said_by = last
+                ago = f", {(now_ms() // 1000 - when) // 60}m ago" if when else ""
+                print(f"  last waker (pid {said_by}) stopped because: "
+                      f"{reason}{ago}")
+                if reason.startswith("running"):
+                    # It never recorded a REASON, so it did not choose to stop:
+                    # something outside it ended the process. That is a
+                    # different diagnosis from every other value here.
+                    print("    — it never recorded stopping, so it was killed "
+                          "from outside rather\n      than standing down. "
+                          "Usually the harness reclaiming an async hook.")
+            else:
+                print("  no exit record — this waker predates the one that "
+                      "writes it, or it was\n  killed before it could claim "
+                      "the pidfile.")
             print("  Registered and has-fired are facts about the PAST. Nothing "
                   "re-arms a waker\n  while a session is idle: only a turn-end "
                   "or a session start does, and an idle\n  agent produces "

@@ -394,6 +394,87 @@ class DoctorTest(unittest.TestCase):
             cli.do_doctor("http://x")
         return out.getvalue()
 
+    def joined(self):
+        """Doctor returns early on an unwired repo, so the waker section is
+        only reachable once the hooks are registered AND a room is joined."""
+        write_settings(self.project,
+                       PostToolUse=["/x/bin/llm-chat-deliver"],
+                       Stop=["/x/bin/llm-chat-wake"],
+                       SessionStart=["/x/bin/llm-chat-wake"])
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "joined.json"), "w") as f:
+            json.dump({"room": {"identity": "me", "server": "http://x"}}, f)
+
+    def exited(self, reason, at=None, pid=999):
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "wake.exit"), "w") as f:
+            json.dump({"reason": reason, "pid": pid,
+                       "at": at if at is not None else cli.now_ms() // 1000}, f)
+
+    # ── why the waker stopped ───────────────────────────────────────────────
+    # "pid is gone" was a dead end at exactly the question that matters, and
+    # the reasons have different remedies — one of them is not a problem.
+
+    def test_no_record_reads_as_unknown_not_as_healthy(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(cli.waker_exit(tmp))
+
+    def test_a_corrupt_record_reads_as_unknown(self):
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "wake.exit"), "w") as f:
+            f.write("{not json")
+        self.assertIsNone(cli.waker_exit(self.project))
+
+    def test_a_record_with_no_reason_is_not_an_answer(self):
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "wake.exit"), "w") as f:
+            json.dump({"pid": 1}, f)
+        self.assertIsNone(cli.waker_exit(self.project))
+
+    def test_doctor_reports_the_reason(self):
+        self.joined()
+        self.exited("every joined room is closed — nothing can arrive")
+        self.assertIn("stopped because", self.report())
+        self.assertIn("nothing can arrive", self.report())
+
+    def test_a_still_running_record_means_it_was_KILLED(self):
+        """The discriminating value. A waker that is gone while its record
+        still says 'running' never chose to stop — something outside ended it,
+        which is a different diagnosis from every other reason here."""
+        self.joined()
+        self.exited("running")
+        text = self.report()
+        self.assertIn("killed from outside", text)
+
+    def test_a_reason_it_chose_does_NOT_claim_it_was_killed(self):
+        """Paired with the test above: a message that always fires teaches
+        nothing, and 'superseded' is the healthy case."""
+        self.joined()
+        self.exited("superseded by a newer waker (healthy)")
+        self.assertNotIn("killed from outside", self.report())
+
+    def test_it_says_how_long_ago(self):
+        self.joined()
+        self.exited("running", at=cli.now_ms() // 1000 - 1800)
+        self.assertIn("30m ago", self.report())
+
+    def test_a_record_with_no_timestamp_still_reports_the_reason(self):
+        self.joined()
+        d = os.path.join(self.project, ".llm_chat")
+        with open(os.path.join(d, "wake.exit"), "w") as f:
+            json.dump({"reason": "orphaned", "pid": 7}, f)
+        text = self.report()
+        self.assertIn("orphaned", text)
+        self.assertNotIn("ago", text.split("orphaned")[1][:20])
+
+    def test_no_record_at_all_says_so_rather_than_staying_silent(self):
+        self.joined()
+        self.assertIn("no exit record", self.report())
+
     def mark(self, name):
         d = os.path.join(self.project, ".llm_chat", "probe")
         os.makedirs(d, exist_ok=True)

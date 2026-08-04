@@ -59,7 +59,7 @@ MUTATIONS = [
      "an agent hits the message cap mid-thought with no warning"),
 
     ("supersession checked before polling", "bin/llm-chat-wake",
-     "        if superseded():\n            return 0\n        if orphaned():\n            return 0",
+     '        if superseded():\n            record_exit("superseded by a newer waker (healthy)")\n            return 0',
      "        pass",
      "a superseded waker claims messages and delivers them nowhere"),
 
@@ -125,6 +125,19 @@ MUTATIONS = [
      '    if False:\n        return ""',
      "advice on every single message, which is the standing-noise failure this "
      "project already hardened against once"),
+
+    ("a killed waker is distinguishable from one that stood down",
+     "bin/llm_chat",
+     '                if reason.startswith("running"):',
+     '                if False:',
+     "'gone' and 'chose to stop' read identically, so the one diagnosis that "
+     "means something outside killed it is the one nobody can reach"),
+
+    ("the waker records why it stopped", "bin/llm-chat-wake",
+     '            record_exit("every joined room is closed — nothing can arrive")',
+     '            pass',
+     "the waker dies silently again and doctor is back to 'pid is gone', "
+     "which was a dead end at exactly the question that matters"),
 
     ("the waker PEEKS before it claims", "bin/llm-chat-wake",
      '            info = addressed(channel, entry)\n            if info is None:\n                continue',
@@ -283,6 +296,12 @@ NOT_SWEPT = {
     "bin/llm-chat-slack:pump_in": "SHOULD BE SWEPT — cursor advance past bot "
         "messages is asserted, but nothing proves the ordering guarantee",
 
+    "bin/llm_chat:waker_exit": "missing, corrupt and reason-less records "
+        "asserted directly — none of them may read as healthy",
+    "bin/llm-chat-wake:record_exit": "every exit path asserted directly, "
+        "including that an unwritable state dir cannot break the exit",
+    "bin/llm-chat-wake:on_term": "asserted directly — SIGTERM is the healthy "
+        "handover and the one most likely to be misread as a crash",
     "bin/llm_chat:checkout_dirty": "dirty, clean, not-a-checkout and no-git "
         "asserted directly — UNKNOWN must not read as clean",
     "bin/llm_chat:do_mode": "both directions, both refusals and the passive "

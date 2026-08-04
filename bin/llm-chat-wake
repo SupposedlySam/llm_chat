@@ -63,6 +63,7 @@ PROJECT = _project_dir()
 STATE = os.path.join(PROJECT, ".llm_chat")
 JOINED = os.path.join(STATE, "joined.json")
 PID_PATH = os.path.join(STATE, "wake.pid")
+EXIT_PATH = os.path.join(STATE, "wake.exit")
 
 POLL_SEC_DEFAULT = 5
 
@@ -78,6 +79,42 @@ POLL_SEC_DEFAULT = 5
 # refresh and nothing to keep in sync.
 PARENT = os.getppid()
 POLL_SEC = int(os.environ.get("LLM_CHAT_POLL_SEC") or POLL_SEC_DEFAULT)
+
+
+def record_exit(reason):
+    """Leave WHY this waker stopped, so its absence can be interrogated.
+
+    `doctor` could already say "pid is gone"; it could never say why, and the
+    waker had five silent exits plus SIGTERM plus whatever the harness does.
+    An agent that stops being notified therefore hits a dead end at exactly the
+    question that matters, and the answers have completely different remedies:
+    "superseded by a newer waker" is healthy, "in no rooms" is a joined.json
+    problem, "every room closed" needs a reopen, and "killed" is the harness.
+
+    Silence you can INTERROGATE is a different class from silence that is
+    indistinguishable from an answer — the distinction handed to this project by
+    a sibling agent an hour before this was written, about a case where the
+    absent value was legitimate. Here the absence was not even legitimate; it
+    was just unrecorded.
+
+    Best-effort, and never allowed to break the exit it is describing.
+    """
+    try:
+        os.makedirs(os.path.dirname(EXIT_PATH), exist_ok=True)
+        tmp = EXIT_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"reason": reason, "pid": os.getpid(),
+                       "at": int(time.time())}, f)
+        os.replace(tmp, EXIT_PATH)
+    except OSError:
+        pass
+
+
+def on_term(_signum, _frame):
+    """SIGTERM is how a NEWER waker retires this one — the healthy case, and
+    the one most likely to be misread as a crash. Record it and go."""
+    record_exit("terminated (usually a newer waker taking over)")
+    sys.exit(0)
 
 
 def joined_rooms():
@@ -289,19 +326,25 @@ def main() -> int:
 
     rooms = joined_rooms()
     if not rooms:
-        return 0  # in no rooms — exit before touching the network
+        record_exit("in no rooms — nothing to listen for")
+        return 0  # exit before touching the network
 
     if not claim_pidfile():
+        record_exit("could not claim the pidfile")
         return 0
 
+    signal.signal(signal.SIGTERM, on_term)
+    record_exit("running")     # overwritten by whatever actually ends it
     synced = False
     while True:
         # BOTH before polling, never after: `poll` advances the server-side
         # cursor, so once this process has claimed a message it is the only one
         # that can deliver it. Standing down after claiming would lose it.
         if superseded():
+            record_exit("superseded by a newer waker (healthy)")
             return 0
         if orphaned():
+            record_exit("orphaned — the session that armed it is gone")
             return 0
 
         # A room can BECOME a broadcast room, and both hooks decide what to
@@ -332,11 +375,13 @@ def main() -> int:
                 blocks.append(header + "\n"
                               + "\n".join(f"  {ln}" for ln in out.splitlines()))
         if blocks:
+            record_exit("woke the session (healthy)")
             wake(blocks)  # exits 2
         time.sleep(POLL_SEC)
         # The only real stop conditions: nothing can arrive any more, a newer
         # waker took over, or the session is gone.
         if not still_worth_listening(joined_rooms()):
+            record_exit("every joined room is closed — nothing can arrive")
             return 0
 
 

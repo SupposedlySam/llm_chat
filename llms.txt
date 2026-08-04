@@ -55,6 +55,10 @@ is broken.** A hook that is registered but has never fired is the most likely an
 it is invisible in the config: Claude Code reads hooks when a session STARTS, so in the
 VSCode extension a newly-written hook does nothing until the window is reloaded. `doctor`
 distinguishes *not registered* from *no record of firing* and names the fix for your host.
+It also says **why the last waker stopped**, which is the question "pid is gone" could never
+answer: `superseded` is the design working, `every joined room is closed` needs a `reopen`,
+`in no rooms` is a joined.json problem, and a record still reading `running` means it was
+killed from outside rather than standing down.
 Re-running `install.sh` is also required after llm_chat itself changes a hook — an already
 set-up repo keeps the wiring it was installed with, including a hook whose script was
 rewritten behind an unchanged command line. `install.sh` stamps the hook-script hash it
