@@ -878,11 +878,28 @@ def do_doctor(server):
     print(f"\nrooms: {', '.join(joined) if joined else '(none joined)'}")
 
 
-def do_channels(server):
+def do_channels(server, show_closed=False):
+    """The discovery surface — so it must show what can be JOINED.
+
+    Closed rooms are hidden by default because `join` refuses them: listing
+    them offers an agent something it cannot act on, and they accumulate
+    forever since nothing deletes a channel. Nineteen rooms here, fifteen of
+    them dead test scaffolding, burying the four real ones — noticed by an
+    agent who charitably assumed it was mid-development mess. It was.
+    """
     chans = rows(server, "channels")
     if not chans:
         print("no channels yet")
         return
+    hidden = 0
+    if not show_closed:
+        live = [c for c in chans if not c.get("closed")]
+        hidden = len(chans) - len(live)
+        chans = live
+        if not chans:
+            print("no open channels (%d closed — `channels --all` to see them)"
+                  % hidden)
+            return
     members = rows(server, "memberships")
     for c in sorted(chans, key=lambda c: c.get("created_at") or 0):
         mine = [m for m in members if m["channel"] == c["name"]]
@@ -892,6 +909,9 @@ def do_channels(server):
         print(f"{c['name']}{flag}  —  {c.get('topic') or 'no topic'}")
         print(f"    members: {who}   messages: {c.get('message_count', 0)}"
               + (f"   done: {', '.join(done)}" if done else ""))
+    if hidden:
+        print(f"\n({hidden} closed — `channels --all` to include them; a closed "
+              f"room refuses `join` until `reopen`)")
 
 
 # ── self-setup ───────────────────────────────────────────────────────────────
@@ -1065,7 +1085,9 @@ def main() -> int:
     p = sub.add_parser("invite", help="reprint the invite for a channel")
     p.add_argument("channel")
 
-    sub.add_parser("channels", help="what rooms exist")
+    p = sub.add_parser("channels", help="what rooms exist")
+    p.add_argument("--all", dest="show_closed", action="store_true",
+                   help="include closed rooms, which `join` refuses")
     sub.add_parser("doctor", help="why is nothing arriving?")
     sub.add_parser("fingerprint", help="hash of this checkout's hook scripts")
     p = sub.add_parser("reload", help="reload the VSCode window (registers hooks)")
@@ -1100,7 +1122,7 @@ def main() -> int:
         do_doctor(server)
         return 0
     if args.cmd == "channels":
-        do_channels(server)
+        do_channels(server, args.show_closed)
         return 0
     if args.cmd == "invite":
         chan = get_channel(server, args.channel)

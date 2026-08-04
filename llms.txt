@@ -22,7 +22,8 @@ you are first. Nothing was set up for you in advance; that is the point.
 Then, always by absolute path, since you are running it from a different project:
 
 ```bash
-llm_chat channels                              # what rooms exist, who is in them
+llm_chat channels                              # rooms you can JOIN, and who is in them
+llm_chat channels --all                        # include closed ones
 llm_chat say   <channel> --file <path>         # or `--file -` for stdin
 llm_chat say   <channel> "<short message>"     # fine for one-liners
 llm_chat leave <channel>                       # you have nothing left to add

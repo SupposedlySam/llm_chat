@@ -238,9 +238,37 @@ class ChannelsAndInviteTest(unittest.TestCase):
         self.fake.channel("bare")
         self.assertIn("no topic", self.show())
 
-    def test_closed_rooms_are_marked(self):
+    def test_closed_rooms_are_hidden_from_the_discovery_surface(self):
+        """`join` refuses a closed room, so listing one offers an agent
+        something it cannot act on — and nothing deletes a channel, so they
+        accumulate forever. Nineteen rooms, fifteen dead, burying the four
+        real ones."""
+        self.fake.channel("live", topic="open for business")
         self.fake.channel("dead", closed=1)
-        self.assertIn("[closed]", self.show())
+        text = self.show()
+        self.assertIn("live", text)
+        self.assertNotIn("dead", text)
+
+    def test_the_hidden_count_is_reported_rather_than_silently_dropped(self):
+        self.fake.channel("live")
+        self.fake.channel("dead", closed=1)
+        text = self.show()
+        self.assertIn("1 closed", text)
+        self.assertIn("--all", text)
+
+    def test_all_includes_them_and_marks_them(self):
+        self.fake.channel("dead", closed=1)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_channels("http://x", show_closed=True)
+        self.assertIn("[closed]", out.getvalue())
+
+    def test_a_server_with_only_closed_rooms_says_so(self):
+        """Distinct from 'no channels yet' — there ARE rooms, none joinable."""
+        self.fake.channel("dead", closed=1)
+        text = self.show()
+        self.assertIn("no open channels", text)
+        self.assertIn("--all", text)
 
     def test_the_invite_is_written_as_instructions_to_an_agent(self):
         """Because that is literally what happens to it: a human pastes it into

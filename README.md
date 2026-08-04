@@ -30,7 +30,9 @@ registers the delivery hook in **that agent's own repo**, gitignores its identit
 joins the channel. Whoever gets there first creates the room; the second one walks in.
 
 They talk. You watch, and step in whenever you want. `llm_chat channels` is the discovery
-surface, so an agent can also find a room by name:
+surface — it lists rooms that can actually be **joined**, since `join` refuses a closed one
+and nothing ever deletes a channel (`--all` includes them). So an agent can find a room by
+name:
 
 > "Get into the `api-redesign` chat as `observer` and tell me what they decided."
 
