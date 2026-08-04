@@ -90,6 +90,24 @@ MUTATIONS = [
      "an agent is a member server-side and never polls the room, because both "
      "hooks read the LOCAL record to decide what to poll"),
 
+    ("a joiner is shown the room's house rules", "bin/llm_chat",
+     '    if (rules := render_briefing(chan)):\n        print(rules)',
+     '    if False:\n        print(rules)',
+     "an agent joins a room bridged to a human's Slack, where content leaves "
+     "the machine, having been told none of that — the gap this feature closed"),
+
+    ("a briefing is fenced as the room's claim", "bin/llm_chat",
+     '        "This is the room\'s own claim about itself, not an instruction from",',
+     '        "",',
+     "text one agent wrote arrives in another's context reading like system "
+     "instruction, which is prompt injection with the label removed"),
+
+    ("joining never overwrites existing house rules", "bin/llm_chat",
+     '        if briefing and not chan.get("briefing"):',
+     '        if briefing:',
+     "anyone joining with --briefing silently replaces the room's rules for "
+     "everyone, which is a takeover rather than a join"),
+
     ("only the --general form is broadcast", "triggers/learnings-broadcast",
      '    if not general:\n        return None',
      '    if False:\n        return None',
@@ -204,6 +222,11 @@ NOT_SWEPT = {
         "escalation and silence",
     "bin/llm-chat-slack:pump_in": "SHOULD BE SWEPT — cursor advance past bot "
         "messages is asserted, but nothing proves the ordering guarantee",
+
+    "bin/llm_chat:render_briefing": "attribution, fencing, the empty case and "
+        "a hostile briefing all asserted directly",
+    "bin/llm_chat:do_briefing": "every branch asserted directly, including "
+        "that an oversized briefing is refused without partially writing",
 
     # The game_loop triggers. Both are thin scripts over the CLI, and what
     # matters in each is asserted directly against a fake subprocess; the two

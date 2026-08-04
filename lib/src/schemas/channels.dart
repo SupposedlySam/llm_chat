@@ -17,6 +17,8 @@ final class Channel {
     required this.id,
     required this.name,
     this.topic,
+    this.briefing,
+    this.briefingBy,
     required this.createdBy,
     required this.closed,
     this.closedReason,
@@ -34,7 +36,38 @@ final class Channel {
   /// exists, here is who is in it" is a better answer than an error.
   final String name;
 
+  /// One line, for listings. "What is this room."
   final String? topic;
+
+  /// The room's house rules, handed to an agent AT THE MOMENT IT JOINS.
+  ///
+  /// Separate from [topic] because they are read at different moments and by
+  /// different readers. A topic answers "what is this" in a room list; a
+  /// briefing answers "how do I behave here", and the only time that question
+  /// is being asked is on the way in. Before this existed, a joiner was told
+  /// its own name and the member list and nothing else — so an agent could
+  /// join a room bridged to a human's Slack, where content leaves the machine,
+  /// having been told none of that.
+  ///
+  /// The rules that matter are per-room and contradict each other: post the
+  /// generalised form here and never the incident; this one wakes a person on
+  /// a phone, so ask only what you need answered; this one wakes nobody, so
+  /// reference material is welcome. None of that can live in one global
+  /// document, which is why it kept ending up in prose nobody reads at the
+  /// moment it applies.
+  ///
+  /// IT IS UNTRUSTED TEXT. Whoever opened the room wrote it, and it is
+  /// delivered into another agent's context — which is prompt injection by
+  /// construction. The client prints it fenced and attributed, as data the
+  /// reader may weigh, never as instructions it must follow. [briefingBy]
+  /// exists for exactly that: a briefing you cannot attribute is one you
+  /// cannot discount.
+  final String? briefing;
+
+  /// Who wrote the current [briefing]. Not the room's creator — a briefing can
+  /// be replaced by anyone in the room, and the reader needs to know who is
+  /// actually talking to them.
+  final String? briefingBy;
 
   /// The identity that opened it. Not an owner — anyone in the room has the
   /// same rights — just provenance for "who started this".
@@ -79,6 +112,8 @@ final class ChannelTable extends Table<Channel> {
           fromString: ChannelsId.new, generate: ChannelsId.generate),
       name = $.text('name', (s) => s.name),
       topic = $.text('topic', (s) => s.topic),
+      briefing = $.text('briefing', (s) => s.briefing),
+      briefingBy = $.text('briefing_by', (s) => s.briefingBy),
       createdBy = $.text('created_by', (s) => s.createdBy),
       closed = $.boolean('closed', (s) => s.closed),
       broadcast = $.boolean('broadcast', (s) => s.broadcast),
@@ -93,6 +128,8 @@ final class ChannelTable extends Table<Channel> {
     id: read(id),
     name: read(name),
     topic: read(topic),
+    briefing: read(briefing),
+    briefingBy: read(briefingBy),
     createdBy: read(createdBy),
     closed: read(closed),
     broadcast: read(broadcast),
@@ -106,6 +143,8 @@ final class ChannelTable extends Table<Channel> {
   final IdColumn<ChannelsId> id;
   final TextColumn name;
   final ColumnType<String?> topic;
+  final ColumnType<String?> briefing;
+  final ColumnType<String?> briefingBy;
   final TextColumn createdBy;
   final ColumnType<bool> closed;
   final ColumnType<bool> broadcast;

@@ -15,6 +15,13 @@
       "when": 1785847445678,
       "tag": "0001_add_broadcast",
       "snapshotId": "22354503-741f-4f52-98a5-b6603129be8e"
+    },
+    {
+      "idx": 2,
+      "version": "1",
+      "when": 1785865363767,
+      "tag": "0002_auto",
+      "snapshotId": "2e35ef52-3ebc-40c2-b9b0-357292674d4f"
     }
   ]
 }
