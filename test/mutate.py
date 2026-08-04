@@ -188,9 +188,14 @@ def discover_sources():
     FILE list. A sibling project found the identical thing inside the very
     measurement it used to find its file-level gap.
 
-    The predicate is "it parses as Python", not "it ends in .py" — all three
-    entrypoints here are extension-less, so a *.py glob is the obvious wrong
-    answer and would return nothing at all.
+    The predicate is NOT "it ends in .py" — all three entrypoints are
+    extension-less, so a glob returns nothing at all. Nor is it merely "it
+    parses as Python": ast.parse ACCEPTS JSON and YAML, because both are valid
+    Python expressions. A sibling project ran that version before adopting it
+    and got eleven files of which four were config, which is not a stray entry
+    but a majority of noise — and a list that is mostly noise is the standing-
+    warning failure we have each already shipped once. So: parses AND declares
+    something (def, class, or import).
 
     NOT COVERED, stated rather than implied: install.sh and legacy_teardown.sh.
     They have no AST and this harness cannot mutate them, so they are outside
@@ -207,8 +212,12 @@ def discover_sources():
             continue
         try:
             with open(path) as f:
-                ast.parse(f.read())
+                tree = ast.parse(f.read())
         except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+            continue
+        if not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef,
+                                     ast.ClassDef, ast.Import, ast.ImportFrom))
+                   for node in ast.walk(tree)):
             continue
         sources.append(os.path.join("bin", name))
     return sources
