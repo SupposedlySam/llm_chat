@@ -274,8 +274,21 @@ def park_until_limit_resets(state):
     quit Claude Code entirely there is no process left to wake — this survives a rate-limited
     SESSION, not a closed laptop.
     """
-    over = exhausted_windows(limits_snapshot(), time.time())
+    snap = limits_snapshot()
+    over = exhausted_windows(snap, time.time())
     if not over:
+        # "no window is exhausted" and "I have no idea" are the SAME empty list here, and the second
+        # one means this function can never fire — no park, no ring at reset. Record it once per
+        # session so a run that didn't need to park is distinguishable, afterwards, from one that
+        # could never have parked. Without this the log of a run that died at its limit is silent.
+        if not (snap and (snap.get("windows") or {})):
+            st = load_state()
+            if not st.get("limit_blind_logged"):
+                st["limit_blind_logged"] = True
+                save_state(st)
+                logline({"kind": "watchdog_limit_blind",
+                         "detail": "no usage snapshot — the limit park and its reset ring cannot arm",
+                         "entrypoint": os.environ.get("CLAUDE_CODE_ENTRYPOINT") or ""})
         return
     until = max(float(w["resets_at"]) for _, w in over)
     names = ", ".join(n for n, _ in over)

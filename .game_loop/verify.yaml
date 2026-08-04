@@ -69,6 +69,14 @@
   - "python3 test/mutate.py"
   - "python3 test/contract.py"
 
+# The game_loop triggers. They run inside ANOTHER tool's loop, on somebody
+# else's schedule, and their output goes to every agent in a shared room — so a
+# regression here is not noticed by the person who caused it. Same gate as the
+# entrypoints; they are in the same coverage and mutation denominator.
+"triggers/**":
+  - "python3 test/run.py --min 100"
+  - "python3 test/mutate.py"
+
 "install.sh":
   - "bash -n install.sh"
 

@@ -90,6 +90,18 @@ MUTATIONS = [
      "an agent is a member server-side and never polls the room, because both "
      "hooks read the LOCAL record to decide what to poll"),
 
+    ("only the --general form is broadcast", "triggers/learnings-broadcast",
+     '    if not general:\n        return None',
+     '    if False:\n        return None',
+     "every local harden goes to every agent on the machine, as its incident "
+     "form, which is how a shared channel becomes one nobody reads"),
+
+    ("the retro digest drops my own posts", "triggers/learnings-digest",
+     '            if "(you)" not in who and body]',
+     '            if body]',
+     "a retro that hands back your own learnings is a mirror where a window "
+     "was wanted, and it reads as though others had been consulted"),
+
     ("the Slack bridge skips its own posts", "bin/llm-chat-slack",
      '    if message.get("bot_id") or message.get("subtype") == "bot_message":\n        return False',
      '    if False:\n        return False',
@@ -193,6 +205,27 @@ NOT_SWEPT = {
     "bin/llm-chat-slack:pump_in": "SHOULD BE SWEPT — cursor advance past bot "
         "messages is asserted, but nothing proves the ordering guarantee",
 
+    # The game_loop triggers. Both are thin scripts over the CLI, and what
+    # matters in each is asserted directly against a fake subprocess; the two
+    # guards whose absence changes what other agents SEE are swept.
+    "triggers/learnings-broadcast:calling_repo": "all three links of the "
+        "precedence chain asserted directly, plus set-but-empty",
+    "triggers/learnings-digest:calling_repo": "same, asserted directly",
+    "triggers/learnings-broadcast:send": "asserted directly — that it sends via "
+        "--file, that the file holds the message while the CLI runs, and that "
+        "it does not outlive the call",
+    "triggers/learnings-broadcast:main": "every branch asserted directly, "
+        "including that an unreadable payload reports instead of crashing "
+        "inside another tool's output",
+    "triggers/learnings-digest:split_messages": "asserted directly, including "
+        "the multi-line case that line-slicing would split",
+    "triggers/learnings-digest:render": "asserted directly, including that it "
+        "does not claim truncation when it showed everything",
+    "triggers/learnings-digest:fetch": "asserted directly — that it passes "
+        "--peek and --all, which is the whole design",
+    "triggers/learnings-digest:main": "every branch asserted directly, "
+        "including that a read failure is loud rather than an empty digest",
+
     # Honest gaps. These SHOULD be swept and are not yet. Saying so beats an
     # exclusion that is technically true and practically a dodge.
     "bin/llm_chat:do_setup": "SHOULD BE SWEPT — the in-checkout guard and the "
@@ -221,8 +254,42 @@ NOT_SWEPT = {
 }
 
 
+def tracked_files():
+    """Every file this repo ships, asked of git.
+
+    Not a directory walk: a walk needs somebody to name the directories, and a
+    directory list is a denylist wearing a different hat. git already knows the
+    answer, it excludes build output and gitignored site wiring for free, and it
+    cannot forget a folder somebody added last week.
+
+    If git cannot answer — no checkout, no git on PATH — this raises rather than
+    returning an empty list. An empty denominator makes every accounting report
+    read 100%, which is the exact false green this whole module exists to catch;
+    failing loudly is the only honest response to "I don't know what to measure".
+    """
+    # --others --exclude-standard as well as the index: a file written five
+    # minutes ago and not yet `git add`ed is EXACTLY when it is unmeasured, and
+    # a denominator that waits for staging reports completeness over the old set
+    # at the one moment the set is changing. --exclude-standard keeps gitignored
+    # site wiring out, which is the reason not to just walk the tree.
+    done = subprocess.run(
+        ["git", "-C", ROOT, "ls-files", "--cached", "--others",
+         "--exclude-standard"], capture_output=True, text=True)
+    if done.returncode != 0:
+        raise RuntimeError("cannot enumerate sources: git ls-files said %r"
+                           % (done.stderr or "").strip())
+    return [line for line in done.stdout.splitlines() if line.strip()]
+
+
 def discover_sources():
-    """Every Python file in bin/, found by PARSING rather than by naming.
+    """Every Python file this repo ships, found by PARSING rather than by naming.
+
+    THIS SCANNED bin/ AND ONLY bin/, and the day triggers/ was added it went on
+    reporting "0 unaccounted" about a set that had quietly stopped containing
+    everything. That is the same defect as the hardcoded tuple this replaced,
+    moved out one level: from a list of FILES to a list of DIRECTORIES. Asking
+    git removes the list rather than lengthening it, which is the only version
+    of this fix that does not have a next level.
 
     A hardcoded tuple was here, and it listed exactly the three files that
     exist — complete today, and complete BY ACCIDENT. The next script added to
@@ -248,11 +315,18 @@ def discover_sources():
     denominator that silently excludes a LANGUAGE is the same false green as
     one that excludes a file, so it is named here.
     """
-    directory = os.path.join(ROOT, "bin")
     sources = []
-    for name in sorted(os.listdir(directory)):
-        path = os.path.join(directory, name)
+    for relative in tracked_files():
+        path = os.path.join(ROOT, relative)
+        # test/ measures; it is not the thing measured. .game_loop/ is the
+        # VENDORED harness — someone else's source, refreshed wholesale by their
+        # installer, and mutating it would report our tests failing to catch
+        # bugs in a file we do not own and cannot fix here. Both named with a
+        # reason rather than silently missing, which is the rule this module
+        # enforces on everything else.
         if not os.path.isfile(path):
+            continue
+        if relative.startswith("test/") or relative.startswith(".game_loop/"):
             continue
         try:
             with open(path) as f:
@@ -263,8 +337,8 @@ def discover_sources():
                                      ast.ClassDef, ast.Import, ast.ImportFrom))
                    for node in ast.walk(tree)):
             continue
-        sources.append(os.path.join("bin", name))
-    return sources
+        sources.append(relative)
+    return sorted(sources)
 
 
 def candidates():

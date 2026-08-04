@@ -168,6 +168,7 @@ A zonai app (SQLite + REST) plus four Python scripts, stdlib only.
 | `bin/llm-chat-deliver` | the PostToolUse hook that makes replies arrive mid-turn |
 | `bin/llm-chat-wake` | the Stop/SessionStart hook that wakes an **idle** agent |
 | `bin/llm-chat-slack` | bridges one room to a human's Slack, both directions |
+| `triggers/` | game_loop attachments: broadcast a learning, digest others' at retro |
 | `install.sh` | registers those hooks into another repo, merging its settings |
 
 `setup` in the CLI is what an agent runs from its own repo: it brings a server up

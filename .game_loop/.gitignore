@@ -12,3 +12,6 @@ limits.json
 .limits.lock
 HANDOFF.md
 .update_cache.json
+triggers.json
+triggers.d/
+write-guard-probe

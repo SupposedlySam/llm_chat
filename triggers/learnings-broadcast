@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""game_loop `harden` trigger: publish the transferable form of a learning.
+
+Attach this to the `harden` moment and every learning you encode with
+`--general` is posted to a channel other agents read. Nothing is posted without
+`--general`: the incident form does not travel, and a channel full of other
+people's incidents is one nobody reads.
+
+    .game_loop/triggers.json
+    {"harden": [{"name": "learnings-broadcast",
+                 "command": "/path/to/llm_chat/triggers/learnings-broadcast
+                             --room learnings --as <you>",
+                 "timeout_sec": 20}]}
+
+Payload arrives as JSON on stdin; stdout comes back to the agent. Exits non-zero
+only when the post genuinely failed — game_loop prints that loudly and the
+harden itself still stands.
+
+`--dry-run` prints what would be sent and posts nothing, which is how you check
+the wiring without putting a test message in front of every agent on the machine.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CLI = os.path.join(os.path.dirname(HERE), "bin", "llm_chat")
+
+
+def calling_repo(env=None):
+    """Which project is hardening — decided explicitly, never inherited.
+
+    The CLI resolves a project by walking UP from its cwd, so whatever cwd this
+    process happens to have IS the identity the post is filed under. game_loop
+    runs triggers from the repo root today, which made that correct by luck
+    rather than by contract, and a harden run from a subdirectory of a different
+    checkout would have filed it somewhere else without saying so.
+
+    GAME_LOOP_REPO is the harness's own answer to the question and is the only
+    authoritative one. It is UNSET when a human runs the script by hand, which
+    is precisely the case a neighbouring project got wrong: their code was
+    correct in production and wrong in the context they tested it in, so the
+    verification run was the thing that published a bad message. Hence a real
+    fallback chain, all three links of which are tested, rather than a default
+    that silently works in one context.
+    """
+    env = os.environ if env is None else env
+    return env.get("GAME_LOOP_REPO") or os.getcwd()
+
+
+def compose(payload):
+    """The message, or None when there is nothing worth other agents' attention.
+
+    Provenance is part of the message rather than metadata: a reader deciding
+    whether this applies to their code needs to know what kind of project hit it
+    and what now stops it coming back. "Enforced by" is the difference between a
+    note and a learning — a claim with no mechanism is a good intention.
+    """
+    general = (payload.get("general") or "").strip()
+    if not general:
+        return None
+    project = payload.get("project") or "an unnamed project"
+    rung, mechanism = payload.get("rung"), (payload.get("mechanism") or "").strip()
+    trailer = "— from %s" % project
+    if rung is not None:
+        trailer += ", hardened at ladder rung %s" % rung
+    if mechanism:
+        trailer += ". Enforced by: %s" % mechanism
+    return "%s\n\n%s" % (general, trailer)
+
+
+def send(cli, room, identity, text, repo):
+    """Post it. Via --file, because a learning about shell quoting that cannot
+    survive being sent through a shell is a joke this project has earned."""
+    handle, path = tempfile.mkstemp(prefix="learning-", suffix=".txt")
+    try:
+        with os.fdopen(handle, "w") as f:
+            f.write(text)
+        done = subprocess.run([sys.executable, cli, "say", room, "--file", path,
+                               "--as", identity],
+                              cwd=repo, capture_output=True, text=True,
+                              timeout=20)
+        return done.returncode, (done.stdout or "").strip(), (done.stderr or "").strip()
+    finally:
+        os.unlink(path)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--room", default="learnings")
+    ap.add_argument("--as", dest="identity", required=True)
+    ap.add_argument("--cli", default=CLI, help="path to the llm_chat CLI")
+    ap.add_argument("--repo", default=None,
+                    help="the hardening project; defaults to GAME_LOOP_REPO, "
+                         "then the cwd")
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args(argv)
+
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        print("unreadable payload on stdin — nothing broadcast")
+        return 1
+
+    text = compose(payload)
+    if text is None:
+        # Not a failure. Most hardens are local, and saying so keeps "nothing to
+        # share" distinguishable from "the trigger is broken", which is the
+        # distinction a silent success destroys.
+        print("no --general form given, so nothing was broadcast")
+        return 0
+
+    if args.dry_run:
+        print("would post to #%s as %s:\n%s" % (args.room, args.identity, text))
+        return 0
+
+    code, out, err = send(args.cli, args.room, args.identity, text,
+                          args.repo or calling_repo())
+    if code != 0:
+        print("could NOT broadcast to #%s: %s" % (args.room, err or out or code))
+        return 1
+    print("broadcast to #%s (%s)" % (args.room, out or "sent"))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -21,7 +21,7 @@ THE ONE DESIGN RULE (everything follows from it)
     native skill. "Point at a file on disk" is the one check prose cannot satisfy.
 
 LINEAGE
-    Extracted from two systems that already ran unattended for real: an on-device firmware loop where
+    Extracted from two projects that already ran unattended for real: an on-device firmware loop where
     the expensive gated action was a human button-press, and a trading loop where it was a real-money
     order. Same arm->gate->consume primitive, same VERIFIED/RULED-OUT/OPEN ledger vocabulary, two
     unrelated domains. game_loop is that pattern with the domain specifics removed. See docs/.
@@ -177,6 +177,10 @@ DEFAULT_CONFIG = {
     "deploy_verbs": [],        # extra irreversible verbs the guard blocks anywhere
     "generated_globs": [],     # extra generated/vendored paths the commit blast-radius warning skips
     "trans_nudge_every": 12,   # phase transitions between retro nudges
+    # Evidence work (claims, hardens, fix proofs) between retro nudges. The transitions counter above
+    # cannot fire on its own: it counts an OPTIONAL verb, and in this repo's whole history `trans`
+    # ran once against twelve hardens and zero retros. This one counts work that logs itself.
+    "work_nudge_every": 8,
     "watchdog": {"idle_sec": 30, "settle_sec": 5, "ring_cap": 3},
     # Usage-limit survival (statusline tap + limitgate + watchdog park). threshold_pct is where the
     # handoff gate closes; exhausted_pct is where the watchdog treats the session as rate-limited
@@ -400,12 +404,151 @@ def render_banner(s, frm=None):
 
 
 def retro_nudge(s):
-    n = s.get("trans_since_stepback", 0)
-    every = config().get("trans_nudge_every", 12)
-    if n >= every:
-        return (f"⚠ {n} transitions since the last retro — `game_loop stepback --notes ..` is due "
+    """Due-for-a-retro, measured on work that ACTUALLY HAPPENS.
+
+    This nudge was unreachable for the whole life of the project, and the arithmetic says why: it
+    counted `trans` only, `trans` had run ONCE in the log's entire history, and the threshold was 12.
+    Nothing was broken — the counter simply never moved, so the check could not fire, and its
+    silence read exactly like "no retro is due". Meanwhile `harden` had run twelve times and
+    `stepback` zero, which is the retro not happening at all.
+
+    A trigger fed by an OPTIONAL bookkeeping verb is enforcement resting on the thing it is meant to
+    enforce (INV1). So the second counter is fed by work that leaves a log line whether or not
+    anyone remembers this feature exists: claims sourced, learnings hardened, fixes proved.
+    Either counter can fire it — `trans` stays honoured for anyone who does drive phases.
+    """
+    cfg = config()
+    t, w = s.get("trans_since_stepback", 0), s.get("work_since_stepback", 0)
+    t_every, w_every = cfg.get("trans_nudge_every", 12), cfg.get("work_nudge_every", 8)
+    if t >= t_every:
+        return (f"⚠ {t} transitions since the last retro — `game_loop stepback --notes ..` is due "
                 "(reflect, harden the chapter's learnings, reset the count).")
+    if w >= w_every:
+        return (f"⚠ {w} pieces of evidence work (claims, hardens, fix proofs) since the last retro — "
+                "`game_loop stepback --notes ..` is due. This counter exists because the "
+                "transitions one counted a verb nobody runs, and so never fired.")
     return None
+
+
+# ── triggers ──────────────────────────────────────────────────────────────────────────────────
+#
+# A place for a project to attach ITS OWN action to a moment in the loop. game_loop cannot ship the
+# actions themselves: the one that prompted this is broadcasting a generalised learning to a channel
+# other agents read, and most installs have no such channel, no other agents, and no wish to talk to
+# anyone at all. A rule that cannot apply to everyone must not be wired in for everyone — so the
+# harness owns the MOMENT, and the project owns what happens there.
+#
+# Config lives in triggers.json, which is GITIGNORED, exactly like notify.json and for the same
+# reason: it is site wiring, not product. config.json is tracked and would ship one machine's paths
+# and room names to every cloner.
+#
+# Three rules, each a scar:
+#   * NEVER BLOCKS. A trigger that fails must not stop a learning from being hardened — the work
+#     outranks the announcement, and a broadcast that can veto the thing it reports on is a guard
+#     blocking its own fix (INV5).
+#   * NEVER SILENT. Failure, timeout and a command that cannot be found all SAY so. A missing
+#     trigger is the usage-limit tap over again: three gates fed by one file nobody noticed was
+#     never written (INV8).
+#   * ALWAYS ACCOUNTED. Every configured trigger carries its last outcome in state, so `status`
+#     can name one that has never fired. "Configured" and "working" are different claims.
+TRIGGERS_F = os.path.join(ROOT, "triggers.json")
+
+# The moments the loop publishes. Adding one is a deliberate act: a moment nobody attaches to is
+# dead weight, and a moment that fires on a hot path turns a helpful hook into a tax.
+TRIGGER_EVENTS = {
+    "harden": "a learning was just encoded into an artifact — the moment to GENERALISE and share it",
+    "stepback": "a retro just began — the moment to LEARN from what others have shared",
+}
+
+
+def load_triggers():
+    try:
+        with open(TRIGGERS_F) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        return {}
+    return d if isinstance(d, dict) else {}
+
+
+def triggers_for(event):
+    e = load_triggers().get(event)
+    return [t for t in e if isinstance(t, dict) and t.get("command")] if isinstance(e, list) else []
+
+
+def fire_triggers(s, event, payload):
+    """Run this project's attachments for `event`. Returns lines to print; raises nothing, ever.
+
+    The payload goes in as JSON on stdin — the same shape Claude Code hands its own hooks, so anyone
+    who has written one of those already knows this contract. stdout comes BACK to the agent on
+    purpose: a trigger that reads a channel is useless if what it read is thrown away.
+    """
+    fired = []
+    for t in triggers_for(event):
+        name = str(t.get("name") or "(unnamed)")
+        try:
+            timeout = max(1.0, float(t.get("timeout_sec") or 20))
+        except (TypeError, ValueError):
+            timeout = 20.0
+        env = dict(os.environ, GAME_LOOP_EVENT=event, GAME_LOOP_ROOT=ROOT, GAME_LOOP_REPO=REPO_ROOT)
+        try:
+            r = subprocess.run(["bash", "-c", t["command"]], input=json.dumps(payload),
+                               capture_output=True, text=True, timeout=timeout, env=env)
+            ok, body, err = r.returncode == 0, (r.stdout or "").strip(), (r.stderr or "").strip()
+            if not ok and not err:
+                err = f"exited {r.returncode} with nothing on stderr"
+        except subprocess.TimeoutExpired:
+            ok, body, err = False, "", f"timed out after {timeout:.0f}s"
+        except OSError as exc:                       # command unrunnable — still an ANSWER, not a crash
+            ok, body, err = False, "", str(exc)
+        rec = s.setdefault("triggers", {}).setdefault(name, {})
+        rec.update({"event": event, "at": now(), "ok": ok, "detail": (err or body)[:200]})
+        logline({"kind": "trigger", "name": name, "event": event, "ok": ok,
+                 "detail": (err or "")[:200]})
+        fired.append((name, ok, body, err))
+    if not fired:
+        return []
+    save(s)
+    lines = [f"— triggers · {event} ——————————————————————————"]
+    for name, ok, body, err in fired:
+        if ok:
+            lines.append(f"  ✓ {name}")
+            lines.extend("     " + l for l in (body.splitlines() or ["(no output)"]))
+        else:
+            # Loud, and it says the verb still stands — otherwise the next reader assumes it didn't.
+            lines.append(f"  ✗ {name} FAILED — {err or 'no detail'}")
+            if body:
+                lines.extend("     " + l for l in body.splitlines())
+            lines.append(f"     (the {event} itself stands; a trigger never blocks the work)")
+    return lines
+
+
+def triggers_report():
+    """Silent when a project has attached nothing — most installs want no part of this.
+
+    Once something IS attached, silence becomes the failure mode worth naming: a trigger that has
+    never fired looks identical, from outside, to one that fires perfectly every time.
+    """
+    cfg = load_triggers()
+    entries = [(ev, t) for ev in cfg for t in triggers_for(ev)]
+    if not entries:
+        return []
+    s = load()
+    seen = s.get("triggers") or {}
+    lines = ["TRIGGERS — this project's own attachments to the loop:"]
+    for ev, t in entries:
+        name = str(t.get("name") or "(unnamed)")
+        rec = seen.get(name)
+        if not rec:
+            lines.append(f"  ⚠ [{ev}] {name} — CONFIGURED BUT NEVER FIRED in this tree. Either the "
+                         f"moment has not come round yet, or it is not wired to anything.")
+        else:
+            mark = "✓" if rec.get("ok") else "✗"
+            lines.append(f"  {mark} [{ev}] {name} — last {rec.get('at')}"
+                         + ("" if rec.get("ok") else f" · FAILING: {rec.get('detail') or '?'}"))
+    unused = [e for e in TRIGGER_EVENTS if not triggers_for(e)]
+    if unused:
+        lines.append("  → moments with nothing attached: " + ", ".join(sorted(unused)))
+    return lines
 
 
 # ── source resolution ───────────────────────────────────────────────────────────────────────────
@@ -1034,6 +1177,7 @@ def cmd_claim(s, a):
             inst["recheck_n"] = len(inst.get("readings") or [])
     logline(rec)
     s["claim_count"] = s.get("claim_count", 0) + 1
+    s["work_since_stepback"] = s.get("work_since_stepback", 0) + 1   # feeds the retro nudge
     save(s)
     msg = [CLAIM_OUTCOMES[outcome],
            f"  assert    : {a.assert_}",
@@ -2720,6 +2864,8 @@ def cmd_fix(s, a):
                                      ("name", "promises", "produces", "diagnosis", "before",
                                       "observed", "produces_digest", "diagnosis_digest",
                                       "before_digest", "observed_digest", "expect")}})
+    s["work_since_stepback"] = s.get("work_since_stepback", 0) + 1
+    save(s)          # this verb had no other reason to persist state; without it the count is lost
     sym, note = fix_state(proof)
     out(f"{sym} FIX PROVED — {a.prove} was exercised through what it produces.",
         f"  promises : {a.promises}",
@@ -3243,6 +3389,47 @@ def hooks_live_warning():
     return None
 
 
+def limits_inert_warning(snap):
+    """The usage-limit family has exactly ONE source of truth, and it can go missing in silence.
+
+    `rate_limits` is carried by the statusline payload and nothing else — verified against the
+    shipped CLI binary, where the field is built as `(v.five_hour||v.seven_day)&&{rate_limits:v}`
+    beside `context_window` and `vim.mode`, and appears nowhere near `hook_event_name`. So when no
+    snapshot exists, THREE gates fail open at once and none of them says a word: `limitgate` never
+    demands a handoff, the watchdog never parks, and nothing rings the run awake when the window
+    resets. A run can burn to its limit and stop dead while every check reports fine.
+
+    That is the whole reason this speaks. Absence of the snapshot is absence of SIGNAL, never
+    evidence of headroom, and the old status line ("the tap hasn't fired ... it fills on the first
+    API response") read as a benign not-yet — the failure it describes is indistinguishable from
+    success until the limit arrives, which is the one moment nothing can be done about it.
+
+    Returns None only when a snapshot actually carries a window; both "no file" and "file with no
+    windows" are inert and say so, because for the human waiting on a page they are the same thing.
+    """
+    if snap and (snap.get("windows") or {}):
+        return None
+    cost = ("  While this is true: no page at the threshold, no park at exhaustion, and no ring "
+            "when the\n  window resets — a limit will stop the run silently.")
+    if os.environ.get("CLAUDE_CODE_ENTRYPOINT") == "claude-vscode":
+        return ("⚠ USAGE-LIMIT PROTECTION IS INERT — no limits snapshot, and this host is the "
+                "VSCode\n  extension (CLAUDE_CODE_ENTRYPOINT=claude-vscode), whose UI renders no "
+                "terminal statusline.\n" + cost + "\n"
+                "  → Treat it as UNAVAILABLE here rather than pending. A session run from a "
+                "terminal\n    (`claude` in a shell) does fire the tap; in this window, hand off "
+                "on your own clock.")
+    if snap is None:
+        return ("⚠ USAGE-LIMIT PROTECTION IS INERT — the statusline tap has never fired in this "
+                "checkout,\n  so no snapshot exists.\n" + cost + "\n"
+                "  → Check that `statusLine` is registered in .claude/settings.json (install.sh "
+                "wires it)\n    and that this host renders one. It fills on the first statusline "
+                "refresh.")
+    return ("⚠ USAGE-LIMIT PROTECTION IS INERT — the tap fired, but the payload carried no usage "
+            "windows.\n  That is what API-key auth looks like: limits are exposed to subscription "
+            "sessions only.\n" + cost + "\n"
+            "  → Nothing to fix if this account is API-key based; the gates simply cannot arm.")
+
+
 SESSION_TTL_DAYS = 30
 
 
@@ -3561,7 +3748,10 @@ def coverage_report(s):
                  f"{len(cfg.get('allow_write_roots') or [])} configured allow_write_roots may be")
     lines.append("           written. Everything else is denied WITHOUT being named, so nothing "
                  "goes unprotected for")
-    lines.append("           want of remembering it.")
+    lines.append("           want of remembering it. 'This repo' includes its LINKED WORKTREES — "
+                 "one project checked")
+    lines.append("           out twice is still one project (#47) — and nothing else that shares a "
+                 "parent directory.")
     extra = cfg.get("deploy_verbs") or []
     shown = ", ".join(DEPLOY_VERB_DEFAULTS[:2]) + f", +{len(DEPLOY_VERB_DEFAULTS) - 2} built-in"
     lines.append(f"  deploy : DENYLIST — {len(DEPLOY_VERB_DEFAULTS) + len(extra)} verb(s) blocked "
@@ -3604,6 +3794,78 @@ def main_checkout():
     except OSError:
         return None
     return path
+
+
+def working_tree():
+    """(toplevel, git-common-dir) of the tree the CALLER is standing in — or (None, None).
+
+    Deliberately NOT `_git`, which runs with cwd=REPO_ROOT and can therefore only ever describe the
+    binary's own tree. That single detail is the whole of #47: every answer was about the checkout
+    the CODE lives in, never the checkout the agent is working in, and the two are different exactly
+    when it matters most.
+    """
+    try:
+        r = subprocess.run(["git", "rev-parse", "--show-toplevel", "--git-common-dir"],
+                           capture_output=True, text=True, timeout=GIT_TIMEOUT)
+    except Exception:  # noqa: BLE001 — no git, no repo, a hung index: all mean "nothing to say"
+        return (None, None)
+    if r.returncode != 0:
+        return (None, None)
+    parts = r.stdout.strip().splitlines()
+    if len(parts) < 2:
+        return (None, None)
+    top, common = parts[0].strip(), parts[1].strip()
+    if not os.path.isabs(common):
+        common = os.path.join(top, common)
+    try:
+        return (os.path.realpath(top), os.path.realpath(common))
+    except OSError:
+        return (None, None)
+
+
+def working_tree_report():
+    """LOUD when the tree being worked IN is not the tree this harness answers FOR (#47).
+
+    Silent in the ordinary case — the binary's tree and the caller's tree are the same — which is
+    every normal invocation, so this costs nobody a line they do not need.
+
+    It exists because the failure was silent rather than wrong-looking. An agent in a sibling
+    worktree, invoking a main checkout's binary by absolute path, got confident answers about a tree
+    it was not in: `worktree` said "not a linked worktree" while `.git` proved otherwise, state
+    landed in the other checkout's sessions/, and before the write-scope fix its writes were denied
+    outright — twelve authorizations spent on ordinary work, with nothing anywhere saying why.
+    """
+    top, common = working_tree()
+    if not top:
+        return []
+    try:
+        here = os.path.realpath(REPO_ROOT)
+    except OSError:
+        return []
+    if top == here:
+        return []
+    mine = _git("rev-parse", "--git-common-dir")
+    if mine and not os.path.isabs(mine):
+        mine = os.path.join(here, mine)
+    try:
+        mine = os.path.realpath(mine) if mine else None
+    except OSError:
+        mine = None
+    kin = "a LINKED WORKTREE of this same project" if (mine and mine == common) else \
+          "a DIFFERENT repository"
+    return [
+        f"⚠ YOU ARE NOT IN THE TREE THIS HARNESS ANSWERS FOR — the working tree is {kin}.",
+        f"    working tree : {top}",
+        f"    harness tree : {here}",
+        "  Identity, state, rules and the log all belong to the harness tree, so `status`, "
+        "`worktree`",
+        "  and the verbs describe THAT tree — not the one you are editing. The write guard does "
+        "reach a",
+        "  linked worktree of the same project (#47), so ordinary work is not blocked; everything "
+        "else",
+        "  still reports on the other tree.",
+        f"  → Give this tree its own harness:  <game_loop>/install.sh {top}",
+    ]
 
 
 def _same_bytes(a, b):
@@ -3817,6 +4079,113 @@ def pinned_report():
     return lines
 
 
+def _home_keyed(entry):
+    """(tilde form, whose home) for an absolute path living under SOME account's home — the one
+    shape a path cannot survive being committed in. None for anything else.
+
+    Two cases, and both are the same mistake seen from opposite ends. Under THIS account's home,
+    the tilde form IS the entry rewritten correctly, so it is returned. Under ANOTHER account's —
+    which is precisely what someone who cloned the repo sees — the path does not exist here at all
+    and there is no rewrite to offer, only the account name that gives the mistake away.
+    """
+    if not isinstance(entry, str) or not os.path.isabs(entry):
+        return None
+    p = os.path.normpath(entry)
+    home = os.path.expanduser("~")
+    if os.path.isabs(home) and (p == home or p.startswith(home + os.sep)):
+        return ("~" if p == home else "~/" + p[len(home) + 1:]), None
+    # Where accounts' homes sit (/Users, /home). Never os.sep itself: with home=/root that would
+    # read every absolute path on the disk as somebody's home directory.
+    holder = os.path.dirname(home)
+    if os.path.isabs(holder) and holder != os.sep and p.startswith(holder + os.sep):
+        account = p[len(holder) + 1:].split(os.sep)[0]
+        if account:
+            return None, account
+    return None
+
+
+def config_paths_report():
+    """The CONFIG PATHS block for `status` — a TRACKED config granting a write on ONE machine.
+
+    `.game_loop/config.json` is project config and belongs in git; the installer's inner .gitignore
+    lists runtime state only, so it is tracked in every target. Two of its fields take filesystem
+    paths, and the natural thing to type in them is an absolute one under the author's home. For
+    `read_roots` that is merely useless to a stranger. For `allow_write_roots` it is a permission:
+    the file is committed, so everyone who clones the repo inherits an allowlisted write root
+    OUTSIDE the repo — the exact thing INV3 says there are none of by default — aimed at a path
+    keyed to one account. That is what happened to the project that reported this.
+
+    The remedy already works and nothing said so, which is why this is a check and not a docs note
+    (INV6: take the highest rung that applies). `expanduser` is applied to every entry before it is
+    matched (bin/guard-writes-impl.sh), so the tilde form resolves to EACH user's own home and is
+    correct for all of them.
+
+    Silent unless the file is genuinely TRACKED: a project that gitignores .game_loop/ has no
+    exposure, and a warning that fires where there is no hazard is the kind that gets tuned out
+    (INV5's argument from the other side). Silent on any git failure, missing or unreadable config
+    too — it is `status` output, and it never blocks anything.
+    """
+    if not _git("ls-files", "--", CONFIG_F):   # untracked, or no git at all: nothing to leak
+        return []
+    cfg = config()
+    repo_real = os.path.realpath(REPO_ROOT)
+    found = []
+    # Each field names WHO expands it, because they are different readers and a remedy that cites the
+    # wrong file is a remedy nobody can check.
+    for field, mark, expander in (
+            ("allow_write_roots", "⚠", "the write guard, .game_loop/bin/guard-writes-impl.sh"),
+            ("read_roots", "·", "claim --read, .game_loop/bin/game_loop")):
+        entries = cfg.get(field)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            keyed = _home_keyed(entry)
+            if not keyed:
+                continue
+            real = os.path.realpath(os.path.expanduser(entry))
+            if real == repo_real or real.startswith(repo_real + os.sep):
+                continue      # inside the repo: non-portable, but it grants nothing new
+            found.append((field, mark, expander, entry, keyed))
+    if not found:
+        return []
+    lines = ["", "CONFIG PATHS — .game_loop/config.json is TRACKED, and these entries name ONE "
+             "machine:"]
+    for field, mark, expander, entry, (tilde, account) in found:
+        lines.append(f"  {mark} {field}: {entry}")
+        if field == "allow_write_roots":
+            lines.append("      This file is committed, so EVERY clone of this repo inherits it — an "
+                         "allowlisted WRITE")
+            lines.append("      ROOT outside the repo, which INV3 says there are none of by default, "
+                         "granted to people")
+            lines.append("      who never chose it.")
+        else:
+            lines.append("      Committed and keyed to one account: no permission in it, just a read "
+                         "root that is")
+            lines.append("      useless to everyone else who clones this.")
+        if tilde:
+            lines.append(f"      → write it as  {tilde}  — every entry is run through expanduser "
+                         "before use, so")
+            lines.append("        the tilde form resolves to EACH user's own home and is correct "
+                         "for all of them.")
+        else:
+            lines.append(f'      It is under the home of "{account}", which is NOT this account: it '
+                         "came from")
+            lines.append("      whoever committed the config, and names nothing that exists here.")
+            lines.append("      → if it meant \"the user's own home\", write it with a leading ~ — "
+                         "every entry is run")
+            lines.append("        through expanduser before use, so the tilde form is correct for "
+                         "every clone.")
+        lines.append(f"        expanded by: {expander}")
+    lines.append("  → a RELATIVE entry is NOT the fix: those resolve against the process's working "
+                 "directory,")
+    lines.append("    not the repo root, so the allowlist quietly differs per caller instead of "
+                 "failing.")
+    lines.append("  → NOT checked: whether this repo is published anywhere, whether an absolute path "
+                 "OUTSIDE a")
+    lines.append("    home directory is one you meant to share, or what any of these paths hold.")
+    return lines
+
+
 def cmd_self(s, a):
     """`game_loop self` — run the harness from a pinned checkout, so editing it cannot break it.
 
@@ -3889,31 +4258,48 @@ def cmd_self(s, a):
 
 
 def self_hooks_block(code):
-    """The wiring, generated. Printed for .claude/settings.local.json — never for settings.json."""
+    """The wiring, generated — an INLINE dispatcher for the TRACKED settings.json.
+
+    The obvious route, a second copy of every hook in settings.local.json, is wrong and was tried
+    first: Claude Code MERGES the two files rather than overriding, so every gate ran TWICE — two
+    write guards, two stop gates, two watchdogs polling. Measured, not predicted: one commit printed
+    the same blast-radius warning verbatim two times. Nothing breaks loudly, which is the problem.
+
+    Deleting the tracked hooks to compensate is worse: a guard that exists but is not wired in is
+    not a guard, and this repo's own suite refuses that state.
+
+    So one entry decides at call time, and it is safe to track because it degrades to the ordinary
+    wiring: no pin present, no behaviour change, and a fresh clone is fully guarded. It is also
+    INLINE rather than a shim script, because another script would be one more file sitting in the
+    edit zone — which is the exposure a pin exists to remove.
+    """
+    d = "$CLAUDE_PROJECT_DIR/" + PINNED_DIRNAME + "/.game_loop"
+    def wire(script):
+        return (f'    d="{d}"; [ -x "$d/bin/{script.split()[0]}" ] || '
+                f'd="$CLAUDE_PROJECT_DIR/.game_loop"; '
+                f'{HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" exec "$d"/bin/{script}')
     return [
-        "WIRE IT IN .claude/settings.local.json (gitignored, machine-local) — NOT in the tracked",
-        ".claude/settings.json, which ships to every install and must keep pointing at",
-        "$CLAUDE_PROJECT_DIR/.game_loop/bin/. Replace each game_loop hook command with:",
+        "WIRE IT IN THE TRACKED .claude/settings.json. Replace each game_loop hook command with the",
+        "matching line below — one entry that prefers the pin and falls back to the repo's own bin/:",
         "",
-        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/guard-writes.sh',
-        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/guard-mcp.sh',
-        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/game_loop limitgate',
-        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/game_loop stopgate',
-        f'    {HOME_ENV}="$CLAUDE_PROJECT_DIR/.game_loop" "{code}"/bin/watchdog',
+        wire("guard-writes.sh"),
+        wire("guard-mcp.sh"),
+        wire("game_loop limitgate"),
+        wire("game_loop stopgate"),
+        wire("watchdog"),
         "",
         f"{HOME_ENV} is not optional in any of those: it is what keeps verify.yaml, the record of "
         "what",
-        "was checked, and every byte of state in the REPO.",
+        "was checked, and every byte of state in the REPO rather than in the copy, which the next",
+        "re-pin destroys.",
         "",
-        "THEN REMOVE THE GAME_LOOP HOOKS FROM .claude/settings.json — the two files MERGE, they do",
-        "not override. Leaving both wired runs EVERY gate twice: two write guards, two stop gates,",
-        "two watchdogs polling. Measured, not predicted: a commit under both printed the same",
-        "blast-radius warning verbatim two times. Nothing breaks loudly, which is the problem —",
-        "duplicate output reads as the tool repeating itself rather than as two of it running.",
-        "  In THIS repo the tracked file carries no hooks for exactly that reason; `./install.sh .`",
-        "  puts the unpinned wiring back whenever you want to stop running pinned.",
+        "DO NOT also wire these in .claude/settings.local.json. The two files MERGE, they do not",
+        "override, and leaving both wired runs every gate twice — measured: one commit printed the",
+        "same blast-radius warning verbatim two times. Duplicate output reads as the tool repeating",
+        "itself rather than as two of it running.",
         "",
-        "Then reload — hooks are read at session start, so none of this takes effect until you do.",
+        "Re-pinning takes effect immediately — the hook execs whatever the pin directory holds now.",
+        "A RELOAD is needed only when these command lines themselves change.",
     ]
 
 
@@ -4008,6 +4394,7 @@ def cmd_status(s, a):
     out(*fixes_report(s))   # which fixes were exercised through their OWN output — not their repro
     out(*coverage_report(s))   # what the rails are NOT looking at — silence from a rail is not safety
     out(*worktree_report(s))   # …and whether the rails in THIS tree are the project's at all (#30)
+    out(*config_paths_report())   # a TRACKED config handing every cloner a write root on ONE machine
     if (ro := ruled_out()):
         # The single most useful question at the start of a resumed investigation is "what has
         # already been ruled out?" — so it is answered before it is asked.
@@ -4020,14 +4407,15 @@ def cmd_status(s, a):
             out(f"  … {len(ro) - RULED_OUT_SHOWN} older — grep '\"outcome\": \"refuted\"' "
                 ".game_loop/log.jsonl")
     out(*denials_report(s))   # the referee firing, not the loop's own scoreboard
+    out(*triggers_report())  # attached ≠ working: one that never fired looks just like one that does
+    out(*working_tree_report())  # which tree is being edited vs which one this harness speaks for
     snap = load_limits()
-    if snap:
-        lim = limits_summary(snap) or "snapshot present but empty (API-key auth exposes no limits)"
+    lim = limits_summary(snap) if snap else None
+    if lim:
         over = binding_windows(snap, float(limits_cfg()["threshold_pct"]), time.time())
         out("limits: " + lim + ("  ⚠ HANDOFF DUE — the limitgate is closed" if over else ""))
-    else:
-        out("limits: no snapshot — the statusline tap hasn't fired (subscribers only; "
-            "install.sh wires it, then it fills on the first API response)")
+    if (w := limits_inert_warning(snap)):   # says what is OFF, not merely that a file is missing
+        out(w)
     if notify:
         out("notify: " + ("Slack configured — replies readable (bot token)" if notify.can_read_replies()
                           else "Slack configured — send-only (webhook)" if notify.configured()
@@ -4060,13 +4448,13 @@ HARDEN_LADDER = [
     "2 LOUD       — assert/guard AT the point of misuse (fails in 1s, not 3h later, with the reason)",
     "3 CHECKED    — a build/CI/test check that fails on regression",
     "4 AUTOMATED  — the tool just does it (no step left to remember)",
-    "5 VISIBLE    — the system REPORTS the fact, so it's read, never guessed",
+    "5 VISIBLE    — the harness REPORTS the fact, so it's read, never guessed",
     "6 (doc/memo) — LAST resort only; you must say why 1-5 genuinely don't apply",
 ]
 
 
 def cmd_harden(s, a):
-    """Record a learning converted into an artifact the system enforces.
+    """Record a learning converted into an artifact the harness enforces.
 
     Same keystone as `claim --read`: the ungameable part is naming a REAL file. Prose is a promise to
     remember, and long sessions + compaction break promises. Docs are the INDEX; the artifact is the
@@ -4083,17 +4471,68 @@ def cmd_harden(s, a):
         die("these --artifact paths aren't real files: " + ", ".join(bad) + "\n"
             "Hardening means the artifact EXISTS (code / assert / check / tool), not a plan to write "
             "one. Write it first, then record it here.")
+    general = (getattr(a, "general", None) or "").strip()
     logline({"kind": "harden", "learning": a.learning, "artifact": list(resolved.values()),
-             "mechanism": a.mechanism, "rung": a.rung})
+             "mechanism": a.mechanism, "rung": a.rung, "general": general or None})
     s["hardened_count"] = s.get("hardened_count", 0) + 1
+    s["work_since_stepback"] = s.get("work_since_stepback", 0) + 1
     save(s)
     out("✓ HARDENED — learning → artifact.",
         f"  learning : {a.learning}",
         f"  artifact : {', '.join(paths)}",
         f"  mechanism: {a.mechanism}",
         f"  rung     : {a.rung or '(unspecified — which ladder rung?)'}",
-        f"→ enforced by the system now, not by memory. (hardened so far: {s['hardened_count']})")
+        f"→ enforced by the harness now, not by memory. (hardened so far: {s['hardened_count']})")
+    if general:
+        out(f"  general  : {general}")
+    elif triggers_for("harden"):
+        # Only nag where somebody has actually attached a sharing step. GENERALISING is a separate
+        # act of thought from hardening, and the transferable form is rarely the incident: "our tap
+        # never wrote limits.json" helps nobody, while "a check whose PASS is silence cannot tell
+        # satisfied from never-ran" is the part that travels. Never blocks — an unshared learning is
+        # still hardened, and refusing the record to extract a sentence would be the tail wagging.
+        out("  ⚠ no --general: this project has a harden trigger attached, and it has nothing to",
+            "    share. The incident form rarely transfers — say the version another agent could use",
+            "    without knowing anything about this codebase.")
+    if (n := retro_nudge(s)):
+        out("", n)
+    out(*fire_triggers(s, "harden", {
+        "event": "harden", "learning": a.learning, "general": general or None,
+        "artifact": list(resolved.values()), "mechanism": a.mechanism, "rung": a.rung,
+        "project": config().get("project_name"), "session": SESSION}))
     flair_out(s, "harden")
+
+
+def retro_outcome():
+    """What CAME of the last retro, counted from the shared log rather than remembered.
+
+    A retro that produces nothing is indistinguishable, afterwards, from one that never happened —
+    both leave a session where no learning got encoded. The act was never the point; the encoding
+    is. So each retro opens by reporting the previous one's yield, and an empty yield is stated
+    rather than passed over. Read from the log because it is the record neither optimism nor
+    compaction can edit.
+    """
+    try:
+        with open(LOG_F) as f:
+            recs = [json.loads(l) for l in f if l.strip()]
+    except (OSError, ValueError):
+        return []
+    last = max((i for i, r in enumerate(recs) if r.get("kind") == "stepback"), default=None)
+    if last is None:
+        return ["  (no previous retro in this log — this is the first)"]
+    after = recs[last + 1:]
+    counts = collections.Counter(r.get("kind") for r in after)
+    when = recs[last].get("t") or "?"
+    hardened = counts.get("harden", 0)
+    lines = [f"  since the last retro ({when}): {hardened} hardened · "
+             f"{counts.get('claim', 0)} claims · {counts.get('fix_proof', 0)} fix proofs · "
+             f"{counts.get('trigger', 0)} triggers fired"]
+    if not hardened:
+        lines.append("  ⚠ NOTHING WAS HARDENED since the last retro. Either the chapter genuinely "
+                     "taught nothing, or the")
+        lines.append("    last retro ended at the writing-it-down step. Only one of those is worth "
+                     "repeating.")
+    return lines
 
 
 def cmd_stepback(s, a):
@@ -4101,9 +4540,20 @@ def cmd_stepback(s, a):
         die("stepback needs --notes — a REAL retro: what WORKED (repeat it)? where did I DEVIATE? "
             "did I assert before reading? AND which recurring learning gets ENCODED (harden), not "
             "written down?")
+    # Others' learnings arrive BEFORE the reflection, not after it — arriving afterwards would make
+    # them a reading exercise rather than an input to the thinking they are supposed to inform.
+    incoming = fire_triggers(s, "stepback", {
+        "event": "stepback", "notes": a.notes, "project": config().get("project_name"),
+        "session": SESSION, "trans_since": s.get("trans_since_stepback", 0),
+        "work_since": s.get("work_since_stepback", 0)})
+    prior = retro_outcome()          # BEFORE the new line lands, or it finds itself and reports zero
     logline({"kind": "stepback", "notes": a.notes})
     s["trans_since_stepback"] = 0
+    s["work_since_stepback"] = 0
     save(s)
+    if incoming:
+        out(*incoming)
+    out("=== WHAT THE LAST RETRO YIELDED ===", *prior, "")
     out("=== STEP-BACK — invariants re-injected ===")
     try:
         with open(INV_F) as f:
@@ -4112,7 +4562,7 @@ def cmd_stepback(s, a):
         out(inv_oneline())
     out("",
         "RETRO — ENCODE, DON'T REMEMBER. For EACH learning this chapter, ask the only question that",
-        "matters: **how does the SYSTEM enforce this now?** A learning that lives in prose (a note,",
+        "matters: **how does the HARNESS enforce this now?** A learning that lives in prose (a note,",
         "INVARIANTS.md, CLAUDE.md, memory) is a promise to remember — and long sessions + compaction",
         "break promises. Climb to the highest rung that applies:",
         *["  " + r for r in HARDEN_LADDER],
@@ -4154,6 +4604,8 @@ def main():
     hd.add_argument("--artifact", help="real path[,path] to the code/assert/check/tool that enforces it")
     hd.add_argument("--mechanism", help="how it now fails loudly / becomes impossible")
     hd.add_argument("--rung", help="ladder rung 1..6 (1 IMPOSSIBLE .. 6 doc-last-resort)")
+    hd.add_argument("--general", help="the TRANSFERABLE form — what another agent could use without "
+                                      "knowing this codebase (fed to any `harden` trigger)")
 
     sb = sub.add_parser("stepback")
     sb.add_argument("--notes")

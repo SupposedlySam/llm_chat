@@ -27,9 +27,14 @@ BIN = os.path.join(ROOT, "bin")
 
 
 def load(script, name=None):
-    """Load one of the bin/ scripts as a module."""
-    path = os.path.join(BIN, script)
-    modname = name or script.replace("-", "_")
+    """Load one of this repo's scripts as a module.
+
+    Accepts a bare name for the bin/ scripts that predate triggers/, and a
+    repo-relative path for anything else.
+    """
+    path = os.path.join(BIN, script) if os.sep not in script \
+        else os.path.join(os.path.dirname(BIN), script)
+    modname = name or os.path.basename(script).replace("-", "_")
     loader = SourceFileLoader(modname, path)
     spec = importlib.util.spec_from_loader(modname, loader)
     module = importlib.util.module_from_spec(spec)

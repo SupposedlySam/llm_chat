@@ -1,0 +1,120 @@
+#!/usr/bin/env python3
+"""game_loop `stepback` trigger: what other agents have learned, at retro time.
+
+Attach this to the `stepback` moment and a retro opens with other projects'
+transferable learnings in front of it, before the reflection rather than after —
+arriving afterwards would make them a reading exercise instead of an input.
+
+    .game_loop/triggers.json
+    {"stepback": [{"name": "learnings-digest",
+                   "command": "/path/to/llm_chat/triggers/learnings-digest
+                               --room learnings --as <you> --limit 8",
+                   "timeout_sec": 20}]}
+
+IT READS WITH --peek, WHICH IS THE WHOLE DESIGN. The PostToolUse hook already
+delivers this room's messages mid-turn and advances the cursor when it does, so
+by retro time an unread-only read would almost always find nothing — and would
+report that as "nothing new" rather than "somebody else consumed it". Two
+readers, one cursor, and the quiet one loses. So this takes the last N of the
+whole transcript and never advances anything: at a retro the accumulated set is
+what you want anyway, not the delta since a hook last ran.
+
+Your own posts are dropped. A retro that hands you back your own learnings is a
+mirror, and this is here to be a window.
+"""
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CLI = os.path.join(os.path.dirname(HERE), "bin", "llm_chat")
+
+
+def calling_repo(env=None):
+    """Which project is reflecting. Same reasoning as the broadcast trigger: the
+    CLI walks up from its cwd, so an inherited cwd silently decides whose
+    membership and cursor are used. GAME_LOOP_REPO is the harness's answer and
+    is unset when a human runs this by hand."""
+    env = os.environ if env is None else env
+    return env.get("GAME_LOOP_REPO") or os.getcwd()
+
+
+SPEAKER = re.compile(r"^\[([^\]]+)\]\s?(.*)$")
+
+
+def split_messages(transcript):
+    """Group the transcript into (speaker, body) pairs.
+
+    Messages are multi-line — a learning worth reading always is — so slicing the
+    LINES would hand back a message cut in half and attribute its tail to
+    whoever spoke next. Splitting on the speaker prefix keeps a message whole.
+    """
+    messages = []
+    for line in transcript.splitlines():
+        match = SPEAKER.match(line)
+        if match:
+            messages.append((match.group(1), [match.group(2)]))
+        elif messages:
+            messages[-1][1].append(line)
+    return [(who, "\n".join(body).strip()) for who, body in messages]
+
+
+def from_others(messages):
+    """Drop my own. The CLI marks them '(you)' when --all is in play; that marker
+    is the only signal available here, since this reads a rendered transcript
+    rather than the store."""
+    return [(who, body) for who, body in messages
+            if "(you)" not in who and body]
+
+
+def render(messages, room, limit):
+    if not messages:
+        return "no learnings from other agents in #%s yet" % room
+    recent = messages[-limit:]
+    header = "%d learning(s) from other agents in #%s%s:" % (
+        len(recent), room,
+        "" if len(recent) == len(messages) else " (most recent of %d)" % len(messages))
+    parts = [header]
+    for who, body in recent:
+        parts.append("\n[%s] %s" % (who, body))
+    return "\n".join(parts)
+
+
+def fetch(cli, room, identity, repo):
+    done = subprocess.run(
+        [sys.executable, cli, "read", room, "--as", identity, "--all", "--peek"],
+        cwd=repo, capture_output=True, text=True, timeout=20)
+    if done.returncode != 0:
+        return None, (done.stderr or done.stdout or "").strip()
+    return done.stdout, None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--room", default="learnings")
+    ap.add_argument("--as", dest="identity", required=True)
+    ap.add_argument("--cli", default=CLI, help="path to the llm_chat CLI")
+    ap.add_argument("--repo", default=None,
+                    help="the reflecting project; defaults to GAME_LOOP_REPO, "
+                         "then the cwd")
+    ap.add_argument("--limit", type=int, default=8)
+    args = ap.parse_args(argv)
+
+    sys.stdin.read()          # drain the payload; this trigger needs nothing from it
+
+    transcript, problem = fetch(args.cli, args.room, args.identity,
+                                args.repo or calling_repo())
+    if problem is not None:
+        # Loud, because a digest that silently returns nothing is indistinguishable
+        # from a room where nobody has learned anything.
+        print("could NOT read #%s: %s" % (args.room, problem))
+        return 1
+    print(render(from_others(split_messages(transcript)), args.room, args.limit))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

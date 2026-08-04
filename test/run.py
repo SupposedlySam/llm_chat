@@ -45,7 +45,15 @@ from mutate import discover_sources  # noqa: E402
 
 
 def measured():
-    return [os.path.basename(p) for p in discover_sources()]
+    """Repo-relative paths, shared with the mutation sweep.
+
+    This returned BASENAMES and joined them onto bin/, which was invisible while
+    every measured file happened to live there. The moment discovery reached
+    triggers/ it went looking for bin/learnings-broadcast and crashed — the
+    lucky failure. A quieter version of the same assumption would have measured
+    the wrong file and reported a number.
+    """
+    return discover_sources()
 
 def executable_lines(path):
     """Statement lines the tracer could plausibly report, via the parser.
@@ -176,7 +184,7 @@ def measure():
 
     report = {}
     for script in measured():
-        path = os.path.join(BIN, script)
+        path = os.path.join(ROOT, script)
         executable = executable_lines(path)
         hit = {n for (f, n) in counts if os.path.abspath(f) == path}
         missing = sorted(executable - hit)
