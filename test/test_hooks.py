@@ -122,6 +122,44 @@ class DeliverTest(HookTestCase):
         self.assertIn("ANOTHER AGENT", context,
                       "the header has to say these are not the agent's own words")
 
+    def test_the_hook_uses_the_DELIVERY_path_not_the_TRANSCRIPT_one(self):
+        """The self-filter lives in `read`, and `--all` disables it.
+
+        Reported by an agent who saw their own message delivered with the
+        `(you)` marker, which belongs to the transcript format. Not reproduced
+        here or by a third agent, and git shows the hook has never passed
+        `--all` — but the property is worth pinning regardless, because adding
+        that flag later would silently recreate the self-answering loop this
+        project's invariants call the expensive one, and nothing else would
+        notice.
+        """
+        self.joined(room="me")
+        stub = Stub("[other] hello")
+        self.mod.subprocess = FakeSubprocess()
+        self.mod.subprocess.run = stub
+        self.run_hook()
+        argv, = stub.calls
+        self.assertIn("read", argv)
+        self.assertNotIn("--all", argv,
+                         "--all disables the self-filter; the hook must never "
+                         "ask for the transcript")
+        self.assertNotIn("--peek", argv,
+                         "--peek would deliver the same message on every tool "
+                         "call, forever")
+
+    def test_the_hook_reads_as_the_identity_that_joined_that_room(self):
+        """The filter can only exclude your own words if it is told who you
+        are. One project holds a different identity per channel, so passing
+        the wrong one filters nothing."""
+        self.joined(alpha="me", beta="someone-else")
+        stub = Stub("nothing new", "nothing new")
+        self.mod.subprocess = FakeSubprocess()
+        self.mod.subprocess.run = stub
+        self.run_hook()
+        pairs = {argv[argv.index("read") + 1]: argv[argv.index("--as") + 1]
+                 for argv in stub.calls}
+        self.assertEqual(pairs, {"alpha": "me", "beta": "someone-else"})
+
     def test_nothing_new_is_not_a_delivery(self):
         self.joined(room="me")
         self.mod.subprocess = FakeSubprocess("nothing new in room")

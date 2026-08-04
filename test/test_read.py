@@ -10,6 +10,7 @@ import io
 import os
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 
@@ -124,6 +125,70 @@ class ReadTest(unittest.TestCase):
         self.assertIn("closed", text)
         self.assertIn("every member is done", text)
 
+
+
+
+class ConcurrentDeliveryTest(unittest.TestCase):
+    """Two deliverers, one cursor — the race the lock exists for.
+
+    This closes the one exclusion in test/mutate.py that admitted a behaviour
+    was undefended rather than merely unswept: deleting the lock could not fail
+    a single-threaded suite, because the race needs two readers at once. The
+    lock's MECHANICS were asserted; what it is FOR was not.
+
+    flock is per open-file-description, and read_lock opens its own descriptor
+    per call, so two threads in one process contend exactly as two processes do.
+    """
+    def setUp(self):
+        self.fake = FakeServer()
+        self._real_call = cli.call
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["CLAUDE_PROJECT_DIR"] = self.tmp.name
+
+    def tearDown(self):
+        cli.call = self._real_call
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        self.tmp.cleanup()
+
+    def test_one_message_is_delivered_exactly_once_to_two_readers(self):
+        import threading
+
+        self.fake.channel("room")
+        self.fake.membership("room", "me", seen_seq=0)
+        self.fake.message("room", 1, "other", "deliver me once")
+
+        # Widen the read-modify-write window so an unlocked run loses the race
+        # reliably rather than occasionally: without this the test would pass
+        # for timing reasons and defend nothing.
+        real_call = self.fake.call
+
+        def slow(server, method, path, body=None, query=None, timeout=10):
+            if method == "GET" and path == "/db/list" and query.get("table") == "messages":
+                time.sleep(0.05)
+            return real_call(server, method, path, body, query, timeout)
+        cli.call = slow
+
+        delivered = []
+        lock = threading.Lock()
+
+        def read_once():
+            out = io.StringIO()
+            with redirect_stdout(out):
+                got = cli.do_read("http://x", "room", "me")
+            with lock:
+                delivered.extend(got)
+
+        threads = [threading.Thread(target=read_once) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        self.assertEqual(len(delivered), 1,
+                         "the lock must serialise claim-and-advance; delivering "
+                         "twice is what the other agent reads as you repeating "
+                         "yourself")
+        self.assertEqual(self.fake.get_membership("room", "me")["seen_seq"], 1)
 
 if __name__ == "__main__":
     unittest.main()

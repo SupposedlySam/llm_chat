@@ -78,6 +78,12 @@ MUTATIONS = [
      "[:]",
      "one delivery can be large enough to derail a turn"),
 
+    ("the read lock serialises claim-and-advance", "bin/llm_chat",
+     "    with read_lock():\n        member = get_membership",
+     "    if True:\n        member = get_membership",
+     "two deliverers claim the same messages and the cursor advances once, "
+     "so the other agent reads it as you repeating yourself"),
+
     ("upgrade notice fires once per session", "bin/llm-chat-deliver",
      "    if os.path.exists(marker):\n        return \"\"",
      "    if False:\n        return \"\"",
@@ -136,23 +142,12 @@ NOT_SWEPT = {
     "bin/llm-chat-wake:superseded": "its CALL SITE is swept (the "
         "before-polling ordering); the comparison itself is asserted directly "
         "for held, lost and unreadable pidfiles",
+    "bin/llm_chat:read_lock": "its CALL SITE is swept — removing `with "
+        "read_lock()` from do_read is caught by a two-thread test that gets the "
+        "message delivered twice; the contextmanager's own mechanics (held, "
+        "fail-open, unusable directory, failing unlock) are asserted directly",
     "bin/llm_chat:remember": "atomicity asserted directly — the temp file must "
         "not survive the rename",
-
-    # A KNOWN UNDEFENDED BEHAVIOUR, stated rather than hidden. Deleting the
-    # lock from do_read would NOT fail this suite, because every test is
-    # single-threaded and the race needs two deliverers running at once. So a
-    # mutation here would survive, and that survival would be a restatement of
-    # this sentence rather than a discovery. The lock's own mechanics ARE
-    # asserted (held, fail-open, unusable directory, failing unlock); what is
-    # undefended is the CONCURRENCY it exists for, and defending that needs a
-    # test that runs two readers against one cursor — which this suite cannot
-    # do today. Listed here so the gap is on the record instead of implied by
-    # a number.
-    "bin/llm_chat:read_lock": "SHOULD BE SWEPT — but a mutation would survive: "
-        "the suite is single-threaded and the race it guards needs two "
-        "concurrent deliverers. The gap is the missing concurrency test, not "
-        "the missing mutation",
 
     # Honest gaps. These SHOULD be swept and are not yet. Saying so beats an
     # exclusion that is technically true and practically a dodge.
@@ -182,10 +177,47 @@ NOT_SWEPT = {
 }
 
 
+def discover_sources():
+    """Every Python file in bin/, found by PARSING rather than by naming.
+
+    A hardcoded tuple was here, and it listed exactly the three files that
+    exist — complete today, and complete BY ACCIDENT. The next script added to
+    bin/ would be invisible to it while the accounting kept reporting "0
+    unaccounted", which is this tool's own defect one level further out again:
+    the denylist moved from the mutation list, to the function scan, to the
+    FILE list. A sibling project found the identical thing inside the very
+    measurement it used to find its file-level gap.
+
+    The predicate is "it parses as Python", not "it ends in .py" — all three
+    entrypoints here are extension-less, so a *.py glob is the obvious wrong
+    answer and would return nothing at all.
+
+    NOT COVERED, stated rather than implied: install.sh and legacy_teardown.sh.
+    They have no AST and this harness cannot mutate them, so they are outside
+    this denominator entirely — their behaviour is defended by test_shell.py,
+    which runs them for real, but no mutation proves those tests would fail. A
+    denominator that silently excludes a LANGUAGE is the same false green as
+    one that excludes a file, so it is named here.
+    """
+    directory = os.path.join(ROOT, "bin")
+    sources = []
+    for name in sorted(os.listdir(directory)):
+        path = os.path.join(directory, name)
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as f:
+                ast.parse(f.read())
+        except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+            continue
+        sources.append(os.path.join("bin", name))
+    return sources
+
+
 def candidates():
     """Every module-level function in the measured files, derived not listed."""
     found = {}
-    for relative in ("bin/llm_chat", "bin/llm-chat-deliver", "bin/llm-chat-wake"):
+    for relative in discover_sources():
         path = os.path.join(ROOT, relative)
         with open(path) as f:
             source = f.read()
