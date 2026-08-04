@@ -63,6 +63,8 @@ class WakeLoopTest(unittest.TestCase):
     def test_a_waiting_message_wakes_the_session(self):
         """The whole point: exit 2 with the text on stderr, which asyncRewake
         converts into a wake-up in the same session."""
+        self.mod.addressed = lambda channel, entry: {"wakes_me": True,
+                                                     "messages": []}
         self.mod.poll = lambda channel, entry: "[other] wake up"
         self.mod.time = NoSleep()
         err = io.StringIO()
@@ -84,22 +86,30 @@ class WakeLoopTest(unittest.TestCase):
     def test_a_broadcast_room_never_wakes_the_session(self):
         """Paired with the test below, which proves the skip is targeted rather
         than the waker being broken. Measured live too: a broadcast room with an
-        unread message left the waker polling, a normal one exited 2."""
+        unread message left the waker polling, a normal one exited 2.
+
+        The room is now PEEKED rather than skipped outright, because a message
+        addressed to you specifically has to be able to reach you even here.
+        What must not happen is the CONSUMING read, which is what would both
+        wake the session and take the message off the cursor."""
         with open(os.path.join(self.project, ".llm_chat", "joined.json"), "w") as f:
             json.dump({"notices": {"identity": "me", "server": "http://x",
                                    "broadcast": True}}, f)
         polled = []
+        self.mod.addressed = lambda channel, entry: None   # nothing addresses me
         self.mod.poll = lambda channel, entry: polled.append(channel)
         self.mod.still_worth_listening = lambda rooms: False
         self.mod.time = NoSleep()
         self.assertEqual(self.run_main(), 0)
-        self.assertEqual(polled, [], "a broadcast room must not even be polled")
+        self.assertEqual(polled, [], "an unaddressed message must not be read")
 
     def test_an_ordinary_room_alongside_it_still_wakes(self):
         with open(os.path.join(self.project, ".llm_chat", "joined.json"), "w") as f:
             json.dump({"notices": {"identity": "me", "server": "http://x",
                                    "broadcast": True},
                        "room": {"identity": "me", "server": "http://x"}}, f)
+        self.mod.addressed = lambda channel, entry: (
+            {"wakes_me": True, "messages": []} if channel == "room" else None)
         self.mod.poll = lambda channel, entry: "[other] wake up"
         self.mod.time = NoSleep()
         err = io.StringIO()
@@ -119,8 +129,15 @@ class WakeLoopTest(unittest.TestCase):
 
     def test_a_superseded_waker_stops_before_polling(self):
         """Before, never after: polling advances the cursor, so a waker that
-        claimed a message and then stood down would lose it."""
+        claimed a message and then stood down would lose it.
+
+        `addressed` is stubbed to say YES on purpose. Without that, poll is
+        unreachable anyway — nothing is addressing us — and this test would
+        pass with the supersession check deleted, which is the vacuous-green
+        shape it exists to prevent."""
         polled = []
+        self.mod.addressed = lambda channel, entry: {"wakes_me": True,
+                                                     "messages": []}
         self.mod.poll = lambda channel, entry: polled.append(channel)
         self.mod.superseded = lambda: True
         self.mod.time = NoSleep()
@@ -129,6 +146,8 @@ class WakeLoopTest(unittest.TestCase):
 
     def test_an_orphaned_waker_stops_before_polling(self):
         polled = []
+        self.mod.addressed = lambda channel, entry: {"wakes_me": True,
+                                                     "messages": []}
         self.mod.poll = lambda channel, entry: polled.append(channel)
         self.mod.orphaned = lambda: True
         self.mod.time = NoSleep()

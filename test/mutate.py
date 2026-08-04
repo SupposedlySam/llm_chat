@@ -90,6 +90,30 @@ MUTATIONS = [
      "an agent is a member server-side and never polls the room, because both "
      "hooks read the LOCAL record to decide what to poll"),
 
+    ("the waker PEEKS before it claims", "bin/llm-chat-wake",
+     '            info = addressed(channel, entry)\n            if info is None:\n                continue',
+     '            info = {"wakes_me": True, "messages": []}',
+     "every poll consumes the room, so a message meant to be passive is "
+     "claimed and dropped and the wallflower never sees it at all"),
+
+    ("a broadcast room still wakes nobody by default", "bin/llm_chat",
+     '    if audience is None:\n        return not chan.get("broadcast")',
+     '    if audience is None:\n        return True',
+     "every learning posted to #learnings pulls every agent on the machine "
+     "off its work — the interrupt storm broadcast rooms exist to prevent"),
+
+    ("an unaddressed message still wakes an ordinary room", "bin/llm_chat",
+     '    if audience is None:\n        return not chan.get("broadcast")',
+     '    if audience is None:\n        return False',
+     "a plain reply stops waking anyone, so two agents talking stall at every "
+     "turn and a human has to prod them — the gap the waker was built to close"),
+
+    ("a mention that names a non-member is refused", "bin/llm_chat",
+     '    if missing:',
+     '    if False:',
+     "a typo'd mention silently wakes nobody while reporting the send "
+     "succeeded, so the sender waits for an answer that cannot come"),
+
     ("a joiner is shown the room's house rules", "bin/llm_chat",
      '    if (rules := render_briefing(chan)):\n        print(rules)',
      '    if False:\n        print(rules)',
@@ -222,6 +246,24 @@ NOT_SWEPT = {
         "escalation and silence",
     "bin/llm-chat-slack:pump_in": "SHOULD BE SWEPT — cursor advance past bot "
         "messages is asserted, but nothing proves the ordering guarantee",
+
+    # The audience feature. What is swept is every guard whose absence is
+    # SILENT — a wrong wake is noticed immediately, a missing one never is.
+    "bin/llm_chat:audience_for": "every flag, combination and refusal asserted "
+        "directly, including a sentinel passed as a name",
+    "bin/llm_chat:describe_audience": "every branch asserted directly",
+    "bin/llm_chat:say_reach": "woken, passive and empty-room asserted directly",
+    "bin/llm_chat:do_pending": "asserted directly, including that a second "
+        "call returns the same answer — which is what proves it consumed nothing",
+    "bin/llm-chat-wake:addressed": "asserted directly that it calls `pending` "
+        "and never `read`, and that an outage is a non-answer rather than a wake",
+    "bin/llm-chat-wake:who_addressed": "asserted directly",
+    "bin/llm-chat-slack:route": "all three cases asserted directly, plus "
+        "Slack's <!here> encoding, precedence over threads, and that an email "
+        "address is not a mention",
+    "bin/llm-chat-slack:read_threads": "missing and corrupt asserted directly",
+    "bin/llm-chat-slack:remember_thread": "asserted directly, including the "
+        "bound and that the OLDEST entries are the ones dropped",
 
     "bin/llm_chat:render_briefing": "attribution, fencing, the empty case and "
         "a hostile briefing all asserted directly",

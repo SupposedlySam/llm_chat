@@ -543,7 +543,164 @@ def message_text(args):
     return args.text
 
 
-def do_say(server, name, identity, text):
+# Who a message wakes. Sentinels, not names — and they cannot collide with a
+# real identity, because NAME_OK requires a leading [a-z0-9]. Asserted by a
+# test rather than trusted: a sentinel sharing a namespace with its data is
+# how in-band signalling starts, and this file already carries the scar of a
+# shell eating backticks out of a message before the program saw it.
+AUDIENCE_ALL = "*"
+AUDIENCE_NONE = "-"
+
+
+def audience_for(to, to_all, to_none):
+    """Turn the three flags into a stored value, or None for 'the room decides'.
+
+    Refuses a combination rather than picking one, exactly as `message_text`
+    refuses a positional message alongside --file: silently preferring one
+    leaves the sender holding a wrong belief about who they just woke, and the
+    whole point of this feature is that the sender knows.
+    """
+    given = [flag for flag, on in
+             (("--to", bool(to)), ("--to-all", to_all), ("--to-none", to_none))
+             if on]
+    if len(given) > 1:
+        raise SystemExit(
+            f"{' and '.join(given)} together — pick one. They answer the same\n"
+            f"  question and you cannot know which one was applied."
+        )
+    if to_all:
+        return AUDIENCE_ALL
+    if to_none:
+        return AUDIENCE_NONE
+    if not to:
+        return None
+    names = [n.strip() for n in to.split(",") if n.strip()]
+    if not names:
+        raise SystemExit("--to given with no names")
+    for name in names:
+        if not valid(name):
+            raise SystemExit(f"'{name}' is not a valid identity")
+    return ",".join(names)
+
+
+def check_recipients(server, channel, audience):
+    """Refuse to address somebody who is not in the room.
+
+    A mention that silently no-ops is the worst failure this feature could
+    have: the sender believes it delivered and stops, the recipient is never
+    woken, and nothing anywhere reports a problem. Human chat apps render a
+    mistyped mention as plain text and say nothing, which is precisely the
+    'reports success while doing nothing' shape this project keeps hardening
+    against.
+    """
+    if not audience or audience in (AUDIENCE_ALL, AUDIENCE_NONE):
+        return
+    members = {m["identity"] for m in
+               rows(server, "memberships", eq("channel", channel))}
+    missing = [n for n in audience.split(",") if n not in members]
+    if missing:
+        raise SystemExit(
+            f"no {', '.join(repr(n) for n in missing)} in #{channel} — "
+            f"members: {', '.join(sorted(members)) or '(none)'}\n"
+            f"  Nothing sent."
+        )
+
+
+def wakes(message, identity, chan):
+    """Does this message pull `identity` off whatever it is doing?
+
+    The room provides the default and the message may override it, so a
+    broadcast room can still carry one note that genuinely needs an answer,
+    and an ordinary room can carry a side conversation that leaves the rest of
+    the members as wallflowers.
+    """
+    audience = message.get("audience")
+    if audience is None:
+        return not chan.get("broadcast")
+    if audience == AUDIENCE_ALL:
+        return True
+    if audience == AUDIENCE_NONE:
+        return False
+    return identity in audience.split(",")
+
+
+def describe_audience(audience, identity=None):
+    """How a message's reach reads to a person or an agent."""
+    if audience is None:
+        return ""
+    if audience == AUDIENCE_ALL:
+        return "everyone"
+    if audience == AUDIENCE_NONE:
+        return "nobody"
+    names = audience.split(",")
+    if identity is not None and identity in names:
+        others = [n for n in names if n != identity]
+        return "you" + (f" and {', '.join(others)}" if others else "")
+    return ", ".join(names)
+
+
+def say_reach(server, channel, sender, audience, chan):
+    """One line telling the sender who it just woke, and who merely gets to see it.
+
+    Every message used to wake every idle member and nothing said so, which is
+    how a three-agent room turns into two agents talking and one being
+    interrupted. Reporting the count at the moment of sending is the cheapest
+    place to make that visible.
+    """
+    members = sorted(m["identity"] for m in
+                     rows(server, "memberships", eq("channel", channel))
+                     if m["identity"] != sender)
+    woken = [m for m in members if wakes({"audience": audience}, m, chan)]
+    passive = [m for m in members if m not in woken]
+    if not members:
+        return "nobody else is in this room yet"
+    if not woken:
+        return (f"wakes nobody; {len(passive)} will see it when next working "
+                f"({', '.join(passive)})")
+    out = f"wakes {', '.join(woken)}"
+    if passive:
+        out += f"; passive for {', '.join(passive)}"
+    return out
+
+
+def do_pending(server, name, identity):
+    """What is waiting, and whether any of it is addressed to me — WITHOUT
+    consuming it.
+
+    This exists because the waker and the delivery hook share one server-side
+    cursor, so `read` is the same act as "claim these messages". Deciding
+    whether to wake by reading would therefore consume a passive message and
+    drop it on the floor: the wallflower would never see it at all, which is
+    the silent-loss failure this project has already shipped once.
+
+    So the waker peeks here, and only calls the consuming `read` when something
+    actually addresses it. JSON rather than the rendered transcript, because a
+    hook parsing prose is one format change away from deciding nothing wakes it
+    and saying nothing about why.
+    """
+    member = get_membership(server, name, identity)
+    if member is None:
+        raise SystemExit(f"{identity} has not joined {name}")
+    chan = get_channel(server, name)
+    if chan is None:
+        raise SystemExit(f"no such channel: {name}")
+    waiting = [m for m in rows(server, "messages",
+                               and_(eq("channel", name),
+                                    gt("seq", member.get("seen_seq", 0))))
+               if m["from_identity"] != identity]
+    print(json.dumps({
+        "channel": name,
+        "identity": identity,
+        "pending": len(waiting),
+        "wakes_me": any(wakes(m, identity, chan) for m in waiting),
+        "messages": [{"seq": m["seq"], "from": m["from_identity"],
+                      "audience": m.get("audience"),
+                      "wakes_me": wakes(m, identity, chan)}
+                     for m in sorted(waiting, key=lambda m: m["seq"])],
+    }))
+
+
+def do_say(server, name, identity, text, audience=None):
     chan = get_channel(server, name)
     if chan is None:
         raise SystemExit(f"no such channel: {name}")
@@ -551,6 +708,7 @@ def do_say(server, name, identity, text):
         raise SystemExit(f"{name} is closed — {chan.get('closed_reason') or 'no reason given'}")
     if get_membership(server, name, identity) is None:
         raise SystemExit(f"{identity} has not joined {name}")
+    check_recipients(server, name, audience)
 
     count = chan.get("message_count", 0)
     cap = chan.get("max_messages", DEFAULT_MAX_MESSAGES)
@@ -562,10 +720,14 @@ def do_say(server, name, identity, text):
     seq = count + 1
     create(server, "messages", {
         "channel": name, "seq": seq, "from_identity": identity,
-        "text": text, "created_at": now_ms(),
+        "text": text, "audience": audience, "created_at": now_ms(),
     })
     update(server, "channels", eq("id", chan["id"]), {"message_count": seq})
     print(f"sent #{seq} to {name} as {identity}")
+    # Say the blast radius back, every time. An agent that cannot see who it
+    # just interrupted cannot learn to interrupt fewer people, and this whole
+    # feature exists because that number used to be "all of them, always".
+    print(f"  {say_reach(server, name, identity, audience, chan)}")
     if seq >= cap * 0.9:
         # Warn before the wall, not at it: an agent that hits the cap mid-thought
         # loses the thought.
@@ -609,9 +771,15 @@ def do_read(server, name, identity, peek=False, all_messages=False):
 
     if not waiting:
         print(f"nothing new in {name}")
+    chan_for_mark = get_channel(server, name) or {}
     for m in waiting:
         mark = " (you)" if m["from_identity"] == identity else ""
-        print(f"[{m['from_identity']}{mark}] {m['text']}")
+        # Say who it was FOR, not just who it was from. An agent that cannot
+        # tell "answer this" from "this went past you" has to infer it from the
+        # prose, and will sometimes answer a conversation it was not in.
+        to = describe_audience(m.get("audience"), identity)
+        arrow = f" → {to}" if to else ""
+        print(f"[{m['from_identity']}{mark}{arrow}] {m['text']}")
 
     chan = get_channel(server, name)
     if chan and chan.get("closed"):
@@ -1230,6 +1398,21 @@ def main() -> int:
                         "the payload never touches a command line. Giving both "
                         "this and a positional message is REFUSED, not silently "
                         "resolved")
+    p.add_argument("--to",
+                   help="wake only these members (comma-separated). Everyone "
+                        "else still SEES it, when they are next working — they "
+                        "are simply not interrupted for it")
+    p.add_argument("--to-all", action="store_true",
+                   help="wake every member. The escape hatch in a broadcast "
+                        "room, where the default is to wake nobody")
+    p.add_argument("--to-none", action="store_true",
+                   help="wake nobody; leave it for people to find. The default "
+                        "already, in a broadcast room")
+    p.add_argument("--as", dest="identity")
+
+    p = sub.add_parser("pending",
+                       help="what is waiting, as JSON, without consuming it")
+    p.add_argument("channel")
     p.add_argument("--as", dest="identity")
 
     p = sub.add_parser("read", help="pull anything waiting for you")
@@ -1295,6 +1478,10 @@ def main() -> int:
         remember(args.channel, identity, server,
                  broadcast=bool(chan.get("broadcast")))
         return 0
+    if args.cmd == "pending":
+        do_pending(server, args.channel,
+                   resolve_identity(args.identity, args.channel))
+        return 0
     if args.cmd == "briefing":
         do_briefing(server, args.channel,
                     resolve_identity(args.identity, args.channel),
@@ -1325,7 +1512,8 @@ def main() -> int:
     identity = identity_for(args.channel, getattr(args, "identity", None))
     if args.cmd == "say":
         args.text = message_text(args)
-        do_say(server, args.channel, identity, args.text)
+        do_say(server, args.channel, identity, args.text,
+               audience_for(args.to, args.to_all, args.to_none))
     elif args.cmd == "read":
         do_read(server, args.channel, identity, args.peek, args.all_messages)
     elif args.cmd == "leave":

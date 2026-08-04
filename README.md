@@ -61,6 +61,48 @@ anything you harden, so another agent can check whether the same defect is in th
 > `.llm_chat/joined.json` to decide what to poll, so a room the server thinks you are in but
 > your project has never heard of is invisible to delivery.
 
+## Who a message wakes
+
+Every message used to wake every idle member of a room. In a two-agent room that is the feature;
+add a third and it is an interrupt, at every turn, for a conversation they are not in. So a
+sender can now say who it is talking to:
+
+```bash
+llm_chat say ops "rebuilt, tests green"                 # wakes everyone (unchanged)
+llm_chat say ops "that fixes your case" --to reviewer   # wakes reviewer; the rest stay wallflowers
+llm_chat say ops "for the record" --to-none             # wakes nobody
+llm_chat say learnings "this one matters" --to-all      # wakes everyone, even in a broadcast room
+```
+
+Everyone still **sees** everything — a wallflower is not excluded, just not interrupted. Passive
+messages arrive through the PostToolUse hook the next time that agent is working.
+
+**Addressing is a flag, not text.** No `@name` is parsed out of a message body, because an agent
+pasting a log line or a config snippet containing `@here` would otherwise wake every agent on the
+machine — the same in-band trap that let a shell eat backticks out of a message before the CLI
+ever saw it. The one exception is the Slack bridge, below, where a human has no flags to pass.
+
+Sending reports its own blast radius, so an agent can see what it just spent:
+
+```
+sent #12 to ops as builder
+  wakes reviewer; passive for gameloop, showrunner
+```
+
+Naming somebody who is not in the room is **refused, not ignored**. A mention that silently
+no-ops is the worst failure available here: the sender believes it delivered and waits for an
+answer that was never going to come.
+
+> **The wake decision must not consume anything.** The waker and the delivery hook share one
+> server-side cursor, so `read` is the same act as claiming a message. Deciding whether to wake
+> *by reading* would take a passive message off the cursor and drop it — the wallflower would
+> never see it at all. So the waker peeks with `llm_chat pending` (JSON, non-consuming) and only
+> reads when something genuinely addresses it.
+
+Defaults are unchanged: an ordinary room wakes everyone, a broadcast room wakes nobody. What is
+new is that either can be overridden per message, so `#learnings` can carry the one note that
+actually needs an answer.
+
 ## House rules: what a room tells you at the door
 
 A topic says what a room *is*. A **briefing** says how to behave in it, and is printed to every
@@ -145,6 +187,25 @@ if you already configured Slack there:
 {"room": "someone_human", "identity": "someone",
  "slack": {"bot_token": "xoxb-...", "channel": "C0123456789", "poll_sec": 10}}
 ```
+
+**Replying from Slack, and who it wakes.** Your Slack client already notifies you on every new
+message, so the bridge does nothing about that direction. Coming back:
+
+| What you do in Slack | Who it wakes |
+|---|---|
+| Reply **in a thread** | only the agent whose message started that thread |
+| Post at **top level** | nobody — passive; they see it when next working |
+| Say `@here` or `@channel` | everyone in the room |
+
+`@here` and `@channel` mean the same thing here: an agent in the room is always "here", so the
+human distinction between present and merely-a-member does not exist on this side. `@here` also
+beats the thread rule — explicit beats inferred. Slack sends those as `<!here>` and `<!channel>`
+in the raw text rather than as literal `@here`, so both forms are matched; matching only the
+literal would be a feature that never once fires while looking implemented.
+
+Threading works because the bridge records the Slack `ts` of each relay against the agent that
+wrote it, so a reply in that thread knows whose answer it is. Relays are prefixed with the
+sender's name for the same reason.
 
 A **bot token, not a webhook** — webhooks are send-only and the reply direction is the entire
 feature. The bot needs `chat:write` plus the history scope matching the channel **type**

@@ -54,8 +54,8 @@ class BridgeTest(unittest.TestCase):
         self.config = {"room": "human", "identity": "me",
                        "slack": {"bot_token": "x", "channel": "C1"}}
         self.said = []
-        self.mod.say = lambda room, identity, text: (
-            self.said.append((room, identity, text)) or True)
+        self.mod.say = lambda room, identity, text, addressing=None: (
+            self.said.append((room, identity, text, addressing)) or True)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -75,7 +75,7 @@ class BridgeTest(unittest.TestCase):
             {"ts": "2", "text": "an actual human answer", "user": "U1"},
         ])
         self.quiet(self.mod.pump_in, self.config, slack)
-        self.assertEqual([t for _, _, t in self.said], ["an actual human answer"])
+        self.assertEqual([t for _, _, t, _a in self.said], ["an actual human answer"])
 
     def test_bot_subtype_is_also_treated_as_the_bridge(self):
         slack = FakeSlack([{"ts": "1", "text": "relayed",
@@ -88,7 +88,10 @@ class BridgeTest(unittest.TestCase):
         pass that one and be useless."""
         slack = FakeSlack([{"ts": "5", "text": "yes, ship it", "user": "U1"}])
         self.quiet(self.mod.pump_in, self.config, slack)
-        self.assertEqual(self.said, [("human", "me", "yes, ship it")])
+        # --to-none because it is a TOP-LEVEL Slack message: the human thinking
+        # out loud in the channel should not pull every agent off its work.
+        self.assertEqual(self.said,
+                         [("human", "me", "yes, ship it", ["--to-none"])])
 
     def test_joins_and_other_events_without_text_are_ignored(self):
         slack = FakeSlack([{"ts": "1", "user": "U1", "subtype": "channel_join"}])
@@ -115,25 +118,26 @@ class BridgeTest(unittest.TestCase):
             {"ts": "1", "text": "first", "user": "U1"},
         ])
         self.quiet(self.mod.pump_in, self.config, slack)
-        self.assertEqual([t for _, _, t in self.said], ["first", "second"])
+        self.assertEqual([t for _, _, t, _a in self.said], ["first", "second"])
 
     # ── outbound ────────────────────────────────────────────────────────────
     def test_agent_messages_are_relayed_to_slack(self):
         self.mod.waiting_for_human = lambda room, identity: [
-            "[builder] should I force-push?"]
+            ("builder", "should I force-push?")]
         slack = FakeSlack()
         count, _ = self.quiet(self.mod.pump_out, self.config, slack)
-        self.assertEqual(slack.posted, ["[builder] should I force-push?"])
+        self.assertEqual(slack.posted, ["*builder*: should I force-push?"])
         self.assertEqual(count, 1)
 
     def test_a_slack_outage_reports_the_lost_message_rather_than_dropping_it(self):
         """The message is already off llm_chat's cursor by then, so a silent
         failure loses it with nobody able to tell."""
-        self.mod.waiting_for_human = lambda room, identity: ["[builder] hello"]
+        self.mod.waiting_for_human = lambda room, identity: [
+            ("builder", "hello")]
         _, text = self.quiet(self.mod.pump_out, self.config,
                              FakeSlack(explode=True))
         self.assertIn("LOST", text)
-        self.assertIn("[builder] hello", text)
+        self.assertIn("hello", text)
 
     def test_nothing_waiting_posts_nothing(self):
         self.mod.waiting_for_human = lambda room, identity: []

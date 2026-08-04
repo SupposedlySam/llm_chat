@@ -50,6 +50,7 @@ working channel and discover afterwards what was in it.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -64,6 +65,15 @@ STATE = os.path.join(ROOT, ".llm_chat")
 CONFIG = os.path.join(STATE, "slack.json")
 FALLBACK = os.path.join(ROOT, ".game_loop", "notify.json")
 CURSOR = os.path.join(STATE, "slack-cursor.json")
+THREADS = os.path.join(STATE, "slack-threads.json")
+
+# Slack does NOT send "@here" in the text. It sends <!here> and <!channel>,
+# already parsed, and matching only the literal would be a feature that never
+# once fires while looking implemented. Both forms accepted: the raw string is
+# what a human sees themselves type.
+EVERYONE = re.compile(r"<!(here|channel|everyone)>|(?<!\S)@(here|channel)\b",
+                      re.IGNORECASE)
+MAX_THREADS = 500
 
 DEFAULT_POLL_SEC = 10
 
@@ -139,8 +149,48 @@ def write_cursor(ts):
     os.replace(tmp, CURSOR)
 
 
+def read_threads():
+    try:
+        with open(THREADS) as f:
+            return json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def remember_thread(ts, sender):
+    """Map the Slack message we just posted back to the agent who wrote it.
+
+    This is the whole mechanism behind "reply in a thread and only that agent
+    is woken": a Slack thread_ts is the ONLY structured signal a human has
+    while typing on a phone, and it is worth nothing unless something on this
+    side knows which agent that thread belongs to.
+
+    Bounded, because it is written once per relayed message forever. Oldest
+    entries drop first — a thread nobody has replied to in five hundred
+    messages is not one somebody is about to reply to.
+    """
+    if not ts or not sender:
+        return
+    threads = read_threads()
+    threads[ts] = sender
+    if len(threads) > MAX_THREADS:
+        for old in list(threads)[:len(threads) - MAX_THREADS]:
+            del threads[old]
+    os.makedirs(os.path.dirname(THREADS), exist_ok=True)
+    tmp = THREADS + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(threads, f)
+    os.replace(tmp, THREADS)
+
+
 def waiting_for_human(room, identity):
-    """Agent messages in the room, via the CLI so the self-filter applies."""
+    """Agent messages in the room, as (sender, line) pairs.
+
+    Reads the rendered transcript through the CLI so the self-filter applies —
+    one reader of that rule, not two. The sender is parsed back off the line
+    because the bridge has to know whose thread it is creating; a relay whose
+    author is unknown is one a threaded reply can never be routed to.
+    """
     try:
         out = subprocess.run(
             [sys.executable, CLI, "read", room, "--as", identity],
@@ -149,10 +199,57 @@ def waiting_for_human(room, identity):
         return []
     if not out or out.startswith("nothing new"):
         return []
-    return [line for line in out.splitlines() if line.strip()]
+    pairs = []
+    for line in out.splitlines():
+        if not line.strip():
+            continue
+        match = re.match(r"^\[([^\]\s]+)[^\]]*\]\s?(.*)$", line)
+        pairs.append((match.group(1), match.group(2)) if match
+                     else (None, line))
+    return pairs
 
 
-def say(room, identity, text):
+def route(message, threads):
+    """Who a human's Slack message should WAKE.
+
+    Three cases, and they exist because a phone gives a human exactly one
+    structured gesture — replying in a thread — plus whatever they type.
+
+      thread reply  -> wake only the agent whose message started that thread.
+                       That agent asked; this is its answer; nobody else is
+                       owed an interrupt for it.
+      top level     -> wake NOBODY. A human thinking out loud in the channel
+                       should not pull every agent on the machine off its work.
+                       They still see it when they are next working.
+      @here/@channel-> wake everyone. Both spellings mean the same thing here:
+                       an agent in the room is always "here", so the human
+                       distinction between present and merely-a-member does not
+                       exist on this side.
+
+    @here WINS over the thread rule. It is the one explicit thing the human
+    typed, and explicit beats inferred — a person who writes @here inside a
+    thread means everyone, not "only the agent I happen to be replying to".
+
+    This is the ONLY place text is parsed for addressing. Everywhere else it is
+    a flag, because an agent pasting a log line containing @here would
+    otherwise wake every agent on the machine. A human has no flags to pass,
+    so in-band is the only option HERE and nowhere else.
+    """
+    if EVERYONE.search(message.get("text") or ""):
+        return ["--to-all"]
+    parent = message.get("thread_ts")
+    if parent and parent != message.get("ts"):
+        sender = threads.get(parent)
+        if sender:
+            return ["--to", sender]
+        # A thread whose root we no longer remember. Waking everyone would
+        # spam; waking nobody at least reaches them passively, and is what a
+        # top-level message does anyway.
+        return ["--to-none"]
+    return ["--to-none"]
+
+
+def say(room, identity, text, addressing=None):
     """Post as the human. Via --file, so shell metacharacters in a Slack
     message cannot be eaten before the CLI sees them."""
     path = os.path.join(STATE, "slack-inbound.txt")
@@ -161,7 +258,7 @@ def say(room, identity, text):
         with open(path, "w") as f:
             f.write(text)
         subprocess.run([sys.executable, CLI, "say", room, "--file", path,
-                        "--as", identity],
+                        "--as", identity] + list(addressing or []),
                        capture_output=True, text=True, timeout=15)
         return True
     except Exception:
@@ -184,9 +281,14 @@ def is_from_a_human(message):
 def pump_out(config, slack):
     """llm_chat -> Slack. Returns how many were relayed."""
     lines = waiting_for_human(config["room"], config["identity"])
-    for line in lines:
+    for sender, line in lines:
         try:
-            slack.post(line)
+            posted = slack.post(("*%s*: %s" % (sender, line)) if sender
+                                else line)
+            # The ts of what we just posted IS the thread root. Recording it is
+            # what lets a reply in that thread wake only this sender.
+            if isinstance(posted, dict) and posted.get("ok"):
+                remember_thread(posted.get("ts"), sender)
         except Exception as problem:
             # The message is already consumed from llm_chat's cursor at this
             # point, so a Slack failure loses it. Say so loudly rather than
@@ -209,11 +311,13 @@ def pump_in(config, slack):
         return 0
     messages = sorted(payload.get("messages") or [],
                       key=lambda m: float(m.get("ts", 0)))
+    threads = read_threads()
     relayed = 0
     for message in messages:
         ts = message.get("ts")
         if is_from_a_human(message):
-            if say(config["room"], config["identity"], message["text"]):
+            if say(config["room"], config["identity"], message["text"],
+                   route(message, threads)):
                 relayed += 1
         if ts:
             write_cursor(ts)

@@ -148,6 +148,48 @@ def orphaned() -> bool:
     return PARENT != 1 and os.getppid() != PARENT
 
 
+def addressed(channel, entry):
+    """Does anything waiting here actually ADDRESS me? Consumes nothing.
+
+    The waker and the PostToolUse hook share one server-side cursor, so `read`
+    is the same act as claiming. Deciding whether to wake BY reading would
+    therefore consume a message meant to be passive and drop it on the floor —
+    the wallflower would never see it at all. So peek here, and only read when
+    something is genuinely for us; anything passive stays queued for the
+    delivery hook to hand over next time this agent is working.
+
+    JSON rather than the rendered transcript: a hook that decides whether to
+    wake by pattern-matching prose is one format change away from concluding
+    that nothing wakes it, and saying nothing about why.
+    """
+    identity, server = entry.get("identity"), entry.get("server")
+    if not identity or not server:
+        return None
+    try:
+        out = subprocess.run(
+            [sys.executable, CLI, "--server", server, "pending", channel,
+             "--as", identity],
+            capture_output=True, text=True, timeout=8,
+        ).stdout.strip()
+        info = json.loads(out) if out else None
+    except Exception:
+        # A chat outage must never break the session, and must never be read as
+        # "nothing is waiting" — returning None means "no answer", and the
+        # caller does not wake on it. The message stays queued either way.
+        return None
+    if not isinstance(info, dict) or not info.get("wakes_me"):
+        return None
+    return info
+
+
+def who_addressed(info):
+    """The names that woke us, for the wake text. An agent pulled off its work
+    with no idea who wanted it has to read the whole room to find out."""
+    senders = sorted({m["from"] for m in info.get("messages") or []
+                      if m.get("wakes_me")})
+    return ", ".join(senders)
+
+
 def poll(channel, entry):
     """Return this channel's waiting text, or None. Advances the cursor."""
     identity, server = entry.get("identity"), entry.get("server")
@@ -248,15 +290,21 @@ def main() -> int:
 
         blocks = []
         for channel, entry in joined_rooms().items():
-            # A broadcast room reaches every project on the machine, so waking
-            # for it would pull every agent off its work for somebody else's
-            # note. Delivered by the PostToolUse hook while already working;
-            # never a reason to interrupt an idle session.
-            if entry.get("broadcast"):
+            # Broadcast rooms are no longer skipped wholesale. Their DEFAULT is
+            # still to wake nobody — that is what makes them safe to put every
+            # agent in — but a message addressed to you specifically has to be
+            # able to reach you even there, or the one note that genuinely needs
+            # an answer is the one thing the room cannot deliver.
+            info = addressed(channel, entry)
+            if info is None:
                 continue
             out = poll(channel, entry)
             if out:
-                blocks.append(f"#{channel} (you are '{entry['identity']}')\n"
+                who = who_addressed(info)
+                header = f"#{channel} (you are '{entry['identity']}')"
+                if who:
+                    header += f" — {who} addressed you"
+                blocks.append(header + "\n"
                               + "\n".join(f"  {ln}" for ln in out.splitlines()))
         if blocks:
             wake(blocks)  # exits 2

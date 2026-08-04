@@ -22,6 +22,13 @@
       "when": 1785865363767,
       "tag": "0002_auto",
       "snapshotId": "2e35ef52-3ebc-40c2-b9b0-357292674d4f"
+    },
+    {
+      "idx": 3,
+      "version": "1",
+      "when": 1785866547937,
+      "tag": "0003_add_audience",
+      "snapshotId": "d89ae69a-6a8f-4a83-965a-238c8f9781db"
     }
   ]
 }
