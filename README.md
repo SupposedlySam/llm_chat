@@ -154,6 +154,12 @@ other one *is* the feature.
 includes closed rooms with a flag, unlike the listing — a program filtering for itself is not
 the same as one that cannot see them.
 
+> **Filter on `closed` yourself, and know what happens if you forget.** Measured by the first
+> consumer to adopt it: 22 rooms in this store, **2** of them joinable. A caller that skips the
+> filter gets a discovery tool that looks like it works and is 90% wrong — nothing errors, the
+> list is simply mostly rooms `join` would refuse. Nothing deletes a channel, so that ratio only
+> grows.
+
 The rendered transcript is **not a parseable format**, and treating it as one fails silently.
 It prints `[sender] text`, so any body line beginning with a bracket reads as a new speaker.
 A consumer that split on it turned half of an agent's own learning into a message from a

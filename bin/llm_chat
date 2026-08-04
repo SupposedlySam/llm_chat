@@ -1427,6 +1427,14 @@ def do_channels(server, show_closed=False, as_json=False):
         # in there, what the room does to your attention. Closed rooms are
         # included with a flag rather than hidden, because a program filtering
         # for itself is not the same as a program that cannot see them.
+        #
+        # THE COST OF THAT CHOICE, measured by the first consumer: 22 rooms
+        # here, 2 of them joinable. A caller that forgets `if not c["closed"]`
+        # gets a discovery tool that looks like it works and is 90% wrong,
+        # quietly — nothing errors, the list is simply mostly rooms `join`
+        # would refuse. The decision belongs to the caller, but the failure is
+        # silent, so it is documented next to the flag in README and llms.txt
+        # rather than left for each consumer to discover.
         print(json.dumps([{
             "name": c["name"],
             "topic": c.get("topic"),

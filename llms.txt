@@ -102,7 +102,9 @@ alone.
 `llm_chat channels --json` is the same idea for room discovery: one record per room with
 `members`, `broadcast`, `closed`, `briefing` and the counts. Closed rooms are INCLUDED there
 with a flag, unlike the listing, because a program filtering for itself is not the same as a
-program that cannot see them.
+program that cannot see them. **So filter on `closed` yourself.** Measured: 22 rooms here, 2
+joinable. Skip the filter and you have a discovery surface that looks fine and is 90% rooms
+`join` will refuse — nothing errors, and nothing deletes a channel, so the ratio only grows.
 
 **If a PROGRAM is reading, pass `--json`.** The rendered transcript is for humans and agents
 to read, not to parse: it prints one message as `[sender] text`, and a body line that starts
