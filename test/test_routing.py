@@ -317,6 +317,53 @@ class WakeHeaderTest(unittest.TestCase):
         self.assertNotIn("addressed you", text)
 
 
+class SyncBroadcastsTest(unittest.TestCase):
+    """The waker asking the CLI to reconcile. Convenience, so it must never be
+    able to take a session down."""
+
+    def setUp(self):
+        self.real = waker.subprocess.run
+        self.real_rooms = waker.joined_rooms
+
+    def tearDown(self):
+        waker.subprocess.run = self.real
+        waker.joined_rooms = self.real_rooms
+
+    def test_it_shells_out_to_sync(self):
+        seen = {}
+        waker.joined_rooms = lambda: {"room": {"identity": "me",
+                                               "server": "http://x"}}
+        waker.subprocess.run = lambda argv, **kw: seen.setdefault("argv", argv)
+        waker.sync_broadcasts()
+        self.assertIn("sync", seen["argv"])
+
+    def test_no_server_means_no_call(self):
+        called = []
+        waker.joined_rooms = lambda: {"room": {"identity": "me"}}
+        waker.subprocess.run = lambda *a, **kw: called.append(a)
+        waker.sync_broadcasts()
+        self.assertEqual(called, [])
+
+    def test_no_rooms_means_no_call(self):
+        called = []
+        waker.joined_rooms = lambda: {}
+        waker.subprocess.run = lambda *a, **kw: called.append(a)
+        waker.sync_broadcasts()
+        self.assertEqual(called, [])
+
+    def test_a_failure_is_swallowed(self):
+        """A chat outage must never break the session, and this is the least
+        important thing the waker does."""
+        waker.joined_rooms = lambda: {"room": {"identity": "me",
+                                               "server": "http://x"}}
+
+        def explode(*a, **kw):
+            raise OSError("down")
+
+        waker.subprocess.run = explode
+        waker.sync_broadcasts()          # must not raise
+
+
 class WhoAddressedTest(unittest.TestCase):
     """An agent pulled off its work with no idea who wanted it has to read the
     whole room to find out."""

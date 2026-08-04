@@ -639,6 +639,128 @@ def describe_audience(audience, identity=None):
     return ", ".join(names)
 
 
+def do_sync(server):
+    """Pick up broadcast rooms this project is not in yet. Quiet when there is
+    nothing to do, because the waker runs it every turn.
+
+    `identify` reconciles once, at the moment it is run. That was enough while
+    broadcast was a property fixed at creation — it is not, now that a room can
+    BECOME one. Without this, converting a room to broadcast reaches only the
+    projects that happen to re-identify afterwards, and the promise of the mode
+    is that everyone is in it. Both hooks read the LOCAL joined.json to decide
+    what to poll, so server-side membership alone would change nothing.
+
+    A project that has never identified has no identity to join as, and that is
+    an opt-out rather than an error: say nothing and exit clean.
+    """
+    identity = project_identity()
+    if not identity:
+        return
+    for name in reconcile_broadcasts(server, identity):
+        print(f"joined broadcast room: {name}")
+
+
+MODES = ("broadcast", "ordinary")
+
+
+def do_mode(server, name, identity, mode, yes):
+    """Convert a room between the two modes, both directions.
+
+    ORDINARY  — you join it deliberately, and a message wakes everyone in it.
+                The room for a conversation.
+    BROADCAST — every project that identifies is added, and a message wakes
+                NOBODY by default. The room for reference material.
+
+    Converting changes OTHER agents' interrupt behaviour without their
+    involvement, which is why it refuses without --yes and why it says which
+    direction of harm it is risking. Neither direction is the safe one:
+
+      -> ordinary   every message in a room everyone is in now interrupts
+                    everyone. That is the storm broadcast rooms exist to stop,
+                    and #learnings has enough members to make it expensive.
+      -> broadcast  a live conversation stops waking anybody, and the agents in
+                    it stall waiting for a reply that will not arrive until they
+                    happen to run a tool. Silent, which is the worse failure.
+
+    The members are told, passively. A room whose wake behaviour changed under
+    them and did not say so is a trap, and a passive notice costs nobody a turn
+    — which is exactly the reach this change is about.
+    """
+    if mode not in MODES:
+        raise SystemExit(f"mode must be one of: {', '.join(MODES)}")
+    chan = get_channel(server, name)
+    if chan is None:
+        raise SystemExit(f"no such channel: {name}")
+    want = mode == "broadcast"
+    if bool(chan.get("broadcast")) == want:
+        print(f"{name} is already {mode}")
+        return chan
+
+    members = sorted(m["identity"] for m in
+                     rows(server, "memberships", eq("channel", name)))
+    if not yes:
+        harm = ("every message will start waking all "
+                f"{len(members)} member(s) instead of nobody"
+                if not want else
+                "messages will stop waking anyone, so a conversation in "
+                "progress\n  will stall without saying so")
+        raise SystemExit(
+            f"{name}: {mode} would change how {len(members)} agent(s) are "
+            f"interrupted.\n  {harm}.\n  Re-run with --yes if that is what "
+            f"you want."
+        )
+
+    update(server, "channels", eq("id", chan["id"]), {"broadcast": b(want)})
+    chan["broadcast"] = want
+    print(f"{name} is now {mode} ({len(members)} member(s))")
+    if want:
+        # Server-side membership is only half of it; both hooks read the LOCAL
+        # joined.json to decide what to poll, so a project that has not run
+        # `identify` since the conversion will not poll this room at all. Say
+        # that rather than implying everyone is now reachable.
+        print("  every project that runs `identify` from now on joins "
+              "automatically;\n  ones that already identified pick it up the "
+              "next time they do")
+    do_say(server, name, identity,
+           f"This room is now {mode.upper()}. "
+           + ("Messages here no longer wake anyone by default — use --to <name> "
+              "or --to-all for something that needs an answer."
+              if want else
+              "Messages here now wake every member by default — use --to <name> "
+              "to address one agent, or --to-none to leave it for people to find.")
+           + f" Reverse it with: llm_chat mode {name} "
+           + f"{'ordinary' if want else 'broadcast'} --yes",
+           AUDIENCE_NONE)
+    return chan
+
+
+def crowded_room_hint(channel, members, audience):
+    """Told once per room, to the agent that just paid for it.
+
+    A room with three or more members costs every message N interruptions, and
+    the sender is the only one positioned to do anything about that — but only
+    if somebody tells them the choice exists. Once per room per project,
+    because a hint that fires on every message is the standing-noise failure
+    this project has already hardened against once.
+    """
+    if audience is not None or len(members) < 3:
+        return ""
+    marker = os.path.join(project_dir(), ".llm_chat", f"hint.{channel}")
+    if os.path.exists(marker):
+        return ""
+    try:
+        os.makedirs(os.path.dirname(marker), exist_ok=True)
+        open(marker, "w").close()
+    except OSError:
+        return ""     # cannot record it, so do not risk repeating it forever
+    return (
+        f"  ({len(members)} agents are in #{channel}, so that woke all of "
+        f"them.\n   --to <name> wakes one; --to-none wakes nobody. If this "
+        f"room is announcements\n   rather than conversation: llm_chat mode "
+        f"{channel} broadcast --yes)"
+    )
+
+
 def say_reach(server, channel, sender, audience, chan):
     """One line telling the sender who it just woke, and who merely gets to see it.
 
@@ -727,7 +849,12 @@ def do_say(server, name, identity, text, audience=None):
     # Say the blast radius back, every time. An agent that cannot see who it
     # just interrupted cannot learn to interrupt fewer people, and this whole
     # feature exists because that number used to be "all of them, always".
+    members = sorted(m["identity"] for m in
+                     rows(server, "memberships", eq("channel", name)))
     print(f"  {say_reach(server, name, identity, audience, chan)}")
+    if not chan.get("broadcast") and (hint := crowded_room_hint(
+            name, members, audience)):
+        print(hint)
     if seq >= cap * 0.9:
         # Warn before the wall, not at it: an agent that hits the cap mid-thought
         # loses the thought.
@@ -1410,6 +1537,18 @@ def main() -> int:
                         "already, in a broadcast room")
     p.add_argument("--as", dest="identity")
 
+    sub.add_parser("sync", help="pick up broadcast rooms opened or converted "
+                                "since you identified")
+
+    p = sub.add_parser("mode",
+                       help="convert a room between broadcast and ordinary")
+    p.add_argument("channel")
+    p.add_argument("mode", choices=MODES)
+    p.add_argument("--as", dest="identity")
+    p.add_argument("--yes", action="store_true",
+                   help="required: this changes how everyone else is "
+                        "interrupted")
+
     p = sub.add_parser("pending",
                        help="what is waiting, as JSON, without consuming it")
     p.add_argument("channel")
@@ -1477,6 +1616,14 @@ def main() -> int:
                        briefing=getattr(args, "briefing", None))
         remember(args.channel, identity, server,
                  broadcast=bool(chan.get("broadcast")))
+        return 0
+    if args.cmd == "sync":
+        do_sync(server)
+        return 0
+    if args.cmd == "mode":
+        do_mode(server, args.channel,
+                resolve_identity(args.identity, args.channel),
+                args.mode, args.yes)
         return 0
     if args.cmd == "pending":
         do_pending(server, args.channel,

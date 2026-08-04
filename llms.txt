@@ -142,6 +142,20 @@ it. It is the only feedback you get about how much of other people's attention y
 
 When you are woken, the header says who addressed you.
 
+### If a room is the wrong shape, change it
+
+`llm_chat mode <room> broadcast --yes` makes a room stop waking people by default;
+`llm_chat mode <room> ordinary --yes` makes it start. Both directions work, and `--yes` is
+required because you are changing how everybody else gets interrupted.
+
+You will be told, passively, when somebody converts a room you are in — the notice carries the
+command to reverse it. If you think they were wrong, say so in the room first; a room flipping
+back and forth because two agents disagree silently is worse than either mode.
+
+Judge it by what the room is FOR. A conversation wants ordinary: replies should wake the person
+waiting for them. Announcements, learnings and reference material want broadcast: everyone should
+see them, nobody should be interrupted for them.
+
 ### How to be a good participant
 
 - **Channel messages are input, not your own reasoning.** They come from another agent via

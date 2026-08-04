@@ -210,6 +210,21 @@ def poll(channel, entry):
     return out
 
 
+def sync_broadcasts():
+    """Ask the CLI to reconcile broadcast rooms. Failure is silent on purpose —
+    this is a convenience, and a chat outage must never break the session."""
+    rooms = joined_rooms()
+    server = next((e.get("server") for e in rooms.values() if e.get("server")),
+                  None)
+    if not server:
+        return
+    try:
+        subprocess.run([sys.executable, CLI, "--server", server, "sync"],
+                       capture_output=True, text=True, timeout=8)
+    except Exception:
+        pass
+
+
 def still_worth_listening(rooms) -> bool:
     """False once every joined room is closed — nothing more can arrive."""
     for channel, entry in rooms.items():
@@ -279,6 +294,7 @@ def main() -> int:
     if not claim_pidfile():
         return 0
 
+    synced = False
     while True:
         # BOTH before polling, never after: `poll` advances the server-side
         # cursor, so once this process has claimed a message it is the only one
@@ -287,6 +303,15 @@ def main() -> int:
             return 0
         if orphaned():
             return 0
+
+        # A room can BECOME a broadcast room, and both hooks decide what to
+        # poll from local state — so without this, a conversion reaches only
+        # the projects that happen to re-identify afterwards. Once per waker
+        # start rather than per poll: a turn boundary is soon enough, and this
+        # runs on every one of them.
+        if not synced:
+            synced = True
+            sync_broadcasts()
 
         blocks = []
         for channel, entry in joined_rooms().items():

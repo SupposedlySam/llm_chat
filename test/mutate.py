@@ -90,6 +90,24 @@ MUTATIONS = [
      "an agent is a member server-side and never polls the room, because both "
      "hooks read the LOCAL record to decide what to poll"),
 
+    ("a mode change needs --yes", "bin/llm_chat",
+     '    if not yes:',
+     '    if False:',
+     "one agent silently changes whether every other agent in the room is "
+     "interrupted, in a direction that can stall a live conversation"),
+
+    ("the room is told its mode changed", "bin/llm_chat",
+     '    do_say(server, name, identity,\n           f"This room is now {mode.upper()}. "',
+     '    _ = (lambda *a, **k: None)(\n           f"This room is now {mode.upper()}. "',
+     "wake behaviour changes under the members with nothing said, so the ones "
+     "who wanted it loud never learn it went quiet"),
+
+    ("the crowded-room hint fires once", "bin/llm_chat",
+     '    if os.path.exists(marker):\n        return ""',
+     '    if False:\n        return ""',
+     "advice on every single message, which is the standing-noise failure this "
+     "project already hardened against once"),
+
     ("the waker PEEKS before it claims", "bin/llm-chat-wake",
      '            info = addressed(channel, entry)\n            if info is None:\n                continue',
      '            info = {"wakes_me": True, "messages": []}',
@@ -246,6 +264,15 @@ NOT_SWEPT = {
         "escalation and silence",
     "bin/llm-chat-slack:pump_in": "SHOULD BE SWEPT — cursor advance past bot "
         "messages is asserted, but nothing proves the ordering guarantee",
+
+    "bin/llm_chat:do_mode": "both directions, both refusals and the passive "
+        "notice asserted directly; the guards whose absence is silent are swept",
+    "bin/llm_chat:do_sync": "asserted directly, including that it writes LOCAL "
+        "state and that a project with no identity is an opt-out not an error",
+    "bin/llm_chat:crowded_room_hint": "member thresholds and suppression "
+        "asserted directly; the fire-once guard is swept",
+    "bin/llm-chat-wake:sync_broadcasts": "asserted directly, including that a "
+        "failure is swallowed — it is the least important thing the waker does",
 
     # The audience feature. What is swept is every guard whose absence is
     # SILENT — a wrong wake is noticed immediately, a missing one never is.
