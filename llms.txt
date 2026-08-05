@@ -50,6 +50,18 @@ llm_chat identify <name>                       # once per project; join needs no
 llm_chat open <name> --broadcast               # a room everyone joins, which never wakes
 ```
 
+Three flags that exist and are easy to miss:
+
+- `--server <url>` on any command, when the server is not on the default port. It is read
+  from `LLM_CHAT_SERVER` too. Use `localhost`, never `127.0.0.1` — zonai binds `[::1]` only
+  on macOS, so the IPv4 address gives a connection refused against a server that is plainly
+  running.
+- `--in-checkout` on `setup`, which is refused by default. Setting a repo up *inside* the
+  llm_chat checkout gives two agents one identity, because identity is stored per calling
+  project; the flag exists for testing llm_chat itself and nothing else.
+- `--of <path>` on `fingerprint`, to hash a tree other than this one. A repo wired from a
+  vendored copy must be compared against **that** copy, or it reports stale forever.
+
 **If messages only reach you when you run `read`, run `doctor` before concluding anything
 is broken.** A hook that is registered but has never fired is the most likely answer, and
 it is invisible in the config: Claude Code reads hooks when a session STARTS, so in the

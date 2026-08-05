@@ -1,0 +1,109 @@
+#!/usr/bin/env python3
+"""Does the documentation know about what this release contains?
+
+Attach ABOVE any publish trigger — order matters within a game_loop event, and
+a check that runs after the release has already been blessed is a report, not a
+gate.
+
+    .game_loop/triggers.json
+    {"stepback": [{"name": "undocumented-surface",
+                   "command": "/path/to/llm_chat/triggers/undocumented-surface"},
+                  {"name": "lamp-publish", "command": "..."}]}
+
+THE FAILURE IT CATCHES is quiet and universal: a feature lands, its reasoning
+goes into a commit message nobody will read again, and the two files a human or
+an agent actually STARTS from never hear about it. This repo shipped a week of
+user-facing surface that way — `--to`, `--json`, `mode`, `sync`, `pending`,
+`briefing` — while writing careful paragraphs about each one in commits.
+
+THE CHECK IS THE UNGAMEABLE HALF and deliberately narrow: every subcommand and
+every option the CODE defines, against the documentation files. Prose cannot
+satisfy it — the name appears or it does not.
+
+WHAT IT CANNOT CHECK is the larger half, and this says so rather than letting a
+green run imply otherwise: whether the docs are correct, whether they EXPLAIN a
+thing or merely name it, or whether they still describe what the code does. A
+mention is the floor, not the goal. The idea and the shape of that disclaimer
+are game_loop's; this is their example grown into something testable.
+
+Exit 0 always. A documentation gap must not block a retro — but it is loud, and
+it names each gap, because a count nobody can act on is decoration.
+"""
+import argparse
+import os
+import re
+import sys
+
+OPTION = re.compile(r"""add_argument\(\s*["'](--[a-z][a-z0-9-]*)["']""")
+VERB = re.compile(r"""add_parser\(\s*["']([a-z][a-z0-9_-]*)["']""")
+
+
+def declared(paths):
+    """(verbs, options) the code actually defines."""
+    verbs, options = set(), set()
+    for path in paths:
+        try:
+            with open(path) as f:
+                source = f.read()
+        except OSError:
+            continue
+        verbs.update(VERB.findall(source))
+        options.update(OPTION.findall(source))
+    return verbs, options
+
+
+def undocumented(names, docs):
+    """Names that appear in NO documentation file.
+
+    Substring, not word-boundary: `--to` legitimately appears inside `--to-all`
+    in prose, and demanding a standalone mention would report a gap that is not
+    there. This check errs toward silence — a false alarm here trains people to
+    ignore it, and an ignored check is worse than none.
+    """
+    text = ""
+    for path in docs:
+        try:
+            with open(path) as f:
+                text += f.read()
+        except OSError:
+            continue
+    return sorted(n for n in names if n not in text)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--source", nargs="+", default=["bin/llm_chat"])
+    ap.add_argument("--docs", nargs="+", default=["README.md", "llms.txt"])
+    ap.add_argument("--repo", default=None)
+    args = ap.parse_args(argv)
+
+    if not sys.stdin.isatty():
+        sys.stdin.read()          # drain the payload; nothing here needs it
+
+    repo = args.repo or os.environ.get("GAME_LOOP_REPO") or os.getcwd()
+    verbs, options = declared([os.path.join(repo, p) for p in args.source])
+    docs = [os.path.join(repo, p) for p in args.docs]
+
+    missing_verbs = undocumented(verbs, docs)
+    missing_options = undocumented(options, docs)
+    if not missing_verbs and not missing_options:
+        print("every command and option is named in the docs "
+              "(which is the floor, not the goal — it cannot tell you whether "
+              "they are correct or merely mentioned)")
+        return 0
+
+    print("UNDOCUMENTED SURFACE — shipped, and absent from %s:"
+          % ", ".join(args.docs))
+    for verb in missing_verbs:
+        print("  command  %s" % verb)
+    for option in missing_options:
+        print("  option   %s" % option)
+    print("\n  A reader starts from those files. Anything not in them exists "
+          "only for\n  whoever already knew to look. This checks that a name "
+          "APPEARS — never\n  that the prose is right, or that it still "
+          "describes what the code does.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

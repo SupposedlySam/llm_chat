@@ -144,13 +144,30 @@ class HookTest(unittest.TestCase):
         code, _ = self.run_hook({"tool_name": "Bash", "tool_input": {}})
         self.assertEqual(code, 0)
 
-    def test_an_explicit_escape_exists_and_is_visible_in_the_command(self):
+    def test_an_explicit_escape_exists_IN_THE_COMMAND(self):
         """There has to be a way through, or the first genuine need turns the
-        hook off permanently. It must be VISIBLE — set inline, in the command
-        being run, where a reader sees the exception was taken."""
+        hook off permanently.
+
+        It must be in the COMMAND. The first version read an environment
+        variable, which belongs to the hook process and not to the command
+        being inspected — so a caller could never set it and the hatch was
+        decorative. Found by trying to use it. A marker in the command is also
+        the honest form: visible to anyone reading what ran."""
+        code, _ = self.run_hook(
+            self.bash("# %s\n%s" % (guard.ALLOW, SMUGGLED[0])))
+        self.assertEqual(code, 0)
+
+    def test_the_escape_does_nothing_when_it_is_not_present(self):
+        """Paired: a hatch that opens for everyone is not a hatch."""
+        code, _ = self.run_hook(self.bash(SMUGGLED[0]))
+        self.assertEqual(code, 2)
+
+    def test_an_environment_variable_does_NOT_open_it(self):
+        """The bug, pinned. The hook cannot see the caller's environment, so
+        anything keyed on it is a door that never opens."""
         os.environ["LLM_CHAT_ALLOW_INLINE_WRITE"] = "1"
         code, _ = self.run_hook(self.bash(SMUGGLED[0]))
-        self.assertEqual(code, 0)
+        self.assertEqual(code, 2)
 
 
 if __name__ == "__main__":

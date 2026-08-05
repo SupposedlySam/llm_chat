@@ -42,6 +42,10 @@ import sys
 # quoted `open(p,"w")` inside a `git commit -m "$(cat <<'MSG' ...)"`. Prose
 # that MENTIONS a write is not a write — the same correction game_loop had to
 # make about redirects, arriving here within a minute of shipping.
+# Written in the command itself, so a reader of the transcript sees the
+# exception was taken and by whom.
+ALLOW = "llm_chat:allow-inline-write"
+
 INVOCATION = re.compile(
     r"\b(python3?|perl|ruby|node|osascript)\s+(-c\b|-?\s*<<-?\s*['\"]?\w+)")
 
@@ -97,8 +101,17 @@ def main(argv=None):
     if payload.get("tool_name") != "Bash":
         return 0
     command = (payload.get("tool_input") or {}).get("command", "")
-    if os.environ.get("LLM_CHAT_ALLOW_INLINE_WRITE"):
-        return 0              # deliberate, explicit, and visible in the command
+    # The escape must be IN THE COMMAND, because that is the only thing this
+    # process can see. The first version read an environment variable — which
+    # belongs to the HOOK, not to the command being inspected, so a caller
+    # could never set it and the hatch was decorative. Found by trying to use
+    # it: it refused an edit I had explicitly exempted, which is the good
+    # direction to fail but is still a door that does not open.
+    #
+    # A marker in the command is also the honest form: it is visible to anyone
+    # reading what ran, which an env var set upstream is not.
+    if ALLOW in command:
+        return 0
     snippet = offending_write(command)
     if not snippet:
         return 0

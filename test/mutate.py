@@ -184,6 +184,13 @@ MUTATIONS = [
      "the waker dies silently again and doctor is back to 'pid is gone', "
      "which was a dead end at exactly the question that matters"),
 
+    ("a missing doc file does not read as fully documented",
+     "triggers/undocumented-surface",
+     '    return sorted(n for n in names if n not in text)',
+     '    return []',
+     "every release reports its documentation complete, which is the one "
+     "answer that stops anybody looking"),
+
     ("a write smuggled through an interpreter is refused",
      "triggers/write-through-interpreter",
      '    body = command[start.end():]',
@@ -416,6 +423,11 @@ NOT_SWEPT = {
         "corrupt asserted directly — none may read as a guess",
     "bin/llm-chat-deliver:source_checkout": "recorded, absent and corrupt "
         "asserted directly via the notice that consumes it",
+    "triggers/undocumented-surface:declared": "verbs, options and a missing "
+        "source file asserted directly",
+    "triggers/undocumented-surface:main": "gap, no-gap, never-blocks and the "
+        "disclaimer-on-success asserted directly — a green that implies the "
+        "docs are GOOD is the more expensive lie",
     "triggers/write-through-interpreter:offending_write": "asserted against "
         "five VERBATIM smuggled writes from this session and seven legitimate "
         "commands; the allow-cases matter more, since a guard that blocks the "
