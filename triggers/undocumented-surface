@@ -30,8 +30,10 @@ Exit 0 always. A documentation gap must not block a retro — but it is loud, an
 it names each gap, because a count nobody can act on is decoration.
 """
 import argparse
+import ast
 import os
 import re
+import subprocess
 import sys
 
 OPTION = re.compile(r"""add_argument\(\s*["'](--[a-z][a-z0-9-]*)["']""")
@@ -39,7 +41,17 @@ VERB = re.compile(r"""add_parser\(\s*["']([a-z][a-z0-9_-]*)["']""")
 
 
 def declared(paths):
-    """(verbs, options) the code actually defines."""
+    """(verbs, options) the code actually defines.
+
+    Verbs come from `--help` when the tool can be run, because argparse is the
+    only thing that knows for certain. The regex below misses any subcommand
+    registered through a variable — this project registers `open` and `join`
+    in a loop, so both were absent from the denominator, and the reverse walk
+    duly reported two REAL commands as ghosts. A parser that misreads the
+    source produces confident nonsense in whichever direction it is pointed.
+
+    The regex stays as the fallback for a tool that cannot be executed here.
+    """
     verbs, options = set(), set()
     for path in paths:
         try:
@@ -49,7 +61,68 @@ def declared(paths):
             continue
         verbs.update(VERB.findall(source))
         options.update(OPTION.findall(source))
+        verbs |= verbs_from_help(path)
     return verbs, options
+
+
+def verbs_from_help(path):
+    """Subcommands as argparse itself lists them, or an empty set."""
+    try:
+        done = subprocess.run([sys.executable, path, "--help"],
+                              capture_output=True, text=True, timeout=15)
+    except Exception:
+        return set()
+    found = re.search(r"\{([a-z0-9_,-]+)\}", done.stdout or "")
+    return set(found.group(1).split(",")) if found else set()
+
+
+def named_in_strings(path, tool):
+    """Commands named in a module's STRING LITERALS — not its docstrings.
+
+    THE SCAN HAD A DENOMINATOR AND NOBODY ASKED FOR IT. Matching only
+    backticks meant fifteen real verbs in this file — every "run this instead"
+    remedy — sat where the ghost check could not see them. They were not
+    failing. They were ABSENT, and absent reads exactly like correct: rename
+    one of those verbs and every remedy naming it becomes a dead command the
+    check is structurally blind to. The question came from the sibling agent
+    who went looking for what their own rule could not see and found six.
+
+    Literals, not docstrings, and that distinction does two jobs. Remedy text
+    is a literal; explanatory prose is a docstring. So this sees every printed
+    instruction, and it CANNOT see the sentence "a consumer vendored llm_chat
+    instead of pointing at a sibling clone" that produced a false positive when
+    the rule was positional. The discriminator was never the file extension —
+    it is what a string is FOR, which is a thing the AST already knows.
+    """
+    try:
+        with open(path) as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError):
+        return set()
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef,
+                             ast.ClassDef)):
+            doc = ast.get_docstring(node, clean=False)
+            if doc is not None:
+                docstrings.add(doc)
+    found = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if node.value in docstrings:
+            continue
+        # COMMAND POSITION, not mere mention. A remedy sits at the start of its
+        # own line; prose does not. Without this, "no llm_chat server at {url}"
+        # and "this llm_chat checkout" were reported as ghost commands —
+        # matching anywhere inside a literal cannot tell an instruction from a
+        # sentence that happens to contain the tool's name.
+        for line in node.value.splitlines():
+            words = line.strip().split()
+            if len(words) >= 2 and words[0].rstrip(":").endswith(tool):
+                if re.fullmatch(r"[a-z][a-z0-9_-]*", words[1]):
+                    found.add(words[1])
+    return found
 
 
 def invented(verbs, sources, docs, tool):
@@ -75,22 +148,16 @@ def invented(verbs, sources, docs, tool):
     docs grow.
     """
     named = set()
-    for path in list(sources) + list(docs):
+    for path in sources:
+        named |= named_in_strings(path, tool)
+    for path in docs:
         try:
             with open(path) as f:
                 text = f.read()
         except OSError:
             continue
-        # Backticks everywhere; the four-space rule for DOCS only. It means
-        # "markdown code block" there, and "indented prose" in a Python
-        # docstring — which reported `llm_chat instead` out of the sentence
-        # "a consumer vendored llm_chat instead of pointing at a sibling
-        # clone". A positional rule only stays fixed if it means the same
-        # thing in the file it is applied to.
-        candidates = re.findall(r"`([^`\n]+)`", text)
-        if path in docs:
-            candidates += re.findall(r"^\s{4}(\S.*)$", text, re.M)
-        for quoted in candidates:
+        for quoted in (re.findall(r"`([^`\n]+)`", text)
+                       + re.findall(r"^\s{4}(\S.*)$", text, re.M)):
             words = quoted.replace("./", "").split()
             for i, word in enumerate(words[:-1]):
                 if word.endswith(tool) and words[i + 1].isidentifier():

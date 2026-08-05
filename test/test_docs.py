@@ -50,6 +50,40 @@ class DeclaredTest(unittest.TestCase):
         _, options = check.declared([self.src])
         self.assertEqual(options, {"--to-all", "--yes"})
 
+    def test_verbs_come_from_ARGPARSE_when_the_tool_can_be_run(self):
+        """The regex misses any subcommand registered through a variable. This
+        project registers `open` and `join` in a loop, so both were absent from
+        the denominator and the reverse walk reported two REAL commands as
+        ghosts. Asking the program is the only answer that cannot drift."""
+        real = os.path.join(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__))), "bin", "llm_chat")
+        verbs, _ = check.declared([real])
+        self.assertIn("join", verbs)
+        self.assertIn("open", verbs)
+
+    def test_a_tool_that_cannot_be_run_falls_back_to_the_regex(self):
+        """A fallback that returned nothing would make an unrunnable tool look
+        like a tool with no commands, which is the silent-empty-denominator
+        shape this whole file is about."""
+        self.assertEqual(check.verbs_from_help("/no/such/tool"), set())
+        verbs, _ = check.declared([self.src])
+        self.assertEqual(verbs, {"mode", "sync"})
+
+    def test_a_tool_that_EXPLODES_is_an_empty_set_not_a_crash(self):
+        """This runs inside somebody else's retro. Dying because a tool has an
+        import error is worse than reporting nothing."""
+        real = check.subprocess
+
+        class Exploding:
+            @staticmethod
+            def run(*a, **kw):
+                raise OSError("boom")
+        check.subprocess = Exploding()
+        try:
+            self.assertEqual(check.verbs_from_help("whatever"), set())
+        finally:
+            check.subprocess = real
+
     def test_a_missing_source_file_is_not_a_crash(self):
         """The trigger runs on somebody else's schedule. Dying inside a retro
         because a path moved is worse than reporting nothing."""
@@ -124,8 +158,11 @@ class InventedTest(unittest.TestCase):
             f.write(text)
         return path
 
-    def test_a_backticked_command_that_does_not_exist_is_caught(self):
-        self.write(self.src, 'print("start one with `llm_chat serve`")')
+    def test_a_remedy_naming_a_command_that_does_not_exist_is_caught(self):
+        """A remedy sits at the start of its own line, which is how it is told
+        from a sentence. Backticks are the docs' rule; source strings are not
+        markdown and do not use them."""
+        self.write(self.src, 'raise SystemExit("cannot:\\n    llm_chat serve")')
         self.assertEqual(
             check.invented({"read", "say"}, [self.src], [], "llm_chat"),
             ["serve"])
@@ -133,9 +170,29 @@ class InventedTest(unittest.TestCase):
     def test_a_real_command_is_not_reported(self):
         """Paired: a check that flagged every mention would be noise, and
         noise is how a check stops being read."""
-        self.write(self.src, 'print("run `llm_chat read <room>`")')
+        self.write(self.src, 'print("run it:\\n    llm_chat read <room>")')
         self.assertEqual(
             check.invented({"read"}, [self.src], [], "llm_chat"), [])
+
+    def test_PROSE_INSIDE_A_STRING_IS_NOT_A_COMMAND(self):
+        """The false positives the first AST version produced. Matching
+        anywhere inside a literal cannot tell an instruction from a sentence
+        that happens to contain the tool's name — `no llm_chat server at {url}`
+        and `this llm_chat checkout is stale` were both reported as ghosts."""
+        self.write(self.src, 'print("no llm_chat server at x")\n'
+                             'print("this llm_chat checkout is stale")')
+        self.assertEqual(
+            check.invented({"read"}, [self.src], [], "llm_chat"), [])
+
+    def test_a_remedy_the_OLD_backtick_rule_could_not_see_is_now_seen(self):
+        """The denominator question, which came from a sibling agent asking
+        what their own rule could not SEE. Fifteen real verbs in this repo sat
+        in unbackticked remedies — not failing, ABSENT, and absent reads
+        exactly like correct until one of them is renamed."""
+        self.write(self.src, 'print("reopen it:\\n  llm_chat ghostverb x")')
+        self.assertEqual(
+            check.invented({"read"}, [self.src], [], "llm_chat"),
+            ["ghostverb"])
 
     def test_it_catches_one_named_only_in_the_DOCS(self):
         self.write(self.doc, "Use `llm_chat campaign` to track it.")
@@ -148,13 +205,15 @@ class InventedTest(unittest.TestCase):
         self.assertEqual(
             check.invented({"read"}, [], [self.doc], "llm_chat"), ["ghost"])
 
-    def test_INDENTED_PROSE_IN_SOURCE_IS_NOT_A_COMMAND(self):
-        """The false positive this produced on its first run. Four spaces means
-        'code block' in markdown and 'docstring text' in Python, and applying
-        the markdown rule to source reported `llm_chat instead` out of the
-        sentence 'a consumer vendored llm_chat instead of pointing at a sibling
-        clone'. A positional rule only stays fixed if it means the same thing
-        in the file it is applied to."""
+    def test_A_DOCSTRING_IS_NEVER_A_COMMAND(self):
+        """The original false positive. Four spaces means 'code block' in
+        markdown and 'docstring text' in Python; applying the markdown rule to
+        source reported `llm_chat instead` out of the sentence 'a consumer
+        vendored llm_chat instead of pointing at a sibling clone'.
+
+        The discriminator was never the file extension — it is what a string is
+        FOR, which the AST already knows. Remedy text is a literal; explanatory
+        prose is a docstring."""
         self.write(self.src, '"""\n    a consumer vendored llm_chat instead of'
                              ' pointing at a clone\n"""')
         self.assertEqual(

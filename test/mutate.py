@@ -443,6 +443,13 @@ NOT_SWEPT = {
     "triggers/undocumented-surface:invented": "the reverse walk — backticks, "
         "fenced blocks, path-prefixed invocations, and the indented-prose "
         "false positive it produced on its first run, all asserted directly",
+    "triggers/undocumented-surface:named_in_strings": "the denominator. "
+        "Remedies in unbackticked source strings, docstring prose, and "
+        "sentence-shaped mentions all asserted directly — the last two are "
+        "false positives this produced and had to be told apart",
+    "triggers/undocumented-surface:verbs_from_help": "asserted against the "
+        "real CLI, which registers two verbs through a loop the regex cannot "
+        "see, plus the unrunnable and exploding fallbacks",
     "triggers/undocumented-surface:main": "gap, no-gap, never-blocks and the "
         "disclaimer-on-success asserted directly — a green that implies the "
         "docs are GOOD is the more expensive lie",
