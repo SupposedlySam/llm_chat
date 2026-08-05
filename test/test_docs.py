@@ -61,6 +61,50 @@ class DeclaredTest(unittest.TestCase):
         self.assertIn("join", verbs)
         self.assertIn("open", verbs)
 
+    def test_a_FLAGS_choices_are_not_mistaken_for_subcommands(self):
+        """A flag's choices render identically to a subparser group. A sibling
+        tool had `close` offering {holds,partial,refuted} as flag values and
+        reported the ordinary command `close mytask` as a ghost.
+
+        Their discriminator: flag choices are always attached to their flag; a
+        subparser group never is. Fixed here BEFORE it fired, because a false
+        positive nobody has triggered is invisible in exactly the way a false
+        negative is — they are the same risk until something trips them."""
+        real = check.subprocess
+
+        class Fake:
+            @staticmethod
+            def run(*a, **kw):
+                class R:
+                    stdout = ("usage: t close [--why {holds,partial}] name\n"
+                              "\npositional arguments:\n  {alpha,beta}\n")
+                    stderr, returncode = "", 0
+                return R()
+        check.subprocess = Fake()
+        try:
+            self.assertEqual(check.verbs_from_help("t", "close"),
+                             {"alpha", "beta"})
+        finally:
+            check.subprocess = real
+
+    def test_a_verb_with_ONLY_flag_choices_has_no_subcommands(self):
+        """Paired: skipping flag groups must not fall through to returning the
+        flag's values anyway, or the fix does nothing."""
+        real = check.subprocess
+
+        class Fake:
+            @staticmethod
+            def run(*a, **kw):
+                class R:
+                    stdout = "usage: t say [--to {a,b}] text\n"
+                    stderr, returncode = "", 0
+                return R()
+        check.subprocess = Fake()
+        try:
+            self.assertEqual(check.verbs_from_help("t", "say"), set())
+        finally:
+            check.subprocess = real
+
     def test_a_tool_that_cannot_be_run_falls_back_to_the_regex(self):
         """A fallback that returned nothing would make an unrunnable tool look
         like a tool with no commands, which is the silent-empty-denominator

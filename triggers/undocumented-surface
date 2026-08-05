@@ -72,8 +72,27 @@ def verbs_from_help(path, verb=None):
         done = subprocess.run(argv, capture_output=True, text=True, timeout=15)
     except Exception:
         return set()
-    found = re.search(r"\{([a-z0-9_,-]+)\}", done.stdout or "")
-    return set(found.group(1).split(",")) if found else set()
+    # A FLAG'S choices look identical to a subparser group, and taking the
+    # first `{...}` conflates them. A sibling tool had `close` offering
+    # {holds,partial,refuted,unverifiable} as flag values, and its lookup
+    # reported the ordinary command `close mytask` as a ghost — a false
+    # positive that had never fired, so a full green run said nothing.
+    #
+    # Their discriminator: flag choices are always attached to their flag, a
+    # subparser group never is. Fixed here before it fires, because an
+    # untriggered false positive is invisible in exactly the way a false
+    # negative is — they are the same risk until something trips them.
+    text = done.stdout or ""
+    for found in re.finditer(r"\{([a-z0-9_,-]+)\}", text):
+        before = text[:found.start()].rstrip()
+        # `[` and `(` count as separators: argparse writes an optional flag as
+        # `[--to {a,b}]`, so requiring whitespace before the flag made the
+        # guard silently never match — the shape it exists for is exactly the
+        # one it could not see.
+        if re.search(r"(^|[\s\[(])--?[a-z][a-z0-9-]*$", before):
+            continue          # these belong to the flag, not to the verb
+        return set(found.group(1).split(","))
+    return set()
 
 
 def nested(path, verbs):
