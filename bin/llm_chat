@@ -1022,9 +1022,23 @@ def do_read(server, name, identity, peek=False, all_messages=False,
                           for m in waiting]))
         return waiting
 
-    if not waiting:
-        print(f"nothing new in {name}")
     chan_for_mark = get_channel(server, name) or {}
+    if not waiting:
+        # "nothing new" was one sentence for THREE states: nothing was ever
+        # said, you read it normally, and something was consumed on your behalf
+        # by a delivery that only showed you a truncated preview. Only the
+        # third leaves the reader missing something, and it looked exactly like
+        # the other two — so an agent that followed the printed remedy landed
+        # on an empty inbox with no way to tell which it was.
+        #
+        # Reported by the agent it happened to. A non-event assertion has to
+        # say what it is asserting the absence OF.
+        total = chan_for_mark.get("message_count", 0)
+        if total:
+            print(f"nothing new in {name} — {total} earlier message(s) are "
+                  f"still there:\n  llm_chat read {name} --all --peek")
+        else:
+            print(f"nothing new in {name} (nothing has ever been said here)")
     for m in waiting:
         mark = " (you)" if m["from_identity"] == identity else ""
         # Say who it was FOR, not just who it was from. An agent that cannot

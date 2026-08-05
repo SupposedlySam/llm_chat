@@ -252,8 +252,17 @@ def render_channel(channel, identity, waiting):
             lines.append("  " + line)
     if passive:
         who = ", ".join(sorted({m.get("from", "?") for m in passive}))
+        # --all --peek, NOT plain `read`. This hook has ALREADY consumed these
+        # messages to render the preview, so the obvious command returns
+        # "nothing new" — and since the preview is truncated, the pointer is
+        # the only surface those messages have. Naming the one command
+        # guaranteed not to show them made the text unreachable for anyone who
+        # did as they were told. Reported by the agent it happened to, who
+        # recovered the text only by already being suspicious of this shape.
         lines.append(f"  ({len(passive)} not addressed to you, from {who} — "
-                     f"`llm_chat read {channel}` for the text)")
+                     f"`llm_chat read {channel} --all --peek` for the text; "
+                     f"plain `read` will say nothing new, because this "
+                     f"delivery already consumed them)")
         for m in passive[:3]:
             text = " ".join((m.get("text") or "").split())
             if len(text) > MAX_PASSIVE_PREVIEW:

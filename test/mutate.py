@@ -184,6 +184,13 @@ MUTATIONS = [
      "the waker dies silently again and doctor is back to 'pid is gone', "
      "which was a dead end at exactly the question that matters"),
 
+    ("'nothing new' names the command that reaches the text", "bin/llm_chat",
+     '        if total:',
+     '        if False:',
+     "a reader who followed a delivery preview's own pointer lands on an empty "
+     "inbox, and cannot tell 'nothing exists' from 'a preview ate it and "
+     "showed you 100 characters'"),
+
     ("a missing doc file does not read as fully documented",
      "triggers/undocumented-surface",
      '    return sorted(n for n in names if n not in text)',

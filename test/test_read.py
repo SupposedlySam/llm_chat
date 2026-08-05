@@ -198,6 +198,61 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class NothingNewTest(unittest.TestCase):
+    """"Nothing new" was one sentence for THREE different states.
+
+    Reported by an agent that followed a delivery preview's printed remedy and
+    landed on an empty inbox. The delivery hook consumes what it previews, so
+    plain `read` returned nothing — and since the preview is truncated, that
+    pointer was the only surface those messages had.
+
+    The three states: nothing was ever said, you read it normally, and
+    something was consumed on your behalf and shown only in part. Only the
+    third leaves the reader missing something, and it looked identical to the
+    other two. A non-event assertion has to say what absence it is asserting.
+    """
+
+    def setUp(self):
+        self.server = FakeServer()
+        self.real = cli.call
+        cli.call = self.server.call
+        self.server.membership("room", "me")
+
+    def tearDown(self):
+        cli.call = self.real
+
+    def read(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_read("srv", "room", "me")
+        return out.getvalue()
+
+    def test_a_room_with_history_names_how_to_reach_it(self):
+        self.server.channel("room", message_count=3)
+        self.server.membership("room", "me")
+        member = self.server.get_membership("room", "me")
+        member["seen_seq"] = 3
+        out = self.read()
+        self.assertIn("3 earlier message(s)", out)
+        self.assertIn("--all --peek", out)
+
+    def test_a_room_where_nothing_was_ever_said_says_THAT(self):
+        """Paired: without this the message would fire everywhere and stop
+        meaning anything. An empty room is not a room you are missing."""
+        self.server.channel("room", message_count=0)
+        out = self.read()
+        self.assertIn("nothing has ever been said", out)
+        self.assertNotIn("--all --peek", out)
+
+    def test_the_remedy_it_prints_is_one_that_WORKS(self):
+        """The whole defect: the old text named plain `read`, which is the one
+        command guaranteed not to show a message the delivery already ate."""
+        self.server.channel("room", message_count=1)
+        out = self.read()
+        self.assertNotIn("nothing new in room\n  llm_chat read room\n", out)
+        self.assertIn("--peek", out)
+
+
 class ExitContractTest(unittest.TestCase):
     """THREE OUTCOMES, never two. Asked for by a consumer whose retro trigger
     calls `read` non-interactively.

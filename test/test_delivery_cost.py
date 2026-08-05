@@ -79,9 +79,15 @@ class RenderTest(unittest.TestCase):
         self.assertIn("bob", out)
 
     def test_a_preview_is_bounded(self):
+        """The PREVIEW lines specifically. This measured every line including
+        the pointer, so growing the pointer — to name a command that actually
+        works — failed a test about message previews. The assertion has to
+        measure the thing it is named after."""
         out = self.render([msg(1, "a", LONG)])
-        longest = max(len(line) for line in out.splitlines())
-        self.assertLess(longest, deliver.MAX_PASSIVE_PREVIEW + 60)
+        previews = [l for l in out.splitlines() if l.startswith("    [")]
+        self.assertTrue(previews)
+        self.assertLess(max(len(l) for l in previews),
+                        deliver.MAX_PASSIVE_PREVIEW + 60)
 
     def test_previews_are_capped_in_number_too(self):
         """Twenty previews is the wall of text again, in smaller print."""
