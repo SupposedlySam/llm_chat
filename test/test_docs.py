@@ -246,6 +246,95 @@ class InventedTest(unittest.TestCase):
             [])
 
 
+class SecondWordTest(unittest.TestCase):
+    """Validating only the first word leaves the rest half-checked.
+
+    A sibling agent found `<tool> lock run` in eight remedies where `lock` was
+    validated and `run` — one of five subcommands — was not. Rename `run` and
+    all eight go dead while the suite stays green.
+
+    This repo has the same exposure through `choices=`: `mode` accepts
+    broadcast|ordinary and its own reversal remedy hard-codes one. Argparse
+    renders a choices positional exactly like a subparser group, so the warning
+    first read as a false positive and was nearly dismissed. It was a true one
+    in an unfamiliar shape.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.src = os.path.join(self.tmp.name, "cli.py")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, text):
+        with open(self.src, "w") as f:
+            f.write(text)
+
+    def test_a_remedy_naming_NO_accepted_value_is_caught(self):
+        """Asks whether the remedy names any valid choice — not whether every
+        word is one. Which position holds the value cannot be known generally:
+        `mode <channel> <mode>` puts a room name in between, and demanding
+        every word be valid reported the room."""
+        self.write('print("Reverse it:\\n  llm_chat mode room ordinary --yes")')
+        self.assertEqual(
+            check.stale_values(self.src, "llm_chat", {"mode": {"broadcast"}}),
+            [("mode", "room ordinary")])
+
+    def test_an_argument_that_is_not_a_value_does_not_trip_it(self):
+        self.write('print("  llm_chat mode some-room broadcast --yes")')
+        self.assertEqual(
+            check.stale_values(self.src, "llm_chat",
+                               {"mode": {"broadcast", "ordinary"}}), [])
+
+    def test_a_value_that_is_still_accepted_is_not(self):
+        """Paired: a check that flagged every second word would fire on every
+        remedy in the file."""
+        self.write('print("Reverse it:\\n  llm_chat mode room ordinary --yes")')
+        self.assertEqual(
+            check.stale_values(self.src, "llm_chat",
+                               {"mode": {"broadcast", "ordinary"}}), [])
+
+    def test_placeholders_and_flags_are_not_values(self):
+        """`{name}` is filled at runtime and `--yes` is an option; neither can
+        go stale the way a hard-coded value can."""
+        self.write('print("  llm_chat mode {name} <x> --yes $VAR")')
+        self.assertEqual(
+            check.stale_values(self.src, "llm_chat", {"mode": {"broadcast"}}),
+            [])
+
+    def test_a_verb_with_no_choice_set_is_left_alone(self):
+        """`llm_chat reopen deploy-review` names a CHANNEL, not a value.
+        Checking it would report every room name in every example."""
+        self.write('print("  llm_chat reopen deploy-review")')
+        self.assertEqual(
+            check.stale_values(self.src, "llm_chat", {"mode": {"broadcast"}}),
+            [])
+
+    def test_bare_words_ignores_a_line_that_is_not_a_remedy(self):
+        self.assertEqual(check.bare_words("no llm_chat server here", "llm_chat"),
+                         (None, []))
+
+    def test_an_unparseable_source_is_not_a_crash(self):
+        self.write("def broken(:\n")
+        self.assertEqual(
+            check.stale_values(self.src, "llm_chat", {"mode": {"x"}}), [])
+
+    def test_A_REMEDY_SPLIT_ACROSS_F_STRINGS_IS_NOT_CHECKED(self):
+        """The limit, pinned as an assertion so it cannot rot into a surprise.
+
+        This project's own `mode` reversal is built as
+            f"...llm_chat mode {name} " + f"{'ordinary' if want else ...}"
+        so the value lives in a different AST node from the verb. It is real,
+        hard-coded, and unchecked — which is why the run reports PARTLY CHECKED
+        rather than clean. A green immediately after tightening a check is when
+        it is most likely to have become silence."""
+        self.write('x = f"  llm_chat mode {n} " + f"{\'ordinary\'}"')
+        self.assertEqual(
+            check.stale_values(self.src, "llm_chat", {"mode": {"broadcast"}}),
+            [])
+
+
 class ReportTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -266,6 +355,42 @@ class ReportTest(unittest.TestCase):
             code = check.main(["--repo", self.tmp.name,
                                "--source", "cli.py", "--docs", "README.md"])
         return code, out.getvalue()
+
+    def test_second_word_drift_reaches_the_report(self):
+        """End to end. A helper nobody calls catches nothing, and this one is
+        reached through a --help probe that could silently return no choices."""
+        self.write_doc("mode sync --to-all --yes")
+        # A VALID module. SOURCE is an indented fragment, so appending to it
+        # made the file unparseable — and stale_values returns [] on a parse
+        # failure, so the test failed by reporting nothing rather than by
+        # erroring. A fixture that cannot parse is a check that cannot fire.
+        with open(os.path.join(self.tmp.name, "cli.py"), "w") as f:
+            f.write('sub.add_parser("mode")\n'
+                    'print("fix it:\\n  llm_chat mode room gone-value")\n')
+        real = check.verbs_from_help
+        check.verbs_from_help = (
+            lambda path, verb=None: {"broadcast"} if verb == "mode" else set())
+        try:
+            _, out = self.run_check()
+        finally:
+            check.verbs_from_help = real
+        self.assertIn("SECOND-WORD DRIFT", out)
+        self.assertIn("gone-value", out)
+
+    def test_a_verb_with_a_second_word_is_reported_as_PARTLY_checked(self):
+        """Coverage stated whether or not anything was found. A clean run right
+        after tightening a check is when it is most likely to have become
+        silence — this repo's own `mode` remedy is assembled from f-string
+        pieces and genuinely is not validated."""
+        self.write_doc("mode sync --to-all --yes")
+        real = check.nested
+        check.nested = lambda path, verbs: ["mode"]
+        try:
+            _, out = self.run_check()
+        finally:
+            check.nested = real
+        self.assertIn("PARTLY CHECKED", out)
+        self.assertIn("f-string", out)
 
     def test_a_ghost_command_is_reported_by_the_runner_too(self):
         """End to end, not just the helper — the report has to reach a reader,

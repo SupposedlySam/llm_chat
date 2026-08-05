@@ -443,6 +443,14 @@ NOT_SWEPT = {
     "triggers/undocumented-surface:invented": "the reverse walk — backticks, "
         "fenced blocks, path-prefixed invocations, and the indented-prose "
         "false positive it produced on its first run, all asserted directly",
+    "triggers/undocumented-surface:stale_values": "asserted directly — a "
+        "remedy naming no accepted value is caught, one naming a valid value "
+        "is not, and the f-string-assembled case that CANNOT be checked is "
+        "pinned as a limit rather than left to be discovered",
+    "triggers/undocumented-surface:bare_words": "placeholders, flags and "
+        "non-remedy lines asserted directly",
+    "triggers/undocumented-surface:nested": "drives the PARTLY CHECKED "
+        "coverage line, asserted through the report",
     "triggers/undocumented-surface:named_in_strings": "the denominator. "
         "Remedies in unbackticked source strings, docstring prose, and "
         "sentence-shaped mentions all asserted directly — the last two are "

@@ -65,15 +65,32 @@ def declared(paths):
     return verbs, options
 
 
-def verbs_from_help(path):
+def verbs_from_help(path, verb=None):
     """Subcommands as argparse itself lists them, or an empty set."""
+    argv = [sys.executable, path] + ([verb] if verb else []) + ["--help"]
     try:
-        done = subprocess.run([sys.executable, path, "--help"],
-                              capture_output=True, text=True, timeout=15)
+        done = subprocess.run(argv, capture_output=True, text=True, timeout=15)
     except Exception:
         return set()
     found = re.search(r"\{([a-z0-9_,-]+)\}", done.stdout or "")
     return set(found.group(1).split(",")) if found else set()
+
+
+def nested(path, verbs):
+    """Verbs that have subcommands of their own.
+
+    THIS CHECK ONLY VALIDATES THE FIRST WORD, and that is fine for a flat CLI
+    and silently wrong for a nested one. A sibling agent found exactly this in
+    their tool: `<tool> lock run` appeared in eight remedies, the check
+    validated `lock` and stopped, and `lock` has five subcommands — so renaming
+    `run` would kill all eight while the suite stayed green.
+
+    A stated limit needs a corpse next to it or it reads as boilerplate, and
+    this one can do better than a sentence: it can notice the day it starts
+    mattering. This tool is flat today. If it ever is not, the check says so
+    rather than quietly validating half of every remedy.
+    """
+    return sorted(v for v in verbs if verbs_from_help(path, v))
 
 
 def named_in_strings(path, tool):
@@ -123,6 +140,64 @@ def named_in_strings(path, tool):
                 if re.fullmatch(r"[a-z][a-z0-9_-]*", words[1]):
                     found.add(words[1])
     return found
+
+
+def bare_words(line, tool):
+    """Literal words in a remedy after the verb — not placeholders or flags.
+
+    `llm_chat mode {name} ordinary --yes` yields ("mode", ["ordinary"]).
+    `{name}` is filled in at runtime and `--yes` is an option; neither can go
+    stale the way a hard-coded VALUE can.
+    """
+    words = line.strip().split()
+    if len(words) < 2 or not words[0].rstrip(":").endswith(tool):
+        return None, []
+    rest = []
+    for word in words[2:]:
+        word = word.strip(".,;)")
+        if word.startswith(("-", "{", "<", "$")) or not word:
+            continue
+        if re.fullmatch(r"[a-z][a-z0-9_-]*", word):
+            rest.append(word)
+    return words[1], rest
+
+
+def stale_values(path, tool, choices):
+    """Hard-coded VALUES in remedies that are no longer valid choices.
+
+    The first word was validated and the check stopped there. A sibling agent
+    found eight remedies naming `<tool> lock run` where `lock` was checked and
+    `run` — one of five subcommands — was not, so renaming it would kill all
+    eight silently.
+
+    This repo had the same exposure through `choices=`: `mode` accepts
+    broadcast|ordinary and its own reversal remedy hard-codes one of them.
+    Argparse renders a choices positional exactly like a subparser group, so I
+    first read the warning as a false positive and nearly dismissed it. It was
+    a true one wearing an unfamiliar shape.
+    """
+    try:
+        with open(path) as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError):
+        return []
+    stale = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        for line in node.value.splitlines():
+            verb, rest = bare_words(line, tool)
+            if verb not in choices or not rest:
+                continue
+            # AT LEAST ONE valid choice, rather than "every word is valid".
+            # Which POSITION holds the value cannot be known generally —
+            # `llm_chat mode <channel> <mode>` puts a room name in between, and
+            # flagging every non-choice word reported the room. Asking whether
+            # the remedy names any accepted value at all needs no position and
+            # cannot be confused by an argument that is not a value.
+            if not any(word in choices[verb] for word in rest):
+                stale.append((verb, " ".join(rest)))
+    return sorted(set(stale))
 
 
 def invented(verbs, sources, docs, tool):
@@ -214,7 +289,41 @@ def main(argv=None):
               "route around it, and can never be found by\n  use, because "
               "nobody who is working ever sees a refusal.\n")
 
-    if not missing_verbs and not missing_options and not ghosts:
+    stale = []
+    for path in [os.path.join(repo, p) for p in args.source]:
+        choices = {v: verbs_from_help(path, v) for v in verbs}
+        choices = {v: c for v, c in choices.items() if c}
+        stale += stale_values(path, args.tool, choices)
+    if stale:
+        print("SECOND-WORD DRIFT — a remedy hard-codes a value that is no "
+              "longer accepted:")
+        for verb, word in stale:
+            print("  %s %s ... %s" % (args.tool, verb, word))
+        print("\n  Validating only the first word leaves these half-checked: "
+              "rename the VALUE\n  and every remedy naming it goes dead while "
+              "this check stays green. A sibling\n  tool had eight remedies in "
+              "exactly that state.\n")
+
+    # COVERAGE, stated whether or not anything was found. This validates second
+    # words only where the whole remedy is ONE literal. This project's own
+    # `mode` reversal is assembled from f-string pieces —
+    #   f"...llm_chat mode {name} " + f"{'ordinary' if want else 'broadcast'}"
+    # — so the value lives in a different AST node from the verb and cannot be
+    # matched. That remedy is real, hard-coded, and unchecked.
+    #
+    # Said out loud because a clean run right after tightening a check is when
+    # it is most likely to have become silence, and because a limit needs a
+    # worked example beside it or it reads as boilerplate. This is the example.
+    for path in [os.path.join(repo, p) for p in args.source]:
+        deep = nested(path, verbs)
+        if deep:
+            print("PARTLY CHECKED — these verbs take a second word: %s"
+                  % ", ".join(deep))
+            print("  Validated only where a remedy is a single literal. One "
+                  "assembled from\n  f-string pieces puts the value in a "
+                  "different node and is NOT checked.\n")
+
+    if not missing_verbs and not missing_options and not ghosts and not stale:
         print("every command and option is named in the docs "
               "(which is the floor, not the goal — it cannot tell you whether "
               "they are correct or merely mentioned)")
