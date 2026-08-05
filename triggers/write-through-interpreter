@@ -1,0 +1,110 @@
+#!/usr/bin/env python3
+"""PreToolUse hook: refuse file edits smuggled through an inline interpreter.
+
+Wired in `.claude/settings.local.json` against the `Bash` tool.
+
+THE HOLE. The write rail inspects `Write`/`Edit`/`NotebookEdit` by `file_path`,
+and parses `Bash` command text for shell redirects and mutating verbs. A
+`python3 - <<'PY' ... open(p,"w").write(s) ... PY` is neither: the tool is Bash,
+and the write lives inside script text no parser reads. game_loop says so in its
+own coverage report — "NONE of this sees ... an interpreter one-liner" — and a
+guard that documents its blind spot is honest, but the blind spot is exactly
+where a careless agent lives.
+
+MEASURED, not assumed: twenty consecutive commits in this repo were authored
+almost entirely through such heredocs, in a session where the guard DID refuse
+several shell commands. So "the guard did not object" was worthless evidence for
+the whole session, while its author was busy finding this exact failure shape in
+everything else.
+
+WHY A HOOK AND NOT A RESOLUTION. "I will use Write and Edit from now on" is a
+promise, and this session is a catalogue of promises losing to a busy moment —
+including one made about test traffic and broken forty minutes later. A promise
+also does not survive compaction: the next context window inherits the habit and
+none of the reasons. If it can be broken it was never a rule.
+
+WHAT IT REFUSES: an interpreter given code INLINE (`-c`, or a heredoc) that also
+contains a write. Running a script FILE is untouched — `python3 test/run.py` is
+how the suite runs, and its writes are in a reviewed file rather than in a
+command line nobody will ever read again.
+
+It cannot decide whether the write is dangerous, and does not try. Refusing on
+the SHAPE is the point: the shape is what makes it invisible.
+"""
+import json
+import os
+import re
+import sys
+
+# The interpreter and the inline code must be ADJACENT: `python3 -c`, or
+# `python3 - <<'PY'`. Matching "an interpreter appears somewhere AND a heredoc
+# appears somewhere" refused this project's own commit, because the message
+# quoted `open(p,"w")` inside a `git commit -m "$(cat <<'MSG' ...)"`. Prose
+# that MENTIONS a write is not a write — the same correction game_loop had to
+# make about redirects, arriving here within a minute of shipping.
+INVOCATION = re.compile(
+    r"\b(python3?|perl|ruby|node|osascript)\s+(-c\b|-?\s*<<-?\s*['\"]?\w+)")
+
+WRITES = (
+    re.compile(r"""open\s*\([^)]*,\s*['"][wa]\+?b?['"]"""),
+    re.compile(r"\.write(?:lines|_text|_bytes)?\s*\("),
+    re.compile(r"\b(?:os\.replace|os\.rename|os\.remove|os\.unlink|shutil\.(?:copy2?|copyfile|copytree|move|rmtree))\s*\("),
+    re.compile(r"\bjson\.dump\s*\("),
+    re.compile(r"\bwriteFileSync\b"),
+    re.compile(r"\bPath\([^)]*\)\.write_"),
+)
+
+
+def offending_write(command):
+    """The write that would be invisible, or None."""
+    if not command:
+        return None
+    start = INVOCATION.search(command)
+    if not start:
+        return None           # a script file, or prose that merely mentions one
+    # Only what the interpreter is actually GIVEN. A write appearing earlier in
+    # the command line belongs to something else.
+    body = command[start.end():]
+    for pattern in WRITES:
+        found = pattern.search(body)
+        if found:
+            return found.group(0)
+    return None
+
+
+def refusal(snippet):
+    return (
+        "REFUSED: this writes a file from inline interpreter code (%s).\n\n"
+        "The write rail reads Write/Edit `file_path` and parses shell "
+        "redirects. It\ncannot see inside a heredoc or a -c, so an edit made "
+        "this way is unguarded —\nand twenty consecutive commits here were "
+        "authored exactly like this while the\nsame rail was refusing shell "
+        "commands, which made its silence worthless.\n\n"
+        "Use the Write or Edit tool. They take a file_path the guard can "
+        "check, they\nshow a diff, and they fail loudly when the old text is "
+        "not found instead of\nsilently replacing nothing.\n\n"
+        "If you genuinely need a script, put it in a FILE and run that — a "
+        "reviewed\nfile is not the thing this refuses. It refuses code that "
+        "exists only inside a\ncommand line nobody will read again." % snippet
+    )
+
+
+def main(argv=None):
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return 0
+    if payload.get("tool_name") != "Bash":
+        return 0
+    command = (payload.get("tool_input") or {}).get("command", "")
+    if os.environ.get("LLM_CHAT_ALLOW_INLINE_WRITE"):
+        return 0              # deliberate, explicit, and visible in the command
+    snippet = offending_write(command)
+    if not snippet:
+        return 0
+    print(refusal(snippet), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

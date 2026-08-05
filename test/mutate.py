@@ -184,6 +184,14 @@ MUTATIONS = [
      "the waker dies silently again and doctor is back to 'pid is gone', "
      "which was a dead end at exactly the question that matters"),
 
+    ("a write smuggled through an interpreter is refused",
+     "triggers/write-through-interpreter",
+     '    body = command[start.end():]',
+     '    body = ""',
+     "file edits go back to being invisible to the write rail, which is how "
+     "twenty commits were authored past a guard that was refusing shell "
+     "commands the whole time"),
+
     ("the leak detector is itself defended", "test/run.py",
      '    if not leaked:',
      '    if True:',
@@ -401,6 +409,14 @@ NOT_SWEPT = {
         "corrupt asserted directly — none may read as a guess",
     "bin/llm-chat-deliver:source_checkout": "recorded, absent and corrupt "
         "asserted directly via the notice that consumes it",
+    "triggers/write-through-interpreter:offending_write": "asserted against "
+        "five VERBATIM smuggled writes from this session and seven legitimate "
+        "commands; the allow-cases matter more, since a guard that blocks the "
+        "test runner is turned off within the hour",
+    "triggers/write-through-interpreter:refusal": "asserted directly — it must "
+        "name Write/Edit, or the refusal is a wall rather than a redirection",
+    "triggers/write-through-interpreter:main": "every branch asserted "
+        "directly, including the visible escape hatch",
     "test/mutate.py:probe": "all three outcomes asserted by running it — "
         "caught, survived, no-anchor and ambiguous, exit codes read unpiped",
     "bin/llm-chat-deliver:addressed_to_me": "every audience form asserted "
