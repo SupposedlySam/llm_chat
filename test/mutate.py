@@ -18,6 +18,7 @@ Each mutation below reverts a fix this project actually shipped, so the
 Every mutation is applied to a COPY of the file and restored in a finally, so an
 interrupted run cannot leave the repo mutated.
 """
+import argparse
 import ast
 import fcntl
 import os
@@ -182,6 +183,12 @@ MUTATIONS = [
      '            pass',
      "the waker dies silently again and doctor is back to 'pid is gone', "
      "which was a dead end at exactly the question that matters"),
+
+    ("the leak detector is itself defended", "test/run.py",
+     '    if not leaked:',
+     '    if True:',
+     "the rail that catches a test patching a shared module can break with "
+     "nothing noticing — found by probing it, which is what the probe is for"),
 
     ("content goes only to whoever it was addressed to",
      "bin/llm-chat-deliver",
@@ -394,6 +401,8 @@ NOT_SWEPT = {
         "corrupt asserted directly — none may read as a guess",
     "bin/llm-chat-deliver:source_checkout": "recorded, absent and corrupt "
         "asserted directly via the notice that consumes it",
+    "test/mutate.py:probe": "all three outcomes asserted by running it — "
+        "caught, survived, no-anchor and ambiguous, exit codes read unpiped",
     "bin/llm-chat-deliver:addressed_to_me": "every audience form asserted "
         "directly, including that unaddressed WAKES you without being for you",
     "bin/llm-chat-deliver:render_channel": "full-text-for-mine, pointer-for-"
@@ -684,7 +693,75 @@ def run_suite():
     return done.returncode == 0
 
 
+def probe(relative, old, new):
+    """Is this behaviour ALREADY defended? One command, before you build.
+
+    The lesson this exists for: I found a rule stated in a docstring and
+    violated at twenty sites, and started rewriting all twenty. It was already
+    enforced — report_global_leaks() catches exactly that leak, is wired, and
+    fires. A risky refactor for a rail that already existed.
+
+    "Check whether it is already enforced" is a judgement, and judgements do
+    not harden; writing it down would be the prose-dressed-as-a-rule failure
+    it is trying to prevent. What IS checkable is whether a guard is load-
+    bearing, and the tool for that is the same mutation the sweep uses — only
+    run BEFORE building instead of after, when the answer can still change what
+    you do.
+
+    Three outcomes, never two, the same contract this project and a sibling
+    both converged on independently:
+
+        0  CAUGHT     something already defends this. Do not build.
+        1  SURVIVED   nothing does. Build it, then add a permanent mutation.
+        2  NO ANCHOR  the text is not there — you are probing a behaviour that
+                      does not exist yet, which is not the same as undefended.
+    """
+    path = os.path.join(ROOT, relative)
+    try:
+        with open(path) as f:
+            original = f.read()
+    except OSError as problem:
+        print("cannot read %s: %s" % (relative, problem))
+        return 2
+    if old not in original:
+        print("NO ANCHOR — %r is not in %s.\n"
+              "  Nothing was mutated, so a passing suite here would mean "
+              "nothing.\n  Probe text that exists, or accept that the "
+              "behaviour is not written yet." % (old[:60], relative))
+        return 2
+    if original.count(old) > 1:
+        print("AMBIGUOUS — %r appears %d times in %s.\n"
+              "  Be more specific, or the mutation is not the one you meant."
+              % (old[:60], original.count(old), relative))
+        return 2
+    stat = os.stat(path)
+    try:
+        with open(path, "w") as f:
+            f.write(original.replace(old, new, 1))
+        still_green = run_suite()
+    finally:
+        with open(path, "w") as f:
+            f.write(original)
+        os.utime(path, (stat.st_atime, stat.st_mtime))
+    if still_green:
+        print("SURVIVED — nothing defends this. Build the guard, then add a "
+              "mutation\n  so it stays defended.")
+        return 1
+    print("CAUGHT — something already defends this. Find out WHAT before "
+          "building\n  anything; a second rail for a rule that has one is a "
+          "risky refactor for nothing.")
+    return 0
+
+
 def main():
+    if "--probe" in sys.argv:
+        ap = argparse.ArgumentParser(prog="mutate.py --probe")
+        ap.add_argument("--probe", required=True, help="file to mutate")
+        ap.add_argument("--old", required=True)
+        ap.add_argument("--new", required=True)
+        args = ap.parse_args()
+        return probe(args.probe, args.old, args.new)
+
     _lock = sole_sweep()   # held for the life of the process
     print("Reverting %d shipped fixes; each must turn the suite RED.\n"
           % len(MUTATIONS))

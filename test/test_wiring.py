@@ -11,10 +11,11 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import mutate  # noqa: E402
+import run  # noqa: E402
 from support import load, write_settings  # noqa: E402
 
 cli = load("llm_chat")
@@ -363,6 +364,49 @@ class DirtyCheckoutTest(unittest.TestCase):
             raise OSError("no git")
         cli.subprocess.run = explode
         self.assertIsNone(cli.checkout_dirty("/somewhere"))
+
+
+class LeakDetectorTest(unittest.TestCase):
+    """The detector that catches a test patching a shared module — itself
+    defended, which it was not.
+
+    Found by probing it: mutating its "nothing leaked" branch to always-true
+    left the suite GREEN. So the rail everybody relies on to catch
+    `mod.subprocess.run = stub` could be broken and nothing would say so. It
+    is wired at two call sites and it does fire; it was simply nobody's job to
+    notice if it stopped.
+    """
+
+    def test_it_reports_a_shared_callable_left_patched(self):
+        import subprocess as real
+        before = run.shared_callables()
+        keep = real.run
+        real.run = lambda *a, **k: None
+        try:
+            out = io.StringIO()
+            with redirect_stdout(out):
+                leaked = run.report_global_leaks(before)
+        finally:
+            real.run = keep
+        self.assertTrue(leaked)
+
+    def test_an_unpatched_suite_reports_nothing(self):
+        """Paired: a detector that always fires is one nobody leaves on."""
+        before = run.shared_callables()
+        self.assertFalse(run.report_global_leaks(before))
+
+    def test_it_names_what_leaked(self):
+        import subprocess as real
+        before = run.shared_callables()
+        keep = real.run
+        real.run = lambda *a, **k: None
+        try:
+            err = io.StringIO()
+            with redirect_stderr(err):
+                run.report_global_leaks(before)
+        finally:
+            real.run = keep
+        self.assertIn("subprocess.run", err.getvalue())
 
 
 class ExecutableBitTest(unittest.TestCase):
