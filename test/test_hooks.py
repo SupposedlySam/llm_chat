@@ -111,7 +111,9 @@ class DeliverTest(HookTestCase):
 
     def test_waiting_messages_are_returned_as_additional_context(self):
         self.joined(room="me")
-        self.mod.subprocess = FakeSubprocess("[other] hello there")
+        self.mod.subprocess = FakeSubprocess(json.dumps(
+            [{"seq": 1, "from": "other", "text": "hello there",
+              "audience": "me", "mine": False}]))
         _, out = self.run_hook()
         payload = json.loads(out)
         context = payload["hookSpecificOutput"]["additionalContext"]
@@ -177,7 +179,9 @@ class DeliverTest(HookTestCase):
 
     def test_one_delivery_is_capped_so_it_cannot_derail_a_turn(self):
         self.joined(room="me")
-        many = "\n".join("[other] line %d" % i for i in range(50))
+        many = json.dumps([{"seq": i, "from": "other",
+                            "text": "line %d" % i, "audience": "me",
+                            "mine": False} for i in range(50)])
         self.mod.subprocess = FakeSubprocess(many)
         _, out = self.run_hook()
         context = json.loads(out)["hookSpecificOutput"]["additionalContext"]

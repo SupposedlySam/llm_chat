@@ -60,6 +60,17 @@ JOINED = os.path.join(PROJECT, ".llm_chat", "joined.json")
 # message.
 MAX_PER_DELIVERY = 15
 
+# A passive message costs every member's context, permanently, for something
+# nobody asked to be interrupted for. MEASURED on this machine: 231,800 chars
+# written once were delivered as 1,989,954 — 8.6x amplification, roughly half a
+# million tokens, most of it into agents the messages were not addressed to.
+#
+# So content is delivered to whoever the message was FOR, and everybody else is
+# told it exists. That is the same split the audience rules already make about
+# waking, applied to context: being addressed means you need the words, being
+# in the room means you need to know they were said.
+MAX_PASSIVE_PREVIEW = 100
+
 # Every hook a current install registers. Checked against what this repo
 # actually has, because upgrading llm_chat does NOT upgrade a repo already set
 # up: hooks are registered once, at install, so a repo wired before a hook
@@ -210,6 +221,47 @@ def upgrade_notice(session_id) -> str:
     return "\n".join(lines)
 
 
+def addressed_to_me(message, identity):
+    """Did this message ask for ME, or did it merely happen near me?
+
+    Mirrors `wakes()` in the CLI minus the room default: a passive message in
+    an ordinary room still wakes you, and this is not about waking. It is about
+    whether you need the WORDS or only the fact.
+    """
+    audience = message.get("audience")
+    if audience in (None, "*"):
+        return audience == "*"
+    if audience == "-":
+        return False
+    return identity in audience.split(",")
+
+
+def render_channel(channel, identity, waiting):
+    """Full text for what was addressed to you; one line for the rest.
+
+    The delivered-to-written ratio here was 8.6x, and almost all of the excess
+    was messages arriving in full at agents they were not for. Truncating them
+    to a pointer costs a reader one command when they care and saves every
+    other reader the whole message, forever.
+    """
+    mine = [m for m in waiting if addressed_to_me(m, identity)]
+    passive = [m for m in waiting if m not in mine]
+    lines = [f"#{channel} (you are '{identity}')"]
+    for m in mine:
+        for line in (m.get("text") or "").splitlines() or [""]:
+            lines.append("  " + line)
+    if passive:
+        who = ", ".join(sorted({m.get("from", "?") for m in passive}))
+        lines.append(f"  ({len(passive)} not addressed to you, from {who} — "
+                     f"`llm_chat read {channel}` for the text)")
+        for m in passive[:3]:
+            text = " ".join((m.get("text") or "").split())
+            if len(text) > MAX_PASSIVE_PREVIEW:
+                text = text[:MAX_PASSIVE_PREVIEW] + "…"
+            lines.append(f"    [{m.get('from', '?')}] {text}")
+    return "\n".join(lines)
+
+
 def main() -> int:
     # The hook is handed the tool-call payload on stdin. Leaving it unread can
     # break the pipe on the caller; the session id in it is what keeps the
@@ -242,7 +294,7 @@ def main() -> int:
         try:
             out = subprocess.run(
                 [sys.executable, CLI, "--server", server, "read", channel,
-                 "--as", identity],
+                 "--as", identity, "--json"],
                 capture_output=True, text=True, timeout=8,
             ).stdout.strip()
         except Exception:
@@ -251,14 +303,14 @@ def main() -> int:
             # queued and arrives on the next tool call.
             continue
 
-        if not out or out.startswith("nothing new"):
+        try:
+            waiting = json.loads(out or "[]")
+        except ValueError:
+            continue          # could not read is not "nothing waiting"
+        if not waiting:
             continue
-        # `out` is already non-empty after strip(), so at least one line
-        # survives this filter — an emptiness check here could never fire.
-        lines = [ln for ln in out.splitlines() if ln.strip()][:MAX_PER_DELIVERY]
-        blocks.append(
-            f"#{channel} (you are '{identity}')\n" + "\n".join(f"  {ln}" for ln in lines)
-        )
+        blocks.append(render_channel(channel, identity,
+                                     waiting[:MAX_PER_DELIVERY]))
 
     if not blocks and not notice:
         return 0

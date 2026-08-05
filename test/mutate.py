@@ -183,6 +183,13 @@ MUTATIONS = [
      "the waker dies silently again and doctor is back to 'pid is gone', "
      "which was a dead end at exactly the question that matters"),
 
+    ("content goes only to whoever it was addressed to",
+     "bin/llm-chat-deliver",
+     '    mine = [m for m in waiting if addressed_to_me(m, identity)]',
+     '    mine = list(waiting)',
+     "every message lands in full in every member's context — measured at 8.6x "
+     "amplification and half a million tokens before this"),
+
     ("a message rings the doorbells it wakes", "bin/llm_chat",
      '                 and ring(m)]',
      '                 and False]',
@@ -387,6 +394,10 @@ NOT_SWEPT = {
         "corrupt asserted directly — none may read as a guess",
     "bin/llm-chat-deliver:source_checkout": "recorded, absent and corrupt "
         "asserted directly via the notice that consumes it",
+    "bin/llm-chat-deliver:addressed_to_me": "every audience form asserted "
+        "directly, including that unaddressed WAKES you without being for you",
+    "bin/llm-chat-deliver:render_channel": "full-text-for-mine, pointer-for-"
+        "the-rest, both caps and the saving asserted directly",
     "bin/llm_chat:doorbell_dir": "pinned equal to the waker's copy, which is "
         "the only property that matters about a duplicated convention",
     "bin/llm_chat:ring": "listener, no listener, stale socket and junk on "
