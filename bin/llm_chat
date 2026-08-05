@@ -42,8 +42,10 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -822,7 +824,83 @@ def do_pending(server, name, identity):
     }))
 
 
+def doorbell_dir():
+    """Where agents leave a socket saying "I am listening".
+
+    Machine-local and ephemeral on purpose. A doorbell is meaningless after a
+    reboot and belongs to no repo — putting it in a checkout would make one
+    project's temp state another project's tracked file, and every agent here
+    shares this checkout.
+
+    MIRRORED in bin/llm-chat-wake, which binds what this rings. A test pins the
+    two equal; two copies of a path convention drift, and a doorbell nobody
+    can find is silence that looks like nobody having spoken.
+    """
+    return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells")
+
+
+def ring(identity):
+    """Tell one agent something arrived. Returns True if anyone was listening.
+
+    This REPLACES polling. An idle waker blocks on its doorbell at zero cost
+    instead of asking the server every few seconds — which, with five agents
+    across sixteen rooms, was six requests a second whether or not anyone was
+    talking, and eventually rate-limited the server into refusing everything.
+
+    Nobody listening is the NORMAL case, not an error: an agent that is
+    working has no waker, and it will pick the message up from the delivery
+    hook or from the reconcile its next waker does at startup. So a failure
+    here is silent by design — but it is the only silent path in the send, so
+    it returns whether it reached anyone and `say` reports the count.
+    """
+    path = os.path.join(doorbell_dir(), "%s.sock" % identity)
+    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    sock.settimeout(2)
+    try:
+        sock.connect(path)
+        sock.sendall(b"1")
+        return True
+    except OSError:
+        return False          # no waker, stale socket, or nobody home
+    finally:
+        sock.close()
+
+
+def refuse_impersonation(channel, identity):
+    """You may speak only as yourself. Refuses anything else.
+
+    "Do not put test traffic in a shared room" was written down, agreed with,
+    and broken — by me, in the same session I wrote it, sending a probe into a
+    nine-member room AS ANOTHER AGENT'S IDENTITY. If you can break it, it was
+    never a rule; it was prose. This is the rule.
+
+    Impersonation is the checkable half of that mistake and the more serious
+    one: every reader of a room decides what to believe partly by who said it,
+    and a message under somebody else's name corrupts that for everyone,
+    permanently, in a transcript nothing can edit.
+
+    What counts as yourself: this project's identity, or one this project has
+    already joined that channel as. The second clause is not a loophole — it
+    is how a project that legitimately holds two identities keeps working, and
+    it still cannot invent a third.
+    """
+    entry = read_joined().get(channel)
+    known = {n for n in (project_identity(), entry and entry.get("identity"))
+             if n}
+    if not known or identity in known:
+        return
+    raise SystemExit(
+        f"refusing to speak as '{identity}' — this project is "
+        f"{', '.join(sorted(known))}.\n"
+        f"  A message under another agent's name is unattributable to every "
+        f"reader of #{channel},\n  and nothing can edit a transcript. If you "
+        f"are testing, open a room whose only\n  members are you and the "
+        f"thing under test."
+    )
+
+
 def do_say(server, name, identity, text, audience=None):
+    refuse_impersonation(name, identity)
     chan = get_channel(server, name)
     if chan is None:
         raise SystemExit(f"no such channel: {name}")
@@ -851,7 +929,15 @@ def do_say(server, name, identity, text, audience=None):
     # feature exists because that number used to be "all of them, always".
     members = sorted(m["identity"] for m in
                      rows(server, "memberships", eq("channel", name)))
+    # Ring exactly the agents this message WAKES. Not everyone in the room:
+    # the audience rules already decide who is interrupted, and the signal has
+    # to obey them or --to-none is a lie at the transport layer.
+    listening = [m for m in members
+                 if m != identity and wakes({"audience": audience}, m, chan)
+                 and ring(m)]
     print(f"  {say_reach(server, name, identity, audience, chan)}")
+    if listening:
+        print(f"  rang {len(listening)} listening now: {', '.join(listening)}")
     if not chan.get("broadcast") and (hint := crowded_room_hint(
             name, members, audience)):
         print(hint)

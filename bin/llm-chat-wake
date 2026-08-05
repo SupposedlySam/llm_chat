@@ -29,9 +29,12 @@ symptom is replies that only arrive once the agent does something else.
 """
 import json
 import os
+import select
 import signal
+import socket
 import subprocess
 import sys
+import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -65,7 +68,11 @@ JOINED = os.path.join(STATE, "joined.json")
 PID_PATH = os.path.join(STATE, "wake.pid")
 EXIT_PATH = os.path.join(STATE, "wake.exit")
 
-POLL_SEC_DEFAULT = 5
+# No longer a poll interval — nothing is polled. This is how long the waker
+# blocks before waking to recheck whether it has been superseded or orphaned,
+# both of which are local file reads. Long on purpose: a message does not wait
+# for it, the doorbell does that.
+HEARTBEAT_SEC_DEFAULT = 300
 
 # There is NO listen budget. If you are in a room you hear every reply, full
 # stop — a timer here meant an idle agent went silently deaf at a moment
@@ -78,7 +85,8 @@ POLL_SEC_DEFAULT = 5
 # reparented (pid 1), which is a precise, free liveness signal — no token to
 # refresh and nothing to keep in sync.
 PARENT = os.getppid()
-POLL_SEC = int(os.environ.get("LLM_CHAT_POLL_SEC") or POLL_SEC_DEFAULT)
+HEARTBEAT_SEC = int(os.environ.get("LLM_CHAT_HEARTBEAT_SEC")
+                    or HEARTBEAT_SEC_DEFAULT)
 
 
 def record_exit(reason):
@@ -115,6 +123,80 @@ def on_term(_signum, _frame):
     the one most likely to be misread as a crash. Record it and go."""
     record_exit("terminated (usually a newer waker taking over)")
     sys.exit(0)
+
+
+def doorbell_dir():
+    """MIRRORED in bin/llm_chat, which rings what this binds. A test pins the
+    two equal — two copies of a path convention drift, and a doorbell nobody
+    can find is silence that looks like nobody having spoken."""
+    return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells")
+
+
+def open_doorbell(identity):
+    """Listen for "something arrived", at zero cost until it does.
+
+    THIS REPLACES THE POLL. The waker used to ask the server every few seconds
+    per room — six requests a second across five agents and sixteen rooms,
+    sustained whether or not anyone was talking, until the server rate-limited
+    everything into failing. Now it blocks on a socket: no requests, no CPU,
+    and a wake in milliseconds instead of up to a poll interval.
+
+    A LEFTOVER SOCKET FILE IS NOT A LISTENER. A waker that died without
+    cleanup leaves the path in place, and binding onto it fails while
+    connecting to it is refused — so senders would ring a doorbell nobody can
+    hear, forever. Probe it first, and only remove it if nothing answers;
+    removing it without checking would steal the doorbell from a healthy
+    waker holding it.
+    """
+    try:
+        os.makedirs(doorbell_dir(), exist_ok=True)
+    except OSError:
+        return None      # no doorbell; the loop still runs on its heartbeat
+    path = os.path.join(doorbell_dir(), "%s.sock" % identity)
+    if os.path.exists(path):
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(1)
+        try:
+            probe.connect(path)
+            probe.close()
+            return None          # somebody healthy already holds it
+        except OSError:
+            probe.close()
+            try:
+                os.unlink(path)  # stale; its owner is gone
+            except OSError:
+                return None
+    bell = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        bell.bind(path)
+        bell.listen(16)
+        bell.setblocking(False)
+    except OSError:
+        bell.close()
+        return None
+    return bell
+
+
+def wait_for_ring(bell, seconds):
+    """Block until somebody rings, or `seconds` pass. True if rung.
+
+    The timeout is a HEARTBEAT, not a poll: it exists so the waker rechecks
+    whether it has been superseded or orphaned, which are local questions and
+    cost no request. Nothing here touches the network while waiting.
+    """
+    if bell is None:
+        time.sleep(seconds)
+        return False
+    ready, _, _ = select.select([bell], [], [], seconds)
+    if not ready:
+        return False
+    try:
+        conn, _ = bell.accept()
+        conn.recv(64)
+        conn.close()
+    except OSError:
+        pass
+    return True
 
 
 def joined_rooms():
@@ -367,7 +449,15 @@ def main() -> int:
 
     signal.signal(signal.SIGTERM, on_term)
     record_exit("running")     # overwritten by whatever actually ends it
+    # ONE doorbell for this project's identity. Bound before the first check,
+    # so a message arriving during the reconcile below rings rather than being
+    # missed between "I looked" and "I started listening".
+    identity = next((e.get("identity") for e in rooms.values()
+                     if e.get("identity")), None)
+    bell = open_doorbell(identity) if identity else None
+
     synced = False
+    checked_once = False
     while True:
         # BOTH before polling, never after: `poll` advances the server-side
         # cursor, so once this process has claimed a message it is the only one
@@ -409,7 +499,19 @@ def main() -> int:
         if blocks:
             record_exit("woke the session (healthy)")
             wake(blocks)  # exits 2
-        time.sleep(POLL_SEC)
+        # THE POLL IS GONE. This blocks on the doorbell at zero cost — no
+        # request, no CPU — and returns the instant somebody rings. The
+        # timeout is a heartbeat so supersession and orphaning get rechecked;
+        # both are local questions.
+        #
+        # The FIRST pass always checks anyway: an agent that was working has
+        # no waker, so anything said in that window rang a doorbell nobody was
+        # holding. Reconciling once at startup is what makes a missed ring
+        # harmless, and it is one check per waker rather than one per interval.
+        if not checked_once:
+            checked_once = True
+            continue
+        wait_for_ring(bell, HEARTBEAT_SEC)
         # The only real stop conditions: nothing can arrive any more, a newer
         # waker took over, or the session is gone.
         if not still_worth_listening(joined_rooms()):

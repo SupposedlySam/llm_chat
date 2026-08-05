@@ -212,6 +212,29 @@ class StoreTest(ServerTest):
         self.say("hi")
         self.assertIsNone(self.server.tables["messages"][0]["audience"])
 
+    def test_it_reports_who_was_actually_LISTENING(self):
+        """Woken and reachable-right-now are different facts. A member with no
+        waker is still woken in the audience sense — it just picks the message
+        up later — so the send says how many doorbells actually rang."""
+        real = cli.ring
+        cli.ring = lambda who: who == "bob"
+        try:
+            out = self.say("hi")
+        finally:
+            cli.ring = real
+        self.assertIn("rang 1 listening now: bob", out)
+
+    def test_it_says_nothing_about_ringing_when_nobody_is_listening(self):
+        """The common case. A line reporting zero would be noise on every
+        message sent while the other agents are working."""
+        real = cli.ring
+        cli.ring = lambda who: False
+        try:
+            out = self.say("hi")
+        finally:
+            cli.ring = real
+        self.assertNotIn("rang", out)
+
     def test_the_sender_is_told_who_it_woke(self):
         """An agent that cannot see who it just interrupted cannot learn to
         interrupt fewer people."""

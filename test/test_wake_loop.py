@@ -55,6 +55,18 @@ class WakeLoopTest(unittest.TestCase):
         # want the real function override these.
         self.mod.still_worth_listening = lambda rooms: True
         self.mod.sync_broadcasts = lambda: None
+        # The waker no longer sleeps, it BLOCKS on a socket for 300s. NoSleep
+        # patches `time` and cannot help with select(), so an unstubbed test
+        # does not fail — it stops for five minutes. Same shape as the DNS
+        # hang: the WAIT is what has to be faked, not the clock.
+        self.mod.open_doorbell = lambda identity: None
+        self.mod.wait_for_ring = lambda bell, seconds: False
+        # The waker no longer sleeps, it BLOCKS on a socket for 300s. NoSleep
+        # patches `time` and cannot help with select(), so an unstubbed test
+        # does not fail — it stops for five minutes. Same shape as the DNS
+        # hang: the wait is the thing that has to be faked, not the clock.
+        self.mod.open_doorbell = lambda identity: None
+        self.mod.wait_for_ring = lambda bell, seconds: False
         # NOTHING here may reach a real subprocess. `http://x` is not a
         # refused connection — it is a DNS lookup that hangs, so a test that
         # slips through does not fail, it STOPS, and the child outlives the
@@ -91,13 +103,29 @@ class WakeLoopTest(unittest.TestCase):
         self.assertIn("wake up", err.getvalue())
 
     def test_it_keeps_listening_while_nothing_arrives(self):
+        """No listen budget: it does not give up.
+
+        Counted WAITS, not sleeps. This test measured `time.sleep` calls, and
+        the loop no longer sleeps — it blocks on a doorbell — so the old
+        version spun forever instead of failing. The thing being counted has to
+        be the thing the loop actually does."""
+        waits = []
+
+        def wait(bell, seconds):
+            waits.append(seconds)
+            if len(waits) >= 3:
+                raise KeyboardInterrupt("enough")
+            return False
+
         self.mod.poll = lambda channel, entry: None
         self.mod.still_worth_listening = lambda rooms: True
-        clock = NoSleep(stop_after=3)
-        self.mod.time = clock
+        self.mod.wait_for_ring = wait
+        self.mod.time = NoSleep()
         with self.assertRaises(KeyboardInterrupt):
             self.run_main()
-        self.assertEqual(clock.slept, 3, "no listen budget: it does not give up")
+        self.assertEqual(len(waits), 3)
+        self.assertTrue(all(s >= 60 for s in waits),
+                        "the heartbeat must be long — it is not a poll")
 
     def test_a_broadcast_room_never_wakes_the_session(self):
         """Paired with the test below, which proves the skip is targeted rather

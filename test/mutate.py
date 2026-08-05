@@ -183,6 +183,24 @@ MUTATIONS = [
      "the waker dies silently again and doctor is back to 'pid is gone', "
      "which was a dead end at exactly the question that matters"),
 
+    ("a message rings the doorbells it wakes", "bin/llm_chat",
+     '                 and ring(m)]',
+     '                 and False]',
+     "the poll is gone and nothing replaced it, so an idle agent is never "
+     "signalled and only hears anything when it happens to start a new waker"),
+
+    ("you may speak only as yourself", "bin/llm_chat",
+     '    if not known or identity in known:\n        return',
+     '    if True:\n        return',
+     "a message lands in a shared transcript under another agent's name, "
+     "unattributable to every reader and impossible to edit afterwards"),
+
+    ("a healthy doorbell is never stolen", "bin/llm-chat-wake",
+     '            probe.connect(path)\n            probe.close()\n            return None',
+     '            probe.connect(path)\n            probe.close()',
+     "a second waker takes the socket from a live listener, so the first "
+     "agent goes deaf while the second believes it is covering"),
+
     ("a failing CLI never reads as 'every room is closed'", "bin/llm-chat-wake",
      '        if done.returncode != 0:',
      '        if False:',
@@ -369,6 +387,18 @@ NOT_SWEPT = {
         "corrupt asserted directly — none may read as a guess",
     "bin/llm-chat-deliver:source_checkout": "recorded, absent and corrupt "
         "asserted directly via the notice that consumes it",
+    "bin/llm_chat:doorbell_dir": "pinned equal to the waker's copy, which is "
+        "the only property that matters about a duplicated convention",
+    "bin/llm_chat:ring": "listener, no listener, stale socket and junk on "
+        "disk all asserted directly",
+    "bin/llm-chat-wake:doorbell_dir": "pinned equal to the CLI's copy",
+    "bin/llm-chat-wake:open_doorbell": "bind, healthy-holder, stale reclaim "
+        "and three failure paths asserted directly",
+    "bin/llm-chat-wake:wait_for_ring": "rung, timed out, no-doorbell and a "
+        "failing accept asserted directly — accept failing must still report "
+        "a ring, or a real wake is dropped",
+    "bin/llm_chat:refuse_impersonation": "every branch asserted directly, "
+        "including the second-identity case that is not a loophole",
     "bin/llm_chat:waker_exit": "missing, corrupt and reason-less records "
         "asserted directly — none of them may read as healthy",
     "bin/llm-chat-wake:record_exit": "every exit path asserted directly, "
