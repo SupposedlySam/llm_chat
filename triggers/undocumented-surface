@@ -188,12 +188,26 @@ def assembled_remedies(path, tool):
         literal = "".join(part.value for part in node.values
                           if isinstance(part, ast.Constant)
                           and isinstance(part.value, str))
-        # An f-string that NAMES the tool and then interpolates: the verb is in
-        # one node and the value it is followed by is in another, so nothing
-        # reading a single literal can pair them.
-        if re.search(r"\b%s\s" % re.escape(tool), literal) and any(
-                isinstance(part, ast.FormattedValue) for part in node.values):
-            count += 1
+        # COMMAND POSITION, not mention — the same discriminator the rest of
+        # this file needed, and I got it wrong here after getting it right
+        # twice elsewhere. "MENTIONS the tool" counted `You have been invited
+        # to an llm_chat channel:` and `no llm_chat server at {x} — start one
+        # with ./zonai serve`, which are prose and a remedy for a DIFFERENT
+        # tool. Twelve, of which five were the subject.
+        #
+        # A sibling agent hit the mirror image within minutes of taking this
+        # idea: their subject was too wide, then their fix made it too narrow
+        # and let through the shape the check is named for. Both counts were
+        # green and neither number showed which population it had measured.
+        if not any(isinstance(part, ast.FormattedValue)
+                   for part in node.values):
+            continue
+        for line in literal.splitlines():
+            stripped = line.strip()
+            if (stripped.split(" ")[0].rstrip(":").endswith(tool)
+                    and " " in stripped) or "`%s " % tool in line:
+                count += 1
+                break
     return count
 
 

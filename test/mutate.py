@@ -444,8 +444,11 @@ NOT_SWEPT = {
         "fenced blocks, path-prefixed invocations, and the indented-prose "
         "false positive it produced on its first run, all asserted directly",
     "triggers/undocumented-surface:assembled_remedies": "counted rather than "
-        "asserted, so the caveat retires itself at zero — both directions "
-        "asserted, including that a plain literal is not counted",
+        "asserted, so the caveat retires itself at zero. ONE fixture holds "
+        "prose, another tool's remedy and two real ones, asserting the counter "
+        "separates them — a count looks measured even when it measured the "
+        "wrong population, and both the too-wide and too-narrow subjects are "
+        "probed to CAUGHT",
     "triggers/undocumented-surface:stale_values": "asserted directly — a "
         "remedy naming no accepted value is caught, one naming a valid value "
         "is not, and the f-string-assembled case that CANNOT be checked is "

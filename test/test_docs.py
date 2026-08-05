@@ -392,6 +392,24 @@ class SecondWordTest(unittest.TestCase):
             check.stale_values(self.src, "llm_chat", {"mode": {"broadcast"}}),
             [])
 
+    def test_the_counter_SEPARATES_remedies_from_prose_in_one_fixture(self):
+        """A count looks measured even when it measured the wrong population,
+        and that is the failure mode of "count the subject". Mine said twelve;
+        five were prose or a remedy for a DIFFERENT tool. A sibling agent hit
+        the mirror image — too wide, then too narrow — both green.
+
+        The only thing that tells those apart is a fixture holding one of each
+        kind at once, asserting the counter picks out exactly the right ones.
+        Separate passing tests cannot: each is satisfied by a counter that is
+        wrong in the other direction."""
+        self.write(
+            'a = f"You have been invited to an llm_chat channel: {name}"\n'
+            'b = f"no llm_chat server at {url} — start `./zonai serve`"\n'
+            'c = f"headed \\"New llm_chat messages\\" {x}"\n'
+            'd = f"reopen it:\\n  llm_chat reopen {name}"\n'
+            'e = f"run `llm_chat join --as {who}` first"\n')
+        self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 2)
+
     def test_an_assembled_remedy_is_counted(self):
         self.write('x = f"  llm_chat mode {name} " + f"{value}"')
         self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 1)
@@ -400,6 +418,17 @@ class SecondWordTest(unittest.TestCase):
         """Paired: it is checkable, so counting it would inflate a number
         whose whole job is to reach zero."""
         self.write('print("  llm_chat mode room ordinary")')
+        self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 0)
+
+    def test_PROSE_MENTIONING_THE_TOOL_IS_NOT_A_REMEDY(self):
+        """The defect, alone. `llm_chat` in a sentence is not an instruction,
+        and counting it inflates the number whose job is to reach zero — so
+        the caveat would never retire even after the last real one went."""
+        self.write('x = f"You have been invited to an llm_chat channel: {n}"')
+        self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 0)
+
+    def test_a_remedy_for_a_DIFFERENT_tool_is_not_counted(self):
+        self.write('x = f"no llm_chat server at {u} — run `./zonai serve`"')
         self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 0)
 
     def test_an_f_string_not_naming_the_tool_is_NOT_counted(self):
