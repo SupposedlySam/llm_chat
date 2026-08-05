@@ -41,7 +41,39 @@ BIN = os.path.join(ROOT, "bin")
 # Imported rather than reimplemented: two copies of a discovery rule drift, and
 # a completeness check that has drifted reports completeness about the wrong
 # set. That is the whole family of failures this file exists to talk about.
+import mutate
 from mutate import discover_sources  # noqa: E402
+
+
+def stranded_mutations():
+    """Mutations left applied in the working tree by a sweep that was killed.
+
+    mutate.py restores in a `finally`, which SIGKILL does not run. So a sweep
+    killed with -9 leaves the repo holding a deliberately broken program — and
+    other agents invoke bin/llm_chat and bin/llm-chat-wake by ABSOLUTE PATH
+    into this tree, so they run it too, for as long as nobody notices.
+
+    Nobody noticed. Four mutations sat stranded across two files: the
+    supersession check removed from the waker, and `chan_count_placeholder is
+    not defined` in the CLI — which is the exact NameError a neighbouring agent
+    reported hours earlier and which retired its waker permanently. The damage
+    was attributed to a transient sweep window; it was not transient, it was
+    left behind.
+
+    Checked here because this runs on every verify and every commit, so the
+    window between stranding and screaming is one check rather than hours.
+    """
+    stranded = []
+    for name, relative, find, replace, _ in mutate.MUTATIONS:
+        path = os.path.join(ROOT, relative)
+        try:
+            with open(path) as f:
+                source = f.read()
+        except OSError:
+            continue
+        if find not in source and replace in source:
+            stranded.append((name, relative))
+    return stranded
 
 
 def measured():
@@ -198,6 +230,19 @@ def main():
                     help="fail below this line-coverage percentage")
     ap.add_argument("--tests-only", action="store_true")
     args = ap.parse_args()
+
+    # BEFORE anything else. A stranded mutation makes every result below a
+    # measurement of a program nobody meant to ship, and the tests may even
+    # pass — the point is that the TREE is wrong, not that the suite is red.
+    if (stranded := stranded_mutations()):
+        print("STRANDED MUTATIONS — this working tree is holding code a "
+              "mutation sweep\nmeant to revert. A sweep killed with -9 skips "
+              "its restore, and other agents\nrun these files by absolute "
+              "path, so they are running it too.\n")
+        for name, relative in stranded:
+            print("  %-45s in %s" % (name, relative))
+        print("\nRepair the tree before trusting anything below.")
+        return 1
 
     before = fingerprint_repo()
     globals_before = shared_callables()

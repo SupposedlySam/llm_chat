@@ -19,12 +19,44 @@ Every mutation is applied to a COPY of the file and restored in a finally, so an
 interrupted run cannot leave the repo mutated.
 """
 import ast
+import fcntl
 import os
 import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+LOCK = os.path.join(HERE, ".mutate.lock")
+
+
+def sole_sweep():
+    """Refuse to run while another sweep is running. Returns the held handle.
+
+    Two sweeps mutate and restore the SAME files, so each sees the other's
+    mutation as its own anchor being wrong. The symptom is ANCHOR MISSING on
+    behaviours whose anchors are plainly present, and a run four times slower
+    than it should be. Both happened here in one session, and the second time
+    the false ANCHOR MISSING was read as a real defect and chased.
+
+    NOTE, unfixed and stated rather than implied: a sweep mutates the LIVE
+    tree, and other agents invoke bin/llm_chat by absolute path into it. For
+    the few seconds each mutation is applied they are running a deliberately
+    broken program — which is how `chan_count_placeholder is not defined`
+    reached a neighbouring agent and retired its waker. Running each mutation
+    in a copied tree is the real fix and is not done; it was written, never
+    verified, and reverted rather than shipped unmeasured.
+    """
+    handle = open(LOCK, "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        raise SystemExit(
+            "another mutation sweep is already running.\n"
+            "  Two sweeps mutate the same files and corrupt each other's "
+            "anchors — the\n  symptom is ANCHOR MISSING on anchors that are "
+            "plainly there. Wait for it."
+        )
+    return handle
 
 # (name, file, find, replace-with, what breaking it should mean)
 MUTATIONS = [
@@ -150,6 +182,19 @@ MUTATIONS = [
      '            pass',
      "the waker dies silently again and doctor is back to 'pid is gone', "
      "which was a dead end at exactly the question that matters"),
+
+    ("a failing CLI never reads as 'every room is closed'", "bin/llm-chat-wake",
+     '        if done.returncode != 0:',
+     '        if False:',
+     "a waker retires PERMANENTLY on a false premise the moment the CLI is "
+     "broken for a few seconds — which this repo's own sweep does"),
+
+    ("the authority gate objects instead of ending the turn",
+     "triggers/authority-gate",
+     '    print(objection(phrase), file=sys.stderr)\n    return 2',
+     '    return 0',
+     "the loop parks on a question the agent had authority to answer, and a "
+     "human who already delegated the decision has to type 'yes'"),
 
     ("the waker PEEKS before it claims", "bin/llm-chat-wake",
      '            info = addressed(channel, entry)\n            if info is None:\n                continue',
@@ -363,6 +408,17 @@ NOT_SWEPT = {
         "a hostile briefing all asserted directly",
     "bin/llm_chat:do_briefing": "every branch asserted directly, including "
         "that an oversized briefing is refused without partially writing",
+
+    "triggers/authority-gate:asks_permission": "asserted directly against "
+        "three VERBATIM escalations from this session and four real reports "
+        "that must stay quiet — both directions measured, not imagined",
+    "triggers/authority-gate:last_assistant_text": "every shape asserted "
+        "directly — blocks, tool-only turns, corrupt lines, missing file",
+    "triggers/authority-gate:already_judged": "asserted directly, including "
+        "that an unwritable dir suppresses rather than loops",
+    "triggers/authority-gate:objection": "asserted directly — it must quote "
+        "the phrase and pose the theirs-or-yours question",
+    "triggers/authority-gate:main": "every branch asserted directly",
 
     "triggers/lamp-publish:geanie_for": "matched by path; missing, corrupt "
         "and unregistered asserted directly",
@@ -588,6 +644,7 @@ def run_suite():
 
 
 def main():
+    _lock = sole_sweep()   # held for the life of the process
     print("Reverting %d shipped fixes; each must turn the suite RED.\n"
           % len(MUTATIONS))
     survivors = []

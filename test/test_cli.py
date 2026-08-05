@@ -63,7 +63,7 @@ class CallTest(unittest.TestCase):
             def __exit__(self, *a):
                 return False
         cli.urllib.request.urlopen = lambda *a, **kw: Response()
-        self.assertEqual(cli.call("http://x", "GET", "/p"), {"data": {"ok": True}})
+        self.assertEqual(cli.call("http://127.0.0.1:1", "GET", "/p"), {"data": {"ok": True}})
 
     def test_an_empty_body_is_not_a_parse_error(self):
         class Response:
@@ -76,7 +76,7 @@ class CallTest(unittest.TestCase):
             def __exit__(self, *a):
                 return False
         cli.urllib.request.urlopen = lambda *a, **kw: Response()
-        self.assertEqual(cli.call("http://x", "GET", "/p"), {})
+        self.assertEqual(cli.call("http://127.0.0.1:1", "GET", "/p"), {})
 
     def test_an_http_error_is_reported_with_its_body(self):
         # Closed explicitly: HTTPError holds the stream open and warns on gc,
@@ -88,7 +88,7 @@ class CallTest(unittest.TestCase):
             raise error
         cli.urllib.request.urlopen = raise_http
         try:
-            result = cli.call("http://x", "GET", "/p")
+            result = cli.call("http://127.0.0.1:1", "GET", "/p")
         finally:
             error.close()
             body.close()
@@ -102,7 +102,7 @@ class CallTest(unittest.TestCase):
         def raise_url(*a, **kw):
             raise urllib.error.URLError("refused")
         cli.urllib.request.urlopen = raise_url
-        result = cli.call("http://x", "GET", "/p")
+        result = cli.call("http://127.0.0.1:1", "GET", "/p")
         self.assertIn("no llm_chat server", result["error"])
         self.assertIn("localhost", result["error"])
 
@@ -123,7 +123,7 @@ class CallTest(unittest.TestCase):
             seen["url"] = req.full_url
             return Response()
         cli.urllib.request.urlopen = capture
-        cli.call("http://x", "GET", "/db/list", query={"table": "channels"})
+        cli.call("http://127.0.0.1:1", "GET", "/db/list", query={"table": "channels"})
         self.assertIn("body=", seen["url"])
         self.assertIn("channels", seen["url"])
 
@@ -141,15 +141,15 @@ class HelperErrorTest(unittest.TestCase):
 
     def test_rows_exits(self):
         with self.assertRaises(SystemExit):
-            cli.rows("http://x", "channels")
+            cli.rows("http://127.0.0.1:1", "channels")
 
     def test_create_exits(self):
         with self.assertRaises(SystemExit):
-            cli.create("http://x", "channels", {})
+            cli.create("http://127.0.0.1:1", "channels", {})
 
     def test_update_exits(self):
         with self.assertRaises(SystemExit):
-            cli.update("http://x", "channels", cli.eq("id", "1"), {})
+            cli.update("http://127.0.0.1:1", "channels", cli.eq("id", "1"), {})
 
 
 class IdentityMemoryTest(unittest.TestCase):
@@ -174,12 +174,12 @@ class IdentityMemoryTest(unittest.TestCase):
     def test_remembering_is_atomic(self):
         """Written to a temp file and renamed: a hook reading it concurrently
         must never see half a record."""
-        cli.remember("room", "me", "http://x")
+        cli.remember("room", "me", "http://127.0.0.1:1")
         self.assertEqual(cli.read_joined()["room"]["identity"], "me")
         self.assertFalse(os.path.exists(cli.joined_path() + ".tmp"))
 
     def test_identity_falls_back_to_what_was_remembered(self):
-        cli.remember("room", "me", "http://x")
+        cli.remember("room", "me", "http://127.0.0.1:1")
         self.assertEqual(cli.identity_for("room", None), "me")
         self.assertEqual(cli.identity_for("room", "explicit"), "explicit")
 
@@ -227,13 +227,13 @@ class ChannelsAndInviteTest(unittest.TestCase):
     def show(self):
         out = io.StringIO()
         with redirect_stdout(out):
-            cli.do_channels("http://x")
+            cli.do_channels("http://127.0.0.1:1")
         return out.getvalue()
 
     def as_json(self, show_closed=False):
         out = io.StringIO()
         with redirect_stdout(out):
-            cli.do_channels("http://x", show_closed, as_json=True)
+            cli.do_channels("http://127.0.0.1:1", show_closed, as_json=True)
         return json.loads(out.getvalue())
 
     def test_an_empty_server_says_so(self):
@@ -323,7 +323,7 @@ class ChannelsAndInviteTest(unittest.TestCase):
         self.fake.channel("dead", closed=1)
         out = io.StringIO()
         with redirect_stdout(out):
-            cli.do_channels("http://x", show_closed=True)
+            cli.do_channels("http://127.0.0.1:1", show_closed=True)
         self.assertIn("[closed]", out.getvalue())
 
     def test_a_server_with_only_closed_rooms_says_so(self):
@@ -336,15 +336,15 @@ class ChannelsAndInviteTest(unittest.TestCase):
     def test_the_invite_is_written_as_instructions_to_an_agent(self):
         """Because that is literally what happens to it: a human pastes it into
         another session and says 'do that'."""
-        text = cli.invite("room", "the topic", "http://x")
+        text = cli.invite("room", "the topic", "http://127.0.0.1:1")
         self.assertIn("invited", text)
         self.assertIn("the topic", text)
         self.assertIn("join room", text)
-        self.assertIn("--server http://x", text)
+        self.assertIn("--server http://127.0.0.1:1", text)
         self.assertIn(os.path.join("bin", "llm_chat"), text)
 
     def test_an_invite_without_a_topic_omits_the_line(self):
-        self.assertNotIn("Topic:", cli.invite("room", None, "http://x"))
+        self.assertNotIn("Topic:", cli.invite("room", None, "http://127.0.0.1:1"))
 
 
 class ServerHelpersTest(unittest.TestCase):
@@ -356,15 +356,15 @@ class ServerHelpersTest(unittest.TestCase):
 
     def test_an_http_error_still_means_something_is_listening(self):
         cli.call = lambda *a, **kw: {"error": "HTTP 404"}
-        self.assertTrue(cli.server_up("http://x"))
+        self.assertTrue(cli.server_up("http://127.0.0.1:1"))
 
     def test_a_refused_connection_means_it_is_not(self):
-        cli.call = lambda *a, **kw: {"error": "no llm_chat server at http://x"}
-        self.assertFalse(cli.server_up("http://x"))
+        cli.call = lambda *a, **kw: {"error": "no llm_chat server at http://127.0.0.1:1"}
+        self.assertFalse(cli.server_up("http://127.0.0.1:1"))
 
     def test_a_clean_answer_means_it_is_up(self):
         cli.call = lambda *a, **kw: {"data": {"items": []}}
-        self.assertTrue(cli.server_up("http://x"))
+        self.assertTrue(cli.server_up("http://127.0.0.1:1"))
 
     def test_the_port_is_taken_from_the_url(self):
         self.assertEqual(cli.port_of("http://localhost:7717"), 7717)
@@ -391,7 +391,7 @@ class DoctorTest(unittest.TestCase):
     def report(self):
         out = io.StringIO()
         with redirect_stdout(out):
-            cli.do_doctor("http://x")
+            cli.do_doctor("http://127.0.0.1:1")
         return out.getvalue()
 
     def joined(self):
@@ -404,7 +404,7 @@ class DoctorTest(unittest.TestCase):
         d = os.path.join(self.project, ".llm_chat")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "joined.json"), "w") as f:
-            json.dump({"room": {"identity": "me", "server": "http://x"}}, f)
+            json.dump({"room": {"identity": "me", "server": "http://127.0.0.1:1"}}, f)
 
     def exited(self, reason, at=None, pid=999):
         d = os.path.join(self.project, ".llm_chat")
@@ -581,7 +581,7 @@ class DoctorTest(unittest.TestCase):
         d = os.path.join(self.project, ".llm_chat")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "joined.json"), "w") as f:
-            json.dump({"room": {"identity": "me", "server": "http://x"}}, f)
+            json.dump({"room": {"identity": "me", "server": "http://127.0.0.1:1"}}, f)
         with open(os.path.join(d, "wake.pid"), "w") as f:
             f.write(str(pid))
         write_settings(self.project,

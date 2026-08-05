@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Stop hook: catch the turn ending in a question I had the authority to answer.
+
+NOT a game_loop trigger despite living here — it is a Claude Code **Stop** hook,
+wired in `.claude/settings.local.json`. It shares this directory because these
+scripts shape how an agent WORKS rather than what llm_chat does.
+
+    "hooks": {"Stop": [{"hooks": [{"type": "command",
+      "command": "/path/to/llm_chat/triggers/authority-gate"}]}]}
+
+THE FAILURE. Finish a piece of work, identify the obvious next step, and then
+ask permission for it instead of doing it. The turn ends, the loop stops, and a
+human who has already delegated the decision has to type "yes". Told twice in
+one session that this was the problem, having been told once before that a
+T3 was mine to implement and not to escalate — so the correction did not
+survive being said, which is the definition of something that needs a rail
+rather than a resolution.
+
+WHAT IT ACTUALLY CHECKS. The last thing said to the human, for the shapes that
+hand a decision back: "want me to", "should I", "shall I", "let me know if".
+Exiting 2 puts the objection back into the same turn, so the work continues
+instead of parking — which is the whole point. The human sees one message where
+they used to see a question and a wait.
+
+IT DELIBERATELY CANNOT TELL a real escalation from a reflex one, and does not
+try. Some questions genuinely belong to the human: their money, their
+credentials, their risk, their preference between options that are equally good
+on the merits. A regex cannot see the difference and pretending otherwise would
+either suppress a question that mattered or wave through the ones this exists to
+catch. So it always objects, and the answer is a sentence: say which kind it is.
+Naming it is cheap and is the step that was being skipped.
+
+Fires once per distinct message. An objection that repeats on a message already
+judged would loop the turn against itself.
+"""
+import argparse
+import hashlib
+import json
+import os
+import re
+import sys
+
+# Only the shapes that HAND BACK a decision. "What do you think of X" is a
+# conversation; "shall I do X" is a delegation being returned to sender.
+ASKS = [
+    r"\bwant me to\b",
+    r"\bwould you like me to\b",
+    r"\bdo you want me to\b",
+    r"\bshall i\b",
+    r"\bshould i\b",
+    r"\blet me know (?:if|whether|which)\b",
+    r"\bunless you(?:'d| would)? (?:rather|prefer)\b",
+    r"\bif you(?:'d| would)? (?:like|prefer) me to\b",
+    r"\bsay the word\b",
+]
+PATTERN = re.compile("|".join(ASKS), re.IGNORECASE)
+
+# The tail only. A question quoted mid-message, or one already answered further
+# down, is not the turn ending on a question.
+TAIL_CHARS = 700
+
+
+def last_assistant_text(transcript_path):
+    """The final thing said to the human, or "" if it cannot be read.
+
+    Unreadable transcript means NO OPINION, never "nothing to object to" — a
+    guard that reads a missing file as a pass is the silent-green shape this
+    project keeps finding in its own checks.
+    """
+    try:
+        with open(transcript_path) as f:
+            lines = f.readlines()
+    except OSError:
+        return ""
+    for line in reversed(lines):
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("type") != "assistant":
+            continue
+        content = (entry.get("message") or {}).get("content")
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = [c.get("text", "") for c in content
+                     if isinstance(c, dict) and c.get("type") == "text"]
+            if any(p.strip() for p in parts):
+                return "\n".join(parts)
+    return ""
+
+
+def asks_permission(text):
+    """The matched phrase, or None. Tail only."""
+    match = PATTERN.search(text[-TAIL_CHARS:] if text else "")
+    return match.group(0) if match else None
+
+
+def already_judged(text, state_dir):
+    """True if this exact message has already been objected to.
+
+    Keyed on the message, not on the session: an objection that fires again on
+    a message already judged turns the turn against itself, and the model
+    cannot escape by rewording something it has decided is correct.
+    """
+    digest = hashlib.sha256(text.encode()).hexdigest()[:16]
+    marker = os.path.join(state_dir, "authority.%s" % digest)
+    if os.path.exists(marker):
+        return True
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        open(marker, "w").close()
+    except OSError:
+        return True      # cannot record it, so do not risk looping
+    return False
+
+
+def objection(phrase):
+    return (
+        "AUTHORITY GATE — this turn ends by handing a decision back: %r\n\n"
+        "You have standing authority for anything you can settle from the code,\n"
+        "the repo's conventions, and instructions already given. Asking for that\n"
+        "stops the loop and costs a round trip to hear what you already knew.\n\n"
+        "One sentence decides it. Is this THEIRS — their money, their\n"
+        "credentials, their risk, their preference between options equally good\n"
+        "on the merits — or YOURS?\n\n"
+        "  Theirs: ask, and say plainly why it is their call.\n"
+        "  Yours:  drop the question and DO IT, in this turn.\n\n"
+        "This fires on the shape, not on the substance; it cannot tell a real\n"
+        "escalation from a reflex one and does not try. Naming which it is was\n"
+        "the step being skipped." % phrase
+    )
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--state", default=None)
+    args = ap.parse_args(argv)
+
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return 0
+    text = last_assistant_text(payload.get("transcript_path") or "")
+    phrase = asks_permission(text)
+    if not phrase:
+        return 0
+
+    state = args.state or os.path.join(
+        os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(), ".llm_chat")
+    if already_judged(text, state):
+        return 0
+
+    print(objection(phrase), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

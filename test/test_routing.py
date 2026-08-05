@@ -229,7 +229,7 @@ class AddressedTest(unittest.TestCase):
         done = Done()
         done.stdout, done.returncode, done.stderr = stdout, 0, ""
         waker.subprocess.run = lambda *a, **kw: done
-        return waker.addressed("room", {"identity": "me", "server": "http://x"})
+        return waker.addressed("room", {"identity": "me", "server": "http://127.0.0.1:1"})
 
     def test_it_asks_pending_and_never_read(self):
         """`read` claims messages. Asking it whether to wake would consume a
@@ -244,7 +244,7 @@ class AddressedTest(unittest.TestCase):
             return Done()
 
         waker.subprocess.run = spy
-        waker.addressed("room", {"identity": "me", "server": "http://x"})
+        waker.addressed("room", {"identity": "me", "server": "http://127.0.0.1:1"})
         self.assertIn("pending", seen["argv"])
         self.assertNotIn("read", seen["argv"])
 
@@ -262,7 +262,7 @@ class AddressedTest(unittest.TestCase):
             raise OSError("down")
         waker.subprocess.run = explode
         self.assertIsNone(
-            waker.addressed("room", {"identity": "me", "server": "http://x"}))
+            waker.addressed("room", {"identity": "me", "server": "http://127.0.0.1:1"}))
 
     def test_unparseable_output_is_a_non_answer(self):
         self.assertIsNone(self.feed("not json"))
@@ -276,7 +276,7 @@ class AddressedTest(unittest.TestCase):
     def test_a_room_with_no_identity_is_skipped_without_a_call(self):
         called = []
         waker.subprocess.run = lambda *a, **kw: called.append(a)
-        self.assertIsNone(waker.addressed("room", {"server": "http://x"}))
+        self.assertIsNone(waker.addressed("room", {"server": "http://127.0.0.1:1"}))
         self.assertIsNone(waker.addressed("room", {"identity": "me"}))
         self.assertEqual(called, [])
 
@@ -290,7 +290,7 @@ class WakeHeaderTest(unittest.TestCase):
         d = os.path.join(self.tmp.name, ".llm_chat")
         os.makedirs(d)
         with open(os.path.join(d, "joined.json"), "w") as f:
-            json.dump({"room": {"identity": "me", "server": "http://x"}}, f)
+            json.dump({"room": {"identity": "me", "server": "http://127.0.0.1:1"}}, f)
         self.mod = load("llm-chat-wake")
 
     def tearDown(self):
@@ -354,7 +354,7 @@ class SyncBroadcastsTest(unittest.TestCase):
     def test_it_shells_out_to_sync(self):
         seen = {}
         waker.joined_rooms = lambda: {"room": {"identity": "me",
-                                               "server": "http://x"}}
+                                               "server": "http://127.0.0.1:1"}}
         waker.subprocess.run = lambda argv, **kw: seen.setdefault("argv", argv)
         waker.sync_broadcasts()
         self.assertIn("sync", seen["argv"])
@@ -377,7 +377,7 @@ class SyncBroadcastsTest(unittest.TestCase):
         """A chat outage must never break the session, and this is the least
         important thing the waker does."""
         waker.joined_rooms = lambda: {"room": {"identity": "me",
-                                               "server": "http://x"}}
+                                               "server": "http://127.0.0.1:1"}}
 
         def explode(*a, **kw):
             raise OSError("down")

@@ -263,22 +263,54 @@ def sync_broadcasts():
 
 
 def still_worth_listening(rooms) -> bool:
-    """False once every joined room is closed — nothing more can arrive."""
+    """False ONLY when every joined room is provably closed. Anything else —
+    including every way of not knowing — keeps listening.
+
+    THIS RETIRED WAKERS ON A FALSE PREMISE, and the exit record is what caught
+    it: `doctor` reported "every joined room is closed" for an agent whose five
+    rooms were all open. Reported with a reproduction, by the agent it happened
+    to.
+
+    Two defects, and the first one did the damage. `subprocess.run` does not
+    raise on a non-zero exit and the except clause only ever caught timeout and
+    OSError, so a FAILING CLI returned empty stdout, no line matched, the loop
+    fell through, and False meant "all closed". The comment here said "can't
+    tell; keep listening rather than go deaf" — the intent was right and
+    covered only the exception path, missing the one case it was written for.
+    Live on this machine for about an hour while the CLI was broken: every
+    waker that polled in that window stood down permanently. They were not
+    killed. They retired, and said so accurately.
+
+    The second is the rendering-as-format defect for the third time in a week.
+    It looked for "[closed]" in a listing that OMITS closed rooms rather than
+    marking them, so that branch was unreachable and the only route to False
+    was a line being ABSENT — conflating "closed" with "CLI failed", "server
+    down" and "not listed for any other reason". `channels --json` makes
+    `closed` a field, which is the check that was meant all along.
+
+    An absence is only evidence if something would have been present. Here
+    nothing guaranteed that, and four different situations wore the same face.
+    """
     for channel, entry in rooms.items():
         server = entry.get("server")
         if not server:
             continue
         try:
-            out = subprocess.run(
-                [sys.executable, CLI, "--server", server, "channels"],
-                capture_output=True, text=True, timeout=8,
-            ).stdout
+            done = subprocess.run(
+                [sys.executable, CLI, "--server", server, "channels", "--json"],
+                capture_output=True, text=True, timeout=8)
         except Exception:
-            return True  # can't tell; keep listening rather than go deaf
-        for line in out.splitlines():
-            if line.startswith(channel + " ") or line.startswith(channel + "\t"):
-                if "[closed]" not in line:
-                    return True
+            return True          # can't tell
+        if done.returncode != 0:
+            return True          # can't tell — the case that caused this
+        try:
+            listing = json.loads(done.stdout or "[]")
+        except ValueError:
+            return True          # can't tell
+        room = next((r for r in listing
+                     if isinstance(r, dict) and r.get("name") == channel), None)
+        if room is None or not room.get("closed"):
+            return True          # not listed is NOT proof of closure
     return False
 
 

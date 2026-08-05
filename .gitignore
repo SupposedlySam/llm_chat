@@ -23,3 +23,4 @@ __pycache__/
 # written as "$CLAUDE_PROJECT_DIR"/... and are portable, so they are worth
 # sharing. Ignoring that file would hide this project's guards from a clone.
 .claude/settings.local.json
+test/.mutate.lock

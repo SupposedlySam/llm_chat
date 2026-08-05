@@ -43,28 +43,28 @@ class CliEdgeTest(unittest.TestCase):
         """Whoever names it first wins; a later joiner supplying one is not
         overwriting anything."""
         self.fake.channel("room", topic=None)
-        self.quiet(cli.do_join, "http://x", "room", "me", "now it has one", 200, False)
+        self.quiet(cli.do_join, "http://127.0.0.1:1", "room", "me", "now it has one", 200, False)
         self.assertEqual(self.fake.get_channel("room")["topic"], "now it has one")
 
     def test_a_topic_already_set_is_not_overwritten(self):
         self.fake.channel("room", topic="the original")
-        self.quiet(cli.do_join, "http://x", "room", "me", "a later idea", 200, False)
+        self.quiet(cli.do_join, "http://127.0.0.1:1", "room", "me", "a later idea", 200, False)
         self.assertEqual(self.fake.get_channel("room")["topic"], "the original")
 
     def test_open_prints_the_invite_block(self):
-        text = self.quiet(cli.do_join, "http://x", "room", "me", "a topic", 200, True)
+        text = self.quiet(cli.do_join, "http://127.0.0.1:1", "room", "me", "a topic", 200, True)
         self.assertIn("invited", text)
         self.assertIn("-" * 70, text)
 
     def test_saying_into_a_room_that_does_not_exist_is_refused(self):
         with self.assertRaises(SystemExit) as caught:
-            cli.do_say("http://x", "ghost", "me", "anyone there?")
+            cli.do_say("http://127.0.0.1:1", "ghost", "me", "anyone there?")
         self.assertIn("no such channel", str(caught.exception))
 
     def test_leaving_a_room_you_never_joined_is_refused(self):
         self.fake.channel("room")
         with self.assertRaises(SystemExit) as caught:
-            cli.do_leave("http://x", "room", "stranger")
+            cli.do_leave("http://127.0.0.1:1", "room", "stranger")
         self.assertIn("has not joined", str(caught.exception))
 
     def test_reopen_warns_when_every_member_is_still_done(self):
@@ -73,7 +73,7 @@ class CliEdgeTest(unittest.TestCase):
         self.fake.channel("room", closed=1, closed_reason="every member is done")
         self.fake.membership("room", "me", done=1)
         self.fake.membership("room", "other", done=1)
-        text = self.quiet(cli.do_reopen, "http://x", "room", None)
+        text = self.quiet(cli.do_reopen, "http://127.0.0.1:1", "room", None)
         self.assertIn("still marked done", text)
         self.assertIn("rejoin", text)
 
@@ -230,14 +230,14 @@ class DeliverEdgeTest(unittest.TestCase):
         d = os.path.join(self.project, ".llm_chat")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "joined.json"), "w") as f:
-            json.dump({"room": {"server": "http://x"}}, f)
+            json.dump({"room": {"server": "http://127.0.0.1:1"}}, f)
         self.assertEqual(self.run_hook(), "")
 
     def test_blank_cli_output_is_not_a_delivery(self):
         d = os.path.join(self.project, ".llm_chat")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "joined.json"), "w") as f:
-            json.dump({"room": {"identity": "me", "server": "http://x"}}, f)
+            json.dump({"room": {"identity": "me", "server": "http://127.0.0.1:1"}}, f)
 
         class Blank:
             @staticmethod
@@ -270,7 +270,7 @@ class WakeEdgeTest(unittest.TestCase):
                 raise OSError("server gone")
         self.mod.subprocess = Boom
         self.assertIsNone(self.mod.poll("room", {"identity": "me",
-                                                 "server": "http://x"}))
+                                                 "server": "http://127.0.0.1:1"}))
 
     def test_an_unwritable_probe_directory_does_not_stop_the_waker(self):
         self.mod.STATE = UNWRITABLE
@@ -355,7 +355,7 @@ class LastMileTest(unittest.TestCase):
             fake.membership("room", "gone", done=1)
             out = io.StringIO()
             with redirect_stdout(out):
-                cli.do_reopen("http://x", "room", None)
+                cli.do_reopen("http://127.0.0.1:1", "room", None)
             text = out.getvalue()
         finally:
             cli.call = real

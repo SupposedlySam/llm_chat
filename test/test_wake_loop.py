@@ -46,7 +46,23 @@ class WakeLoopTest(unittest.TestCase):
         d = os.path.join(self.project, ".llm_chat")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "joined.json"), "w") as f:
-            json.dump({"room": {"identity": "me", "server": "http://x"}}, f)
+            json.dump({"room": {"identity": "me", "server": "http://127.0.0.1:1"}}, f)
+        # NOTHING here may reach a real subprocess. `http://x` is not a refused
+        # connection — it is a DNS lookup that HANGS, so a test that slips
+        # through does not fail, it stops, and the child outlives the run.
+        # Found with a 9-second suite taking over ten minutes and an
+        # eleven-hour-old test/run.py still resolving a hostname. Tests that
+        # want the real function override these.
+        self.mod.still_worth_listening = lambda rooms: True
+        self.mod.sync_broadcasts = lambda: None
+        # NOTHING here may reach a real subprocess. `http://x` is not a
+        # refused connection — it is a DNS lookup that hangs, so a test that
+        # slips through does not fail, it STOPS, and the child outlives the
+        # run. Found with a 9-second suite taking over ten minutes and an
+        # eleven-hour-old `test/run.py` still resolving a hostname. Tests that
+        # want the real function override these.
+        self.mod.still_worth_listening = lambda rooms: True
+        self.mod.sync_broadcasts = lambda: None
 
     def tearDown(self):
         os.environ.pop("CLAUDE_PROJECT_DIR", None)
@@ -93,7 +109,7 @@ class WakeLoopTest(unittest.TestCase):
         What must not happen is the CONSUMING read, which is what would both
         wake the session and take the message off the cursor."""
         with open(os.path.join(self.project, ".llm_chat", "joined.json"), "w") as f:
-            json.dump({"notices": {"identity": "me", "server": "http://x",
+            json.dump({"notices": {"identity": "me", "server": "http://127.0.0.1:1",
                                    "broadcast": True}}, f)
         polled = []
         self.mod.addressed = lambda channel, entry: None   # nothing addresses me
@@ -105,9 +121,9 @@ class WakeLoopTest(unittest.TestCase):
 
     def test_an_ordinary_room_alongside_it_still_wakes(self):
         with open(os.path.join(self.project, ".llm_chat", "joined.json"), "w") as f:
-            json.dump({"notices": {"identity": "me", "server": "http://x",
+            json.dump({"notices": {"identity": "me", "server": "http://127.0.0.1:1",
                                    "broadcast": True},
-                       "room": {"identity": "me", "server": "http://x"}}, f)
+                       "room": {"identity": "me", "server": "http://127.0.0.1:1"}}, f)
         self.mod.addressed = lambda channel, entry: (
             {"wakes_me": True, "messages": []} if channel == "room" else None)
         self.mod.poll = lambda channel, entry: "[other] wake up"
@@ -265,22 +281,143 @@ class WakeLoopTest(unittest.TestCase):
         self.mod.PID_PATH = "/dev/null/nope/wake.pid"
         self.assertFalse(self.mod.claim_pidfile())
 
-    def test_a_room_missing_from_the_listing_is_not_assumed_open(self):
-        """`channels` not naming the room means we cannot confirm it is open."""
+    def test_a_room_missing_from_the_listing_KEEPS_US_LISTENING(self):
+        """THIS TEST ASSERTED THE DEFECT. It read "cannot confirm it is open"
+        as grounds to stand down, and standing down is permanent — nothing
+        re-arms an idle waker. So the one situation we could not confirm was
+        resolved in the direction that goes deaf forever.
+
+        Absence conflated four things: room genuinely closed, CLI failed,
+        server down, and not listed for any other reason. Only the first is a
+        reason to retire. Reported by the agent it happened to, whose five open
+        rooms were reported as "every joined room is closed"."""
         class Fake:
             @staticmethod
             def run(argv, **kw):
                 class Result:
-                    stdout = "someotherroom  —  topic"
+                    stdout = json.dumps([{"name": "someotherroom",
+                                          "closed": False}])
                     stderr = ""
                     returncode = 0
                 return Result
         self.mod.subprocess = Fake
-        self.assertFalse(self.mod.still_worth_listening(
-            {"room": {"identity": "me", "server": "http://x"}}))
+        self.assertTrue(self.mod.still_worth_listening(
+            {"room": {"identity": "me", "server": "http://127.0.0.1:1"}}))
 
     def test_a_room_without_a_server_is_skipped(self):
+        """Uses the REAL function, so it has to undo setUp's stub. That stub
+        exists to stop any other test reaching the network by accident; a test
+        that genuinely wants the real thing says so here rather than leaving
+        the door open for all of them."""
+        self.mod.still_worth_listening = load("llm-chat-wake").still_worth_listening
         self.assertFalse(self.mod.still_worth_listening({"room": {}}))
+
+
+class StillWorthListeningTest(unittest.TestCase):
+    """When to stand down — and every way of NOT KNOWING keeps listening.
+
+    This retired wakers on a premise that was false. doctor reported "every
+    joined room is closed" for an agent whose five rooms were all open; the
+    exit record is what made it findable. subprocess.run does not raise on a
+    non-zero exit, and the except clause caught only timeout and OSError, so a
+    FAILING CLI returned empty stdout, nothing matched, and False meant "all
+    closed". Live for about an hour on this machine while the CLI was broken by
+    this repo's own mutation sweep.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["CLAUDE_PROJECT_DIR"] = self.tmp.name
+        os.makedirs(os.path.join(self.tmp.name, ".llm_chat"))
+        self.mod = load("llm-chat-wake")
+        self.real = self.mod.subprocess
+        self.rooms = {"a": {"identity": "me", "server": "http://127.0.0.1:1"}}
+
+    def tearDown(self):
+        self.mod.subprocess = self.real
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        self.tmp.cleanup()
+
+    def answer(self, returncode=0, stdout="[]"):
+        class Result:
+            pass
+
+        class Fake:
+            @staticmethod
+            def run(argv, **kwargs):
+                r = Result()
+                r.returncode, r.stdout, r.stderr = returncode, stdout, ""
+                return r
+        self.mod.subprocess = Fake()
+        return self.mod.still_worth_listening(self.rooms)
+
+    def listing(self, closed):
+        return json.dumps([{"name": "a", "closed": closed}])
+
+    def test_an_open_room_keeps_it_listening(self):
+        self.assertTrue(self.answer(stdout=self.listing(False)))
+
+    def test_a_genuinely_closed_room_stands_it_down(self):
+        """The one case that may return False. Without this the function could
+        never retire and the fix would be 'always listen', which is not a fix."""
+        self.assertFalse(self.answer(stdout=self.listing(True)))
+
+    def test_A_FAILING_CLI_KEEPS_IT_LISTENING(self):
+        """The defect, as a test. Non-zero exit, empty stdout — previously
+        indistinguishable from 'every room closed'."""
+        self.assertTrue(self.answer(returncode=1, stdout=""))
+
+    def test_a_crashing_cli_that_prints_a_traceback_keeps_it_listening(self):
+        self.assertTrue(self.answer(returncode=1, stdout="Traceback..."))
+
+    def test_unparseable_output_keeps_it_listening(self):
+        self.assertTrue(self.answer(stdout="not json at all"))
+
+    def test_a_room_MISSING_from_the_listing_keeps_it_listening(self):
+        """Absence is only evidence if something would have been present.
+        Nothing guarantees that here, and four situations wore one face."""
+        self.assertTrue(self.answer(stdout="[]"))
+
+    def test_an_exception_keeps_it_listening(self):
+        class Exploding:
+            @staticmethod
+            def run(argv, **kwargs):
+                raise OSError("down")
+        self.mod.subprocess = Exploding()
+        self.assertTrue(self.mod.still_worth_listening(self.rooms))
+
+    def test_it_asks_for_json_rather_than_the_rendering(self):
+        """The rendering OMITS closed rooms rather than marking them, so the
+        old '[closed]' branch was unreachable and absence was the only route to
+        False. Third instance of rendering-as-format in a week."""
+        seen = {}
+
+        class Spy:
+            @staticmethod
+            def run(argv, **kwargs):
+                seen["argv"] = argv
+
+                class Result:
+                    returncode, stdout, stderr = 0, "[]", ""
+                return Result()
+        self.mod.subprocess = Spy()
+        self.mod.still_worth_listening(self.rooms)
+        self.assertIn("--json", seen["argv"])
+
+    def test_a_room_with_no_server_is_skipped_without_a_call(self):
+        called = []
+
+        class Counting:
+            @staticmethod
+            def run(argv, **kwargs):
+                called.append(argv)
+
+                class Result:
+                    returncode, stdout, stderr = 0, "[]", ""
+                return Result()
+        self.mod.subprocess = Counting()
+        self.mod.still_worth_listening({"a": {"identity": "me"}})
+        self.assertEqual(called, [])
 
 
 class HookProjectResolutionTest(unittest.TestCase):

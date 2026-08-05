@@ -38,7 +38,7 @@ class ReadTest(unittest.TestCase):
     def read(self, channel="room", identity="me", **kwargs):
         out = io.StringIO()
         with redirect_stdout(out):
-            got = cli.do_read("http://x", channel, identity, **kwargs)
+            got = cli.do_read("http://127.0.0.1:1", channel, identity, **kwargs)
         return got, out.getvalue()
 
     # ── the cursor ──────────────────────────────────────────────────────────
@@ -172,7 +172,7 @@ class ConcurrentDeliveryTest(unittest.TestCase):
         lock = threading.Lock()
 
         def read_once():
-            got = cli.do_read("http://x", "room", "me")
+            got = cli.do_read("http://127.0.0.1:1", "room", "me")
             with lock:
                 delivered.extend(got)
 

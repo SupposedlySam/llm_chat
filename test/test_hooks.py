@@ -74,7 +74,7 @@ class HookTestCase(unittest.TestCase):
         d = os.path.join(self.project, ".llm_chat")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "joined.json"), "w") as f:
-            json.dump({name: {"identity": who, "server": "http://x"}
+            json.dump({name: {"identity": who, "server": "http://127.0.0.1:1"}
                        for name, who in rooms.items()}, f)
 
     def probes(self):
@@ -457,36 +457,38 @@ class WakeTest(HookTestCase):
                          "cannot tell orphaned from normal, so do not claim to")
 
     def test_a_closed_room_is_not_worth_listening_to(self):
-        self.mod.subprocess = FakeSubprocess("room  [closed]  —  no topic")
+        self.mod.subprocess = FakeSubprocess(
+            '[{"name": "room", "closed": true}]')
         self.assertFalse(self.mod.still_worth_listening(
-            {"room": {"identity": "me", "server": "http://x"}}))
+            {"room": {"identity": "me", "server": "http://127.0.0.1:1"}}))
 
     def test_an_open_room_is(self):
-        self.mod.subprocess = FakeSubprocess("room  —  a topic")
+        self.mod.subprocess = FakeSubprocess(
+            '[{"name": "room", "closed": false}]')
         self.assertTrue(self.mod.still_worth_listening(
-            {"room": {"identity": "me", "server": "http://x"}}))
+            {"room": {"identity": "me", "server": "http://127.0.0.1:1"}}))
 
     def test_an_unreachable_server_keeps_us_listening_rather_than_deaf(self):
         def explode(*a, **kw):
             raise OSError("down")
         self.mod.subprocess = type('M', (), {'run': staticmethod(explode)})
         self.assertTrue(self.mod.still_worth_listening(
-            {"room": {"identity": "me", "server": "http://x"}}))
+            {"room": {"identity": "me", "server": "http://127.0.0.1:1"}}))
 
     def test_polling_returns_none_when_nothing_is_waiting(self):
         self.mod.subprocess = FakeSubprocess("nothing new in room")
         self.assertIsNone(self.mod.poll("room", {"identity": "me",
-                                                 "server": "http://x"}))
+                                                 "server": "http://127.0.0.1:1"}))
 
     def test_polling_returns_the_waiting_text(self):
         self.mod.subprocess = FakeSubprocess("[other] wake up")
         self.assertEqual(self.mod.poll("room", {"identity": "me",
-                                                "server": "http://x"}),
+                                                "server": "http://127.0.0.1:1"}),
                          "[other] wake up")
 
     def test_an_incomplete_room_record_is_skipped(self):
         self.assertIsNone(self.mod.poll("room", {"identity": None,
-                                                 "server": "http://x"}))
+                                                 "server": "http://127.0.0.1:1"}))
 
     def test_waking_exits_two_with_the_message_on_stderr(self):
         """exit 2 + stderr is what asyncRewake converts into a wake-up; the

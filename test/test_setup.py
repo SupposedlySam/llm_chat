@@ -62,7 +62,7 @@ class SetupTest(unittest.TestCase):
     def setup(self, channel="room", identity="me", **kw):
         out = io.StringIO()
         with redirect_stdout(out):
-            cli.do_setup("http://x", channel, identity, kw.pop("topic", None),
+            cli.do_setup("http://127.0.0.1:1", channel, identity, kw.pop("topic", None),
                          kw.pop("max_messages", 200), **kw)
         return out.getvalue()
 
