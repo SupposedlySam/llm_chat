@@ -61,6 +61,34 @@ class DeclaredTest(unittest.TestCase):
         self.assertIn("join", verbs)
         self.assertIn("open", verbs)
 
+    def help_of(self, build):
+        """Real argparse output, never a string I wrote.
+
+        These fixtures were hand-written and did not match reality: argparse
+        emits an `options:` section and a `[-h]` in usage, and mine had
+        neither. A test pinned to invented help text measures my imagination —
+        the same defect as inventing an event payload, one layer down. So the
+        parser is built and asked.
+        """
+        import argparse
+        parser = argparse.ArgumentParser(prog="t")
+        sub = parser.add_subparsers(dest="cmd")
+        target = build(sub)
+        text = target.format_help()
+
+        real = check.subprocess
+
+        class Fake:
+            @staticmethod
+            def run(*a, **kw):
+                class R:
+                    stdout = text
+                    stderr, returncode = "", 0
+                return R()
+        check.subprocess = Fake()
+        self.addCleanup(lambda: setattr(check, "subprocess", real))
+        return text
+
     def test_a_FLAGS_choices_are_not_mistaken_for_subcommands(self):
         """A flag's choices render identically to a subparser group. A sibling
         tool had `close` offering {holds,partial,refuted} as flag values and
@@ -70,40 +98,49 @@ class DeclaredTest(unittest.TestCase):
         subparser group never is. Fixed here BEFORE it fired, because a false
         positive nobody has triggered is invisible in exactly the way a false
         negative is — they are the same risk until something trips them."""
-        real = check.subprocess
-
-        class Fake:
-            @staticmethod
-            def run(*a, **kw):
-                class R:
-                    stdout = ("usage: t close [--why {holds,partial}] name\n"
-                              "\npositional arguments:\n  {alpha,beta}\n")
-                    stderr, returncode = "", 0
-                return R()
-        check.subprocess = Fake()
-        try:
-            self.assertEqual(check.verbs_from_help("t", "close"),
-                             {"alpha", "beta"})
-        finally:
-            check.subprocess = real
+        def build(sub):
+            close = sub.add_parser("close")
+            close.add_argument("--why", choices=["holds", "partial"])
+            close.add_argument("name")
+            inner = close.add_subparsers(dest="sub")
+            inner.add_parser("alpha")
+            inner.add_parser("beta")
+            return close
+        text = self.help_of(build)
+        self.assertIn("--why {holds,partial}", text)   # the trap is present
+        self.assertEqual(check.verbs_from_help("t", "close"),
+                         {"alpha", "beta"})
 
     def test_a_verb_with_ONLY_flag_choices_has_no_subcommands(self):
         """Paired: skipping flag groups must not fall through to returning the
-        flag's values anyway, or the fix does nothing."""
-        real = check.subprocess
+        flag's values anyway, or the fix does nothing.
 
-        class Fake:
-            @staticmethod
-            def run(*a, **kw):
-                class R:
-                    stdout = "usage: t say [--to {a,b}] text\n"
-                    stderr, returncode = "", 0
-                return R()
-        check.subprocess = Fake()
-        try:
-            self.assertEqual(check.verbs_from_help("t", "say"), set())
-        finally:
-            check.subprocess = real
+        This is the assertion that a rule stripping EVERYTHING would fail —
+        its partner passes identically whether the rule is right or removes
+        the lot, which is the shape a sibling agent nearly shipped."""
+        def build(sub):
+            say = sub.add_parser("say")
+            say.add_argument("--to", choices=["a", "b"])
+            say.add_argument("text")
+            return say
+        self.help_of(build)
+        self.assertEqual(check.verbs_from_help("t", "say"), set())
+
+    def test_the_BRACKETED_usage_form_is_covered_on_purpose(self):
+        """argparse writes an optional flag two ways — `[--to {a,b}]` in the
+        usage line and `--to {a,b}` in the options list — and my guard first
+        handled only the second, so the bracket silently defeated it.
+
+        Covered here deliberately rather than by a fixture that happens to
+        contain both. A sibling found the same coverage in their suite existing
+        only by accident of one command's help text."""
+        def build(sub):
+            say = sub.add_parser("say")
+            say.add_argument("--to", choices=["a", "b"])
+            return say
+        text = self.help_of(build)
+        self.assertIn("[--to {a,b}]", text)
+        self.assertEqual(check.verbs_from_help("t", "say"), set())
 
     def test_a_tool_that_cannot_be_run_falls_back_to_the_regex(self):
         """A fallback that returned nothing would make an unrunnable tool look
