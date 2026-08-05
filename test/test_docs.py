@@ -392,6 +392,29 @@ class SecondWordTest(unittest.TestCase):
             check.stale_values(self.src, "llm_chat", {"mode": {"broadcast"}}),
             [])
 
+    def test_an_assembled_remedy_is_counted(self):
+        self.write('x = f"  llm_chat mode {name} " + f"{value}"')
+        self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 1)
+
+    def test_a_plain_literal_remedy_is_NOT_counted(self):
+        """Paired: it is checkable, so counting it would inflate a number
+        whose whole job is to reach zero."""
+        self.write('print("  llm_chat mode room ordinary")')
+        self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 0)
+
+    def test_an_f_string_not_naming_the_tool_is_NOT_counted(self):
+        self.write('x = f"hello {name}"')
+        self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 0)
+
+    def test_an_f_string_with_no_interpolation_is_NOT_counted(self):
+        """Nothing is split, so nothing is unpairable."""
+        self.write('x = f"  llm_chat mode room ordinary"')
+        self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 0)
+
+    def test_an_unparseable_source_counts_zero_rather_than_crashing(self):
+        self.write("def broken(:\n")
+        self.assertEqual(check.assembled_remedies(self.src, "llm_chat"), 0)
+
     def test_bare_words_ignores_a_line_that_is_not_a_remedy(self):
         self.assertEqual(check.bare_words("no llm_chat server here", "llm_chat"),
                          (None, []))
@@ -458,12 +481,41 @@ class ReportTest(unittest.TestCase):
         self.assertIn("SECOND-WORD DRIFT", out)
         self.assertIn("gone-value", out)
 
+    def test_the_caveat_RETIRES_ITSELF_when_the_count_reaches_zero(self):
+        """The instrument for a limit with a shelf life.
+
+        "f-string remedies are not validated" is a true sentence that keeps
+        printing after the last such remedy is deleted, at which point it is
+        the decoration this project already learned to distrust — and in the
+        other direction, the first assembled remedy somebody writes announces
+        nothing. Counting makes the claim expire on its own.
+
+        A sibling agent and I spent seven rounds on limits that stayed accurate
+        and were read as boilerplate, and neither of us could see an instrument
+        for the transition. The count is the instrument."""
+        self.write_doc("mode sync --to-all --yes")
+        with open(os.path.join(self.tmp.name, "cli.py"), "w") as f:
+            f.write('sub.add_parser("mode")\nprint("  llm_chat mode room x")\n')
+        real = check.nested
+        check.nested = lambda path, verbs: ["mode"]
+        try:
+            _, out = self.run_check()
+        finally:
+            check.nested = real
+        self.assertNotIn("PARTLY CHECKED", out)
+
     def test_a_verb_with_a_second_word_is_reported_as_PARTLY_checked(self):
         """Coverage stated whether or not anything was found. A clean run right
         after tightening a check is when it is most likely to have become
         silence — this repo's own `mode` remedy is assembled from f-string
         pieces and genuinely is not validated."""
         self.write_doc("mode sync --to-all --yes")
+        # The fixture has to CONTAIN an assembled remedy now. Without one the
+        # line correctly does not print — which is how its partner test above
+        # proves the caveat retires itself.
+        with open(os.path.join(self.tmp.name, "cli.py"), "w") as f:
+            f.write('sub.add_parser("mode")\n'
+                    'x = f"  llm_chat mode {room} " + f"{value}"\n')
         real = check.nested
         check.nested = lambda path, verbs: ["mode"]
         try:
@@ -471,7 +523,7 @@ class ReportTest(unittest.TestCase):
         finally:
             check.nested = real
         self.assertIn("PARTLY CHECKED", out)
-        self.assertIn("f-string", out)
+        self.assertIn("1 remedies", out)
 
     def test_a_ghost_command_is_reported_by_the_runner_too(self):
         """End to end, not just the helper — the report has to reach a reader,

@@ -161,6 +161,42 @@ def named_in_strings(path, tool):
     return found
 
 
+def assembled_remedies(path, tool):
+    """How many remedies are built across f-string pieces, and so unchecked.
+
+    A COUNT, not a caveat, and that is the whole point. "f-string remedies are
+    not validated" is a true sentence that keeps printing after the last such
+    remedy is deleted — at which point it is the decoration this project
+    already learned to distrust. And in the other direction, the first
+    assembled remedy somebody writes announces nothing at all.
+
+    Counting makes the claim expire on its own. Zero prints nothing; one prints
+    one. The number IS the announcement, which is what a stated limit could
+    never be — a sibling agent and I spent seven rounds on limits that stayed
+    accurate and were read as boilerplate, and neither of us could see an
+    instrument for the transition. This is that instrument, for this one case.
+    """
+    try:
+        with open(path) as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError):
+        return 0
+    count = 0
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.JoinedStr):
+            continue
+        literal = "".join(part.value for part in node.values
+                          if isinstance(part, ast.Constant)
+                          and isinstance(part.value, str))
+        # An f-string that NAMES the tool and then interpolates: the verb is in
+        # one node and the value it is followed by is in another, so nothing
+        # reading a single literal can pair them.
+        if re.search(r"\b%s\s" % re.escape(tool), literal) and any(
+                isinstance(part, ast.FormattedValue) for part in node.values):
+            count += 1
+    return count
+
+
 def bare_words(line, tool):
     """Literal words in a remedy after the verb — not placeholders or flags.
 
@@ -335,12 +371,16 @@ def main(argv=None):
     # worked example beside it or it reads as boilerplate. This is the example.
     for path in [os.path.join(repo, p) for p in args.source]:
         deep = nested(path, verbs)
-        if deep:
+        assembled = assembled_remedies(path, args.tool)
+        if deep and assembled:
             print("PARTLY CHECKED — these verbs take a second word: %s"
                   % ", ".join(deep))
-            print("  Validated only where a remedy is a single literal. One "
-                  "assembled from\n  f-string pieces puts the value in a "
-                  "different node and is NOT checked.\n")
+            print("  %d remedies here are assembled across f-string pieces, "
+                  "so the verb and\n  its value sit in different nodes and "
+                  "cannot be paired. Those are NOT\n  validated. This line "
+                  "retires itself when that count reaches zero — the\n  count "
+                  "is the announcement, which a fixed caveat could never be.\n"
+                  % assembled)
 
     if not missing_verbs and not missing_options and not ghosts and not stale:
         print("every command and option is named in the docs "

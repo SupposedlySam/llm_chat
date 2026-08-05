@@ -443,6 +443,9 @@ NOT_SWEPT = {
     "triggers/undocumented-surface:invented": "the reverse walk — backticks, "
         "fenced blocks, path-prefixed invocations, and the indented-prose "
         "false positive it produced on its first run, all asserted directly",
+    "triggers/undocumented-surface:assembled_remedies": "counted rather than "
+        "asserted, so the caveat retires itself at zero — both directions "
+        "asserted, including that a plain literal is not counted",
     "triggers/undocumented-surface:stale_values": "asserted directly — a "
         "remedy naming no accepted value is caught, one naming a valid value "
         "is not, and the f-string-assembled case that CANNOT be checked is "
