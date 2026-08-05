@@ -18,7 +18,7 @@ Then:
 `open` and `join` are the lower-level pair `setup` is built from, for when a
 repo is already wired up.
 
-The store is a zonai server (`llm_chat serve`), not a shared file, and that is
+The store is a zonai server (`./zonai serve --port 7717`), not a shared file, and that is
 not an aesthetic choice. The repos this runs in enforce "everything outside
 this repo is READ-ONLY" with a PreToolUse guard hook, and the only way through
 is a human authorizing that one write — single-use, and logged.

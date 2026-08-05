@@ -191,6 +191,14 @@ MUTATIONS = [
      "inbox, and cannot tell 'nothing exists' from 'a preview ate it and "
      "showed you 100 characters'"),
 
+    ("a command that is named but does not exist is caught",
+     "triggers/undocumented-surface",
+     '    return sorted(n for n in named if n not in verbs)',
+     '    return []',
+     "a remedy naming a verb the parser rejects is handed to the one reader "
+     "least able to route around it, and can never be found by use because "
+     "nobody who is working ever sees a refusal"),
+
     ("a missing doc file does not read as fully documented",
      "triggers/undocumented-surface",
      '    return sorted(n for n in names if n not in text)',
@@ -432,6 +440,9 @@ NOT_SWEPT = {
         "asserted directly via the notice that consumes it",
     "triggers/undocumented-surface:declared": "verbs, options and a missing "
         "source file asserted directly",
+    "triggers/undocumented-surface:invented": "the reverse walk — backticks, "
+        "fenced blocks, path-prefixed invocations, and the indented-prose "
+        "false positive it produced on its first run, all asserted directly",
     "triggers/undocumented-surface:main": "gap, no-gap, never-blocks and the "
         "disclaimer-on-success asserted directly — a green that implies the "
         "docs are GOOD is the more expensive lie",

@@ -92,6 +92,101 @@ class UndocumentedTest(unittest.TestCase):
         self.assertEqual(check.undocumented({"--yes"}, [self.doc, other]), [])
 
 
+class InventedTest(unittest.TestCase):
+    """The REVERSE walk: commands that are named but do not exist.
+
+    The conventional check has a direction — it walks real commands asking "is
+    each mentioned?" — and that direction cannot catch a remedy naming a verb
+    the parser rejects. Pointed out by a sibling agent who then found a live one
+    in their own repo: a refusal ending "(`showrunner campaign`)" with no
+    `campaign` verb.
+
+    That is the worst place for it. The only route to a refusal string is being
+    blocked already, so the reader is the one person least able to route around
+    a wrong instruction — and it can never be found by use, because nobody who
+    is working ever sees a refusal.
+
+    This repo had one: its own module docstring said the store is a zonai
+    server `llm_chat serve`. There is no such verb; I hit it hours earlier,
+    worked around it, and never fixed the thing that told me to run it.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.src = os.path.join(self.tmp.name, "cli.py")
+        self.doc = os.path.join(self.tmp.name, "README.md")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write(self, path, text):
+        with open(path, "w") as f:
+            f.write(text)
+        return path
+
+    def test_a_backticked_command_that_does_not_exist_is_caught(self):
+        self.write(self.src, 'print("start one with `llm_chat serve`")')
+        self.assertEqual(
+            check.invented({"read", "say"}, [self.src], [], "llm_chat"),
+            ["serve"])
+
+    def test_a_real_command_is_not_reported(self):
+        """Paired: a check that flagged every mention would be noise, and
+        noise is how a check stops being read."""
+        self.write(self.src, 'print("run `llm_chat read <room>`")')
+        self.assertEqual(
+            check.invented({"read"}, [self.src], [], "llm_chat"), [])
+
+    def test_it_catches_one_named_only_in_the_DOCS(self):
+        self.write(self.doc, "Use `llm_chat campaign` to track it.")
+        self.assertEqual(
+            check.invented({"read"}, [], [self.doc], "llm_chat"),
+            ["campaign"])
+
+    def test_a_fenced_block_in_docs_counts(self):
+        self.write(self.doc, "Run it:\n\n    llm_chat ghost --now\n")
+        self.assertEqual(
+            check.invented({"read"}, [], [self.doc], "llm_chat"), ["ghost"])
+
+    def test_INDENTED_PROSE_IN_SOURCE_IS_NOT_A_COMMAND(self):
+        """The false positive this produced on its first run. Four spaces means
+        'code block' in markdown and 'docstring text' in Python, and applying
+        the markdown rule to source reported `llm_chat instead` out of the
+        sentence 'a consumer vendored llm_chat instead of pointing at a sibling
+        clone'. A positional rule only stays fixed if it means the same thing
+        in the file it is applied to."""
+        self.write(self.src, '"""\n    a consumer vendored llm_chat instead of'
+                             ' pointing at a clone\n"""')
+        self.assertEqual(
+            check.invented({"read"}, [self.src], [], "llm_chat"), [])
+
+    def test_prose_outside_backticks_is_never_a_command(self):
+        """Their implementation note, taken whole. Their first version told
+        commands from prose with a denylist of English words and grew by eight
+        entries on its first run — a denylist tracks the LANGUAGE rather than
+        the code, so it grows forever. A positional rule does not."""
+        self.write(self.doc, "llm_chat is a chat room and llm_chat does that.")
+        self.assertEqual(
+            check.invented({"read"}, [], [self.doc], "llm_chat"), [])
+
+    def test_a_trailing_flag_is_not_mistaken_for_a_subcommand(self):
+        self.write(self.doc, "`llm_chat --help`")
+        self.assertEqual(
+            check.invented({"read"}, [], [self.doc], "llm_chat"), [])
+
+    def test_a_path_prefixed_invocation_still_counts(self):
+        """Docs name it by absolute path, because agents run it from elsewhere.
+        Missing those would blind the check to most real usage."""
+        self.write(self.doc, "`./bin/llm_chat ghost`")
+        self.assertEqual(
+            check.invented({"read"}, [], [self.doc], "llm_chat"), ["ghost"])
+
+    def test_a_missing_file_is_not_a_crash(self):
+        self.assertEqual(
+            check.invented({"read"}, ["/no/such"], ["/nor/this"], "llm_chat"),
+            [])
+
+
 class ReportTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -112,6 +207,15 @@ class ReportTest(unittest.TestCase):
             code = check.main(["--repo", self.tmp.name,
                                "--source", "cli.py", "--docs", "README.md"])
         return code, out.getvalue()
+
+    def test_a_ghost_command_is_reported_by_the_runner_too(self):
+        """End to end, not just the helper — the report has to reach a reader,
+        and a function nobody calls catches nothing."""
+        self.write_doc("mode sync --to-all --yes and also `llm_chat ghost`")
+        _, out = self.run_check()
+        self.assertIn("NAMED BUT NOT REAL", out)
+        self.assertIn("ghost", out)
+        self.assertIn("least able to route around it", out)
 
     def test_it_names_every_gap(self):
         self.write_doc("nothing here")

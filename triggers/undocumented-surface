@@ -52,6 +52,52 @@ def declared(paths):
     return verbs, options
 
 
+def invented(verbs, sources, docs, tool):
+    """Commands that are NAMED but do not exist. The reverse walk.
+
+    The conventional check has a DIRECTION — it walks real commands asking "is
+    each mentioned?" — and that direction cannot catch a remedy naming a verb
+    the parser rejects. Pointed out by a sibling agent who then found a live
+    one in their own repo: a refusal message ending "track it in the campaign
+    record (`showrunner campaign`)", with no `campaign` verb. Argparse refuses
+    it outright.
+
+    That is the worst place for it. The only route to a refusal string is being
+    blocked already, so the reader is the one person least able to route around
+    a wrong instruction — and it can never be found by use, because nobody who
+    is working ever sees it.
+
+    A COMMAND IS WHAT APPEARS IN BACKTICKS OR A FENCED BLOCK, which is their
+    implementation note and worth taking whole. Their first version told
+    commands from prose with a denylist of English words and grew by eight
+    entries on its first run, because a denylist tracks the LANGUAGE rather
+    than the code and would grow forever. A positional rule stays fixed as the
+    docs grow.
+    """
+    named = set()
+    for path in list(sources) + list(docs):
+        try:
+            with open(path) as f:
+                text = f.read()
+        except OSError:
+            continue
+        # Backticks everywhere; the four-space rule for DOCS only. It means
+        # "markdown code block" there, and "indented prose" in a Python
+        # docstring — which reported `llm_chat instead` out of the sentence
+        # "a consumer vendored llm_chat instead of pointing at a sibling
+        # clone". A positional rule only stays fixed if it means the same
+        # thing in the file it is applied to.
+        candidates = re.findall(r"`([^`\n]+)`", text)
+        if path in docs:
+            candidates += re.findall(r"^\s{4}(\S.*)$", text, re.M)
+        for quoted in candidates:
+            words = quoted.replace("./", "").split()
+            for i, word in enumerate(words[:-1]):
+                if word.endswith(tool) and words[i + 1].isidentifier():
+                    named.add(words[i + 1])
+    return sorted(n for n in named if n not in verbs)
+
+
 def undocumented(names, docs):
     """Names that appear in NO documentation file.
 
@@ -75,6 +121,8 @@ def main(argv=None):
     ap.add_argument("--source", nargs="+", default=["bin/llm_chat"])
     ap.add_argument("--docs", nargs="+", default=["README.md", "llms.txt"])
     ap.add_argument("--repo", default=None)
+    ap.add_argument("--tool", default="llm_chat",
+                    help="the command name that precedes a subcommand")
     args = ap.parse_args(argv)
 
     if not sys.stdin.isatty():
@@ -86,7 +134,20 @@ def main(argv=None):
 
     missing_verbs = undocumented(verbs, docs)
     missing_options = undocumented(options, docs)
-    if not missing_verbs and not missing_options:
+    ghosts = invented(verbs, [os.path.join(repo, p) for p in args.source],
+                      docs, args.tool)
+    if ghosts:
+        print("NAMED BUT NOT REAL — these are printed or documented as "
+              "commands and do not exist:")
+        for ghost in ghosts:
+            print("  %s %s" % (args.tool, ghost))
+        print("\n  The reverse walk. A check that asks 'is every real command "
+              "mentioned?'\n  cannot see these. A remedy naming a verb the "
+              "parser rejects is handed to\n  the one reader least able to "
+              "route around it, and can never be found by\n  use, because "
+              "nobody who is working ever sees a refusal.\n")
+
+    if not missing_verbs and not missing_options and not ghosts:
         print("every command and option is named in the docs "
               "(which is the floor, not the goal — it cannot tell you whether "
               "they are correct or merely mentioned)")
