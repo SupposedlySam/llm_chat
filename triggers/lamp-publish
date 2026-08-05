@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+"""game_loop `stepback` trigger: bless the current commit as a release.
+
+Attach this to the `stepback` moment and every retro asks whether there is
+something worth publishing. A consumer was blocked for half a day because a fix
+existed, was pushed, and was never blessed — the release step was the one part
+of the loop that lived only in somebody remembering.
+
+    .game_loop/triggers.json
+    {"stepback": [{"name": "lamp-publish",
+                   "command": "/path/to/llm_chat/triggers/lamp-publish",
+                   "timeout_sec": 180}]}
+
+STEPBACK IS THE CLOSEST MOMENT AVAILABLE, NOT THE RIGHT ONE, and that is worth
+stating rather than hiding. What a publish actually wants is "a commit just
+landed and its gate passed" — game_loop exposes `harden` and `stepback` and
+neither is that. `harden` is mid-work and would bless arbitrary intermediate
+commits. A retro is at least a chapter boundary, where the tree is usually
+clean and the work has usually landed. The mismatch is handled by refusing
+rather than by hoping: every precondition is checked here, and the common
+answer is "nothing to publish", said out loud.
+
+Nothing is published when the tree is dirty (the wish would name a commit whose
+content nobody tested), when HEAD is already the newest wish, when this repo is
+not registered, or when lamp is absent. The gate still runs on top of all that —
+this decides WHETHER to ask, lamp decides whether to grant.
+
+Generic on purpose: the package is found by matching the calling repo against
+the registry, so nothing here names llm_chat and any registered project can
+attach it.
+
+`--dry-run` reports what it would do and grants nothing.
+"""
+import argparse
+import json
+import os
+import subprocess
+import sys
+
+REGISTRY = os.path.expanduser("~/.lamp/registry.json")
+
+
+def calling_repo(env=None):
+    """Which project is publishing. GAME_LOOP_REPO is the harness's answer and
+    is unset when a human runs this by hand — see the sibling triggers, where
+    trusting the inherited cwd was the bug a neighbouring project reported."""
+    env = os.environ if env is None else env
+    return env.get("GAME_LOOP_REPO") or os.getcwd()
+
+
+def geanie_for(repo, registry_path=REGISTRY):
+    """(name, newest wish sha) for the package whose repo is this one.
+
+    Matched by PATH rather than by a name in config: a name would have to be
+    kept in step with the registry by hand, and this trigger exists because a
+    step kept by hand was the step that got skipped.
+    """
+    try:
+        with open(registry_path) as f:
+            registry = json.load(f) or {}
+    except (OSError, ValueError):
+        return None, None
+    for name, entry in (registry.get("geanies") or {}).items():
+        if os.path.abspath(entry.get("repo") or "") == os.path.abspath(repo):
+            wishes = entry.get("wishes") or []
+            newest = wishes[-1].get("sha") if wishes else None
+            return name, newest
+    return None, None
+
+
+def git(repo, *args):
+    done = subprocess.run(["git", "-C", repo, *args],
+                          capture_output=True, text=True, timeout=20)
+    return done.returncode, (done.stdout or "").strip()
+
+
+def why_not(repo, name, newest):
+    """The reason NOT to publish, or None. Every one of these is the common
+    case — a retro usually happens with nothing new to bless."""
+    if name is None:
+        return "this repo is not registered as a package"
+    code, dirty = git(repo, "status", "--porcelain")
+    if code != 0:
+        return "cannot read git status here"
+    if dirty:
+        return ("uncommitted changes — a wish would name a commit whose "
+                "content nobody tested")
+    code, head = git(repo, "rev-parse", "HEAD")
+    if code != 0:
+        return "cannot resolve HEAD"
+    if newest and head.startswith(newest[:12]):
+        return "HEAD is already the newest wish"
+    code, unpushed = git(repo, "log", "--oneline", "@{u}..HEAD")
+    if code == 0 and unpushed:
+        # A blessed commit a consumer cannot fetch is worse than an unblessed
+        # one: the registry says it is available and the fetch fails.
+        return "HEAD is not pushed yet"
+    return None
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--repo", default=None)
+    ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--lamp", default="lamp")
+    args = ap.parse_args(argv)
+
+    sys.stdin.read()          # drain the payload; nothing here needs it
+    repo = args.repo or calling_repo()
+    name, newest = geanie_for(repo)
+
+    blocked = why_not(repo, name, newest)
+    if blocked:
+        print("not publishing: %s" % blocked)
+        return 0
+
+    if args.dry_run:
+        print("would publish %s at the current HEAD" % name)
+        return 0
+
+    try:
+        done = subprocess.run([args.lamp, "publish", name],
+                              cwd=repo, capture_output=True, text=True,
+                              timeout=600)
+    except FileNotFoundError:
+        print("not publishing: lamp is not installed")
+        return 0
+    except Exception as problem:
+        print("could NOT publish %s: %s" % (name, problem))
+        return 1
+
+    out = (done.stdout or "").strip() or (done.stderr or "").strip()
+    if done.returncode != 0:
+        # Loud, and NOT fatal to the retro. A gate that refuses to bless a
+        # commit is the gate working; the retro still stands.
+        print("%s was NOT published — its gate refused:\n%s" % (name, out))
+        return 1
+    print(out)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

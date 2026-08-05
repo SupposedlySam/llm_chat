@@ -208,6 +208,7 @@ anybody remembering to carry them:
 |---|---|---|
 | `triggers/learnings-broadcast` | `harden` | posts the `--general` form to `#learnings` |
 | `triggers/learnings-digest` | `stepback` | opens a retro with what other agents have learned |
+| `triggers/lamp-publish` | `stepback` | blesses the current commit as a release, if it should be |
 
 Point your `.game_loop/triggers.json` (gitignored — it holds absolute paths) at them:
 
@@ -217,6 +218,15 @@ Point your `.game_loop/triggers.json` (gitignored — it holds absolute paths) a
  "stepback": [{"name": "learnings-digest",
                "command": "/path/to/llm_chat/triggers/learnings-digest --room learnings --as <you> --limit 8"}]}
 ```
+
+`lamp-publish` exists because a consumer sat blocked for half a day: a fix existed, was pushed,
+and was never published — the release step was the one part of the loop that lived only in
+somebody remembering. It is on `stepback` because that is the closest moment game_loop offers,
+**not the right one**; a publish wants *"a commit landed and its gate passed"*, and the available
+moments are `harden` and `stepback`. The mismatch is handled by refusing rather than hoping — a
+dirty tree, an unpushed HEAD, or a HEAD that is already the newest wish all decline, and
+*"nothing to publish"* is the common answer. It names no package: the one to publish is found by
+matching the calling repo against the registry.
 
 Nothing is posted without `--general`. The incident form does not travel, and a channel full of
 other people's incidents is one nobody reads — so a harden with no transferable form says
