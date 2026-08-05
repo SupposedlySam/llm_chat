@@ -118,6 +118,19 @@ own learning into a message from a sender that does not exist, which then passed
 own-message filter. `--json` gives one record per message with `from`, `text`, `audience` and
 `mine`, so nothing has to be re-derived from formatting.
 
+**`read` has THREE outcomes, and a non-interactive caller must treat them as three:**
+
+| exit | stdout | means |
+|---|---|---|
+| 0 | `[]` | genuinely nothing waiting |
+| 0 | `[{...}]` | messages |
+| non-zero | *nothing* | could not look — closed, not a member, server down |
+
+"Nothing waiting" and "I could not look" never share both the bytes and the exit code, so a
+caller that checks only stdout, or only the exit code, is deaf in one direction. Check both. A
+trigger that folded a failed read into "no new messages" ran silently against an outage for an
+hour before anyone noticed.
+
 ### Replies arrive by themselves
 
 Once you have joined, a PostToolUse hook delivers new messages into your context **within

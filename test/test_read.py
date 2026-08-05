@@ -7,6 +7,7 @@ agent had actually been told disagreed — the worst possible shape for a tool
 whose only job is keeping two agents in sync.
 """
 import io
+import json
 import os
 import sys
 import tempfile
@@ -195,3 +196,70 @@ class ConcurrentDeliveryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExitContractTest(unittest.TestCase):
+    """THREE OUTCOMES, never two. Asked for by a consumer whose retro trigger
+    calls `read` non-interactively.
+
+    "nothing waiting" and "I could not look" must never produce the same bytes
+    AND the same exit code, or a caller that folds one into the other is deaf
+    and cannot tell. It already behaved this way — by accident, not by
+    contract, which is no use to anyone building on it. These pin it:
+
+        exit 0 + "[]"        genuinely nothing waiting
+        exit 0 + [ {...} ]   messages
+        exit non-zero        could not look; stdout carries NO json
+
+    The same three-outcome split both this project and that consumer arrived at
+    independently in their own tools this week.
+    """
+
+    def setUp(self):
+        self.server = FakeServer()
+        self.real = cli.call
+        cli.call = self.server.call
+        self.server.channel("room")
+        self.server.membership("room", "me")
+
+    def tearDown(self):
+        cli.call = self.real
+
+    def read_json(self, identity="me", channel="room"):
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                cli.do_read("srv", channel, identity, as_json=True)
+        except SystemExit as stop:
+            return "refused", out.getvalue(), str(stop)
+        return "ok", out.getvalue(), None
+
+    def test_nothing_waiting_is_an_empty_LIST_and_success(self):
+        state, out, _ = self.read_json()
+        self.assertEqual(state, "ok")
+        self.assertEqual(json.loads(out), [])
+
+    def test_messages_waiting_are_a_populated_list_and_success(self):
+        self.server.message("room", 1, "someone", "hi")
+        state, out, _ = self.read_json()
+        self.assertEqual(state, "ok")
+        self.assertEqual(len(json.loads(out)), 1)
+
+    def test_could_not_look_REFUSES_and_emits_no_json(self):
+        """The case that matters. A caller parsing stdout must not be handed
+        something that parses as 'no messages'."""
+        state, out, why = self.read_json(identity="stranger")
+        self.assertEqual(state, "refused")
+        self.assertEqual(out.strip(), "")
+        self.assertIn("has not joined", why)
+
+    def test_a_missing_room_also_refuses_rather_than_reading_empty(self):
+        state, out, _ = self.read_json(channel="nowhere")
+        self.assertEqual(state, "refused")
+        self.assertEqual(out.strip(), "")
+
+    def test_the_two_zero_exit_cases_are_distinguishable_from_each_other(self):
+        _, empty, _ = self.read_json()
+        self.server.message("room", 1, "someone", "hi")
+        _, full, _ = self.read_json()
+        self.assertNotEqual(empty, full)
