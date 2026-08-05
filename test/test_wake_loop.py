@@ -55,18 +55,12 @@ class WakeLoopTest(unittest.TestCase):
         # want the real function override these.
         self.mod.still_worth_listening = lambda rooms: True
         self.mod.sync_broadcasts = lambda: None
-        # The waker no longer sleeps, it BLOCKS on a socket for 300s. NoSleep
+        # The waker no longer sleeps, it BLOCKS on sockets for 300s. NoSleep
         # patches `time` and cannot help with select(), so an unstubbed test
         # does not fail — it stops for five minutes. Same shape as the DNS
         # hang: the WAIT is what has to be faked, not the clock.
-        self.mod.open_doorbell = lambda identity: None
-        self.mod.wait_for_ring = lambda bell, seconds: False
-        # The waker no longer sleeps, it BLOCKS on a socket for 300s. NoSleep
-        # patches `time` and cannot help with select(), so an unstubbed test
-        # does not fail — it stops for five minutes. Same shape as the DNS
-        # hang: the wait is the thing that has to be faked, not the clock.
-        self.mod.open_doorbell = lambda identity: None
-        self.mod.wait_for_ring = lambda bell, seconds: False
+        self.mod.open_doorbells = lambda rooms: {}
+        self.mod.wait_for_ring = lambda bells, seconds: False
         # NOTHING here may reach a real subprocess. `http://x` is not a
         # refused connection — it is a DNS lookup that hangs, so a test that
         # slips through does not fail, it STOPS, and the child outlives the

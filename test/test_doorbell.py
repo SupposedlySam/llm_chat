@@ -3,15 +3,18 @@
 This replaced polling. Five wakers asking the server every five seconds per
 room was ~6 requests/second sustained whether or not anyone was talking, and it
 eventually rate-limited the server into refusing everything — including the
-message announcing the shutdown.
+message announcing the shutdown. Measured after: ZERO requests in 20 seconds
+idle, and a wake in milliseconds.
 
-A waker now blocks on a unix socket: no requests, no CPU, and a wake in
-milliseconds instead of up to an interval. Measured end to end at 0.317s
-against a real server, most of which is process startup.
+ONE DOORBELL PER MEMBERSHIP, not per identity, and that distinction is most of
+why this file exists. Identity is not unique on this machine: four projects
+answer to `owner`, and three hold two identities each. Keyed by identity, one
+waker bound the socket and the rest silently did not — then heard nothing
+addressed to them, which looks exactly like a quiet room.
 
-The failure that matters is NOT "the doorbell broke". It is a doorbell nobody
-can hear, because that is silence, and silence is exactly what the system looks
-like when nobody has spoken.
+The failure that matters is never "the doorbell broke". It is a doorbell nobody
+can hear, because that is silence, and silence is what the system looks like
+when nobody has spoken.
 """
 import os
 import socket
@@ -22,26 +25,48 @@ import time
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from support import FakeServer, load  # noqa: E402
+from support import load  # noqa: E402
 
 cli = load("llm_chat")
 waker = load("llm-chat-wake")
 
 
 class ConventionTest(unittest.TestCase):
-    """Two programs, one path. The ringer and the listener are different
-    files, so the convention is duplicated — and a duplicated convention that
-    drifts produces a doorbell nobody can find, which reads as nobody having
-    spoken rather than as a fault."""
+    """Two programs, one naming rule. The ringer and the listener are separate
+    files, so it is duplicated — and a duplicated convention that drifts
+    produces a doorbell nobody can find, which reads as nobody having spoken
+    rather than as a fault."""
 
     def test_both_sides_agree_on_where_doorbells_live(self):
         self.assertEqual(cli.doorbell_dir(), waker.doorbell_dir())
+
+    def test_both_sides_agree_on_the_name(self):
+        self.assertEqual(cli.doorbell_name("room", "me"),
+                         waker.doorbell_name("room", "me"))
+
+    def test_the_SAME_identity_in_DIFFERENT_rooms_gets_different_bells(self):
+        """The collision that made this a membership key. Four projects here
+        answer to `owner`; keyed by identity, whichever waker started first
+        took the socket and the other three went deaf."""
+        self.assertNotEqual(cli.doorbell_name("llm_chat_owner", "owner"),
+                            cli.doorbell_name("game_loop_owner", "owner"))
+
+    def test_different_identities_in_one_room_get_different_bells(self):
+        self.assertNotEqual(cli.doorbell_name("room", "a"),
+                            cli.doorbell_name("room", "b"))
 
     def test_it_is_machine_local_and_not_inside_a_repo(self):
         """A doorbell is meaningless after a reboot and belongs to no project.
         Putting it in a checkout makes one project's temp state another's
         tracked file — and every agent here shares this checkout."""
         self.assertTrue(cli.doorbell_dir().startswith(tempfile.gettempdir()))
+
+    def test_a_name_cannot_escape_the_doorbell_directory(self):
+        """Safe without escaping only because both parts are validated against
+        NAME_OK. Asserted rather than assumed."""
+        name = cli.doorbell_name("room", "me")
+        self.assertNotIn("/", name)
+        self.assertNotIn("..", name)
 
 
 class RingTest(unittest.TestCase):
@@ -57,8 +82,9 @@ class RingTest(unittest.TestCase):
             b.close()
         self.tmp.cleanup()
 
-    def listener(self, identity):
-        path = os.path.join(self.tmp.name, "%s.sock" % identity)
+    def listener(self, channel, identity):
+        path = os.path.join(self.tmp.name,
+                            cli.doorbell_name(channel, identity))
         bell = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         bell.bind(path)
         bell.listen(4)
@@ -66,33 +92,39 @@ class RingTest(unittest.TestCase):
         return bell
 
     def test_it_reaches_someone_listening(self):
-        bell = self.listener("alice")
+        bell = self.listener("room", "alice")
         heard = []
         t = threading.Thread(target=lambda: heard.append(bell.accept()))
         t.start()
-        self.assertTrue(cli.ring("alice"))
+        self.assertTrue(cli.ring("room", "alice"))
         t.join(5)
         self.assertEqual(len(heard), 1)
         heard[0][0].close()
+
+    def test_it_does_not_reach_the_same_name_in_another_room(self):
+        """The whole point of the membership key."""
+        self.listener("room", "alice")
+        self.assertFalse(cli.ring("elsewhere", "alice"))
 
     def test_nobody_listening_is_FALSE_not_an_exception(self):
         """The normal case, not an error. An agent that is working has no
         waker; it picks the message up from the delivery hook or from the
         reconcile its next waker does at startup."""
-        self.assertFalse(cli.ring("nobody"))
+        self.assertFalse(cli.ring("room", "nobody"))
 
     def test_a_stale_socket_file_is_not_a_listener(self):
         """A waker that died leaves the path behind. Connecting is refused —
         and reporting that as 'rang' would be the worst possible lie here."""
-        path = os.path.join(self.tmp.name, "ghost.sock")
         dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        dead.bind(path)
+        dead.bind(os.path.join(self.tmp.name,
+                               cli.doorbell_name("room", "ghost")))
         dead.close()
-        self.assertFalse(cli.ring("ghost"))
+        self.assertFalse(cli.ring("room", "ghost"))
 
     def test_it_never_raises_whatever_is_on_disk(self):
-        os.makedirs(os.path.join(self.tmp.name, "weird.sock"))
-        self.assertFalse(cli.ring("weird"))
+        os.makedirs(os.path.join(self.tmp.name,
+                                 cli.doorbell_name("room", "weird")))
+        self.assertFalse(cli.ring("room", "weird"))
 
 
 class DoorbellTest(unittest.TestCase):
@@ -108,46 +140,47 @@ class DoorbellTest(unittest.TestCase):
             b.close()
         self.tmp.cleanup()
 
-    def bind(self, identity="me"):
-        bell = waker.open_doorbell(identity)
+    def bind(self, channel="room", identity="me"):
+        bell = waker.open_doorbell(channel, identity)
         if bell is not None:
             self.open.append(bell)
         return bell
+
+    def path(self, channel="room", identity="me"):
+        return os.path.join(self.tmp.name,
+                            waker.doorbell_name(channel, identity))
 
     def test_it_binds_and_can_be_rung(self):
         bell = self.bind()
         self.assertIsNotNone(bell)
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(os.path.join(self.tmp.name, "me.sock"))
+        sock.connect(self.path())
         sock.sendall(b"1")
         sock.close()
-        self.assertTrue(waker.wait_for_ring(bell, 5))
+        self.assertTrue(waker.wait_for_ring({bell: "room"}, 5))
 
     def test_a_second_waker_does_NOT_steal_a_healthy_doorbell(self):
-        """Two projects can hold the same identity. Taking the socket from a
-        live listener would make the first agent deaf while the second thinks
-        it is covering — and neither would know."""
+        """Taking the socket from a live listener would make the first agent
+        deaf while the second thinks it is covering — and neither would know."""
         self.assertIsNotNone(self.bind())
         self.assertIsNone(self.bind())
 
     def test_a_STALE_socket_is_reclaimed(self):
-        """The other half. Refusing to reclaim a dead waker's socket would
-        make the doorbell permanently unusable after any crash — paired with
-        the test above, because one rule without the other is broken."""
+        """The other half. Refusing to reclaim a dead waker's socket would make
+        the doorbell permanently unusable after any crash — paired with the
+        test above, because one rule without the other is broken."""
         dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        dead.bind(os.path.join(self.tmp.name, "me.sock"))
+        dead.bind(self.path())
         dead.close()
         self.assertIsNotNone(self.bind())
 
     def test_an_unbindable_path_is_None_rather_than_a_crash(self):
         waker.doorbell_dir = lambda: "/proc/nope/deeper"
-        self.assertIsNone(waker.open_doorbell("me"))
+        self.assertIsNone(waker.open_doorbell("room", "me"))
 
     def test_an_unremovable_stale_socket_is_None_rather_than_a_crash(self):
-        """If the dead waker's socket cannot be deleted, this waker has no
-        doorbell — but the session must still run."""
         dead = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        dead.bind(os.path.join(self.tmp.name, "me.sock"))
+        dead.bind(self.path())
         dead.close()
         real = os.unlink
 
@@ -155,52 +188,114 @@ class DoorbellTest(unittest.TestCase):
             raise OSError("read-only")
         os.unlink = refuse
         try:
-            self.assertIsNone(waker.open_doorbell("me"))
+            self.assertIsNone(waker.open_doorbell("room", "me"))
         finally:
             os.unlink = real
 
     def test_a_bind_failure_is_None_rather_than_a_crash(self):
-        long_name = "x" * 400          # exceeds the sockaddr_un path limit
-        self.assertIsNone(waker.open_doorbell(long_name))
+        self.assertIsNone(waker.open_doorbell("room", "x" * 400))
 
-    def test_a_ring_that_hangs_up_first_still_counts(self):
-        """The sender connects, sends and closes immediately. Treating the
-        resulting error as 'nothing arrived' would drop the wake."""
-        bell = self.bind()
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(os.path.join(self.tmp.name, "me.sock"))
-        sock.close()
-        self.assertTrue(waker.wait_for_ring(bell, 5))
+
+class ManyBellsTest(unittest.TestCase):
+    """A project is several memberships, and each needs its own bell.
+
+    Binding one for whichever identity came first left the others unreachable,
+    and which one won depended on dict order — so the same agent could be
+    reachable or deaf across restarts with nothing having changed.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.real = waker.doorbell_dir
+        waker.doorbell_dir = lambda: self.tmp.name
+
+    def tearDown(self):
+        waker.doorbell_dir = self.real
+        self.tmp.cleanup()
+
+    def rooms(self, **pairs):
+        return {c: {"identity": i, "server": "s"} for c, i in pairs.items()}
+
+    def test_every_joined_room_gets_a_bell(self):
+        bells = waker.open_doorbells(self.rooms(alpha="owner", beta="other"))
+        try:
+            self.assertEqual(sorted(bells.values()), ["alpha", "beta"])
+        finally:
+            for b in bells:
+                b.close()
+
+    def test_two_identities_in_one_project_are_BOTH_reachable(self):
+        """The reported hole, as a test. Three of five projects here hold two
+        identities, and one of them was always unreachable."""
+        bells = waker.open_doorbells(
+            self.rooms(own_room="owner", shared="lamp-owner"))
+        try:
+            self.assertEqual(len(bells), 2)
+            self.assertTrue(os.path.exists(os.path.join(
+                self.tmp.name, waker.doorbell_name("shared", "lamp-owner"))))
+        finally:
+            for b in bells:
+                b.close()
+
+    def test_a_room_with_no_identity_is_skipped(self):
+        self.assertEqual(waker.open_doorbells({"a": {"server": "s"}}), {})
+
+    def test_no_rooms_is_no_bells_rather_than_a_crash(self):
+        self.assertEqual(waker.open_doorbells({}), {})
+
+    def test_waiting_on_several_wakes_on_ANY_of_them(self):
+        bells = waker.open_doorbells(self.rooms(alpha="owner", beta="other"))
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(os.path.join(self.tmp.name,
+                                      waker.doorbell_name("beta", "other")))
+            sock.sendall(b"1")
+            sock.close()
+            self.assertTrue(waker.wait_for_ring(bells, 5))
+        finally:
+            for b in bells:
+                b.close()
+
+    def test_with_no_bells_it_waits_rather_than_spinning(self):
+        """If binding failed for everything, the loop must not become a
+        busy-wait against the supersession checks — that is the poll again, at
+        full speed."""
+        start = time.time()
+        self.assertFalse(waker.wait_for_ring({}, 0.2))
+        self.assertGreaterEqual(time.time() - start, 0.15)
+
+    def test_waiting_times_out_and_says_nothing_arrived(self):
+        bells = waker.open_doorbells(self.rooms(alpha="owner"))
+        try:
+            start = time.time()
+            self.assertFalse(waker.wait_for_ring(bells, 0.2))
+            self.assertLess(time.time() - start, 3)
+        finally:
+            for b in bells:
+                b.close()
 
     def test_an_accept_that_fails_still_reports_a_ring(self):
         """select() said something is there. If accept then fails, something
-        DID arrive — reporting False would drop a real wake, and the whole
-        point of this design is that a ring is never missed."""
-        bell = self.bind()
+        DID arrive — reporting False would drop a real wake, and never missing
+        a ring is the whole point of this design."""
+        bells = waker.open_doorbells(self.rooms(alpha="owner"))
+        real = list(bells)[0]
 
         class Broken:
             def fileno(self):
-                return bell.fileno()
+                return real.fileno()
 
             def accept(self):
                 raise OSError("gone")
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.connect(os.path.join(self.tmp.name, "me.sock"))
-        sock.close()
-        self.assertTrue(waker.wait_for_ring(Broken(), 5))
-
-    def test_waiting_times_out_and_says_nothing_arrived(self):
-        bell = self.bind()
-        start = time.time()
-        self.assertFalse(waker.wait_for_ring(bell, 0.2))
-        self.assertLess(time.time() - start, 3)
-
-    def test_with_no_doorbell_it_still_waits_rather_than_spinning(self):
-        """If binding failed, the loop must not become a busy-wait against the
-        supersession checks — that would be the poll back, at full speed."""
-        start = time.time()
-        self.assertFalse(waker.wait_for_ring(None, 0.2))
-        self.assertGreaterEqual(time.time() - start, 0.15)
+        try:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            sock.connect(os.path.join(self.tmp.name,
+                                      waker.doorbell_name("alpha", "owner")))
+            sock.close()
+            self.assertTrue(waker.wait_for_ring({Broken(): "alpha"}, 5))
+        finally:
+            for b in bells:
+                b.close()
 
 
 class ImpersonationTest(unittest.TestCase):
@@ -209,7 +304,7 @@ class ImpersonationTest(unittest.TestCase):
     "Do not put test traffic in a shared room" was written down, agreed with,
     and broken in the same session it was written — a probe into a nine-member
     room, sent as ANOTHER AGENT'S identity. If you can break it, it was never a
-    rule; it was prose. This is the rule.
+    rule; it was prose.
     """
 
     def setUp(self):
@@ -260,7 +355,3 @@ class ImpersonationTest(unittest.TestCase):
         """Refusing here would break first-time setup, which speaks before it
         has ever recorded anything."""
         cli.refuse_impersonation("room", "whoever")
-
-
-if __name__ == "__main__":
-    unittest.main()

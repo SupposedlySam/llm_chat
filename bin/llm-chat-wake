@@ -132,7 +132,35 @@ def doorbell_dir():
     return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells")
 
 
-def open_doorbell(identity):
+def doorbell_name(channel, identity):
+    """MIRRORED in bin/llm_chat. One doorbell per MEMBERSHIP, not per identity.
+
+    Identity is not unique on this machine: four projects answer to `owner` and
+    three hold two identities each. Keying by identity meant one waker bound
+    the socket and the rest silently did not, then heard nothing addressed to
+    them — indistinguishable from a quiet room."""
+    return "%s__%s.sock" % (channel, identity)
+
+
+def open_doorbells(rooms):
+    """One bell per joined room. Returns {socket: channel}, possibly empty.
+
+    A project can legitimately be several identities — `owner` in its own room
+    and something else in a shared one — so binding a single doorbell for
+    whichever identity happened to come first left the others unreachable, and
+    which one won depended on dict order."""
+    bells = {}
+    for channel, entry in rooms.items():
+        identity = entry.get("identity")
+        if not identity:
+            continue
+        bell = open_doorbell(channel, identity)
+        if bell is not None:
+            bells[bell] = channel
+    return bells
+
+
+def open_doorbell(channel, identity):
     """Listen for "something arrived", at zero cost until it does.
 
     THIS REPLACES THE POLL. The waker used to ask the server every few seconds
@@ -152,7 +180,7 @@ def open_doorbell(identity):
         os.makedirs(doorbell_dir(), exist_ok=True)
     except OSError:
         return None      # no doorbell; the loop still runs on its heartbeat
-    path = os.path.join(doorbell_dir(), "%s.sock" % identity)
+    path = os.path.join(doorbell_dir(), doorbell_name(channel, identity))
     if os.path.exists(path):
         probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         probe.settimeout(1)
@@ -177,23 +205,28 @@ def open_doorbell(identity):
     return bell
 
 
-def wait_for_ring(bell, seconds):
-    """Block until somebody rings, or `seconds` pass. True if rung.
+def wait_for_ring(bells, seconds):
+    """Block on ALL of this project's doorbells at once. True if any rang.
+
+    `bells` is {socket: channel} — one per joined room, because a project can
+    be several identities and each membership has its own bell. select() takes
+    them all, so waiting on four rooms costs exactly what waiting on one does.
 
     The timeout is a HEARTBEAT, not a poll: it exists so the waker rechecks
     whether it has been superseded or orphaned, which are local questions and
     cost no request. Nothing here touches the network while waiting.
     """
-    if bell is None:
+    if not bells:
         time.sleep(seconds)
         return False
-    ready, _, _ = select.select([bell], [], [], seconds)
+    ready, _, _ = select.select(list(bells), [], [], seconds)
     if not ready:
         return False
     try:
-        conn, _ = bell.accept()
-        conn.recv(64)
-        conn.close()
+        for bell in ready:
+            conn, _ = bell.accept()
+            conn.recv(64)
+            conn.close()
     except OSError:
         pass
     return True
@@ -452,9 +485,7 @@ def main() -> int:
     # ONE doorbell for this project's identity. Bound before the first check,
     # so a message arriving during the reconcile below rings rather than being
     # missed between "I looked" and "I started listening".
-    identity = next((e.get("identity") for e in rooms.values()
-                     if e.get("identity")), None)
-    bell = open_doorbell(identity) if identity else None
+    bells = open_doorbells(rooms)
 
     synced = False
     checked_once = False
@@ -511,7 +542,7 @@ def main() -> int:
         if not checked_once:
             checked_once = True
             continue
-        wait_for_ring(bell, HEARTBEAT_SEC)
+        wait_for_ring(bells, HEARTBEAT_SEC)
         # The only real stop conditions: nothing can arrive any more, a newer
         # waker took over, or the session is gone.
         if not still_worth_listening(joined_rooms()):

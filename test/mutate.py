@@ -205,8 +205,15 @@ MUTATIONS = [
      "every message lands in full in every member's context — measured at 8.6x "
      "amplification and half a million tokens before this"),
 
+    ("a doorbell is keyed by MEMBERSHIP, not identity", "bin/llm_chat",
+     '    return "%s__%s.sock" % (channel, identity)',
+     '    return "%s.sock" % identity',
+     "four projects here answer to `owner`, so one waker binds the socket and "
+     "the rest silently do not — then hear nothing, which looks like a quiet "
+     "room rather than a fault"),
+
     ("a message rings the doorbells it wakes", "bin/llm_chat",
-     '                 and ring(m)]',
+     '                 and ring(name, m)]',
      '                 and False]',
      "the poll is gone and nothing replaced it, so an idle agent is never "
      "signalled and only hears anything when it happens to start a new waker"),
@@ -425,11 +432,18 @@ NOT_SWEPT = {
         "the-rest, both caps and the saving asserted directly",
     "bin/llm_chat:doorbell_dir": "pinned equal to the waker's copy, which is "
         "the only property that matters about a duplicated convention",
+    "bin/llm_chat:doorbell_name": "pinned equal to the waker's copy; the "
+        "cross-room collision it exists to prevent is swept",
     "bin/llm_chat:ring": "listener, no listener, stale socket and junk on "
         "disk all asserted directly",
     "bin/llm-chat-wake:doorbell_dir": "pinned equal to the CLI's copy",
     "bin/llm-chat-wake:open_doorbell": "bind, healthy-holder, stale reclaim "
         "and three failure paths asserted directly",
+    "bin/llm-chat-wake:open_doorbells": "one bell per joined room asserted "
+        "directly, including that TWO identities in one project are both "
+        "reachable — the hole that made this a membership key",
+    "bin/llm-chat-wake:doorbell_name": "pinned equal to the CLI's copy, and "
+        "asserted not to collide across rooms or identities",
     "bin/llm-chat-wake:wait_for_ring": "rung, timed out, no-doorbell and a "
         "failing accept asserted directly — accept failing must still report "
         "a ring, or a real wake is dropped",

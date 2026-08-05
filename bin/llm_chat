@@ -839,7 +839,26 @@ def doorbell_dir():
     return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells")
 
 
-def ring(identity):
+def doorbell_name(channel, identity):
+    """One doorbell per MEMBERSHIP, not per identity.
+
+    Identity is not unique on this machine. Four projects here answer to
+    `owner`, and three hold two identities each — so keying by identity alone
+    meant one waker bound `owner.sock` and the other three silently failed to,
+    then never heard anything addressed to them. Whoever started first won, and
+    the losers looked exactly like rooms where nobody was talking.
+
+    (channel, identity) IS unique: it is the membership row. Both sides can
+    compute it from what they already have, and `say` knows both for every
+    member it is about to wake.
+
+    Safe as a filename without escaping because both are validated against
+    NAME_OK — [a-z0-9._-] only, so neither can contain a separator or traverse.
+    """
+    return "%s__%s.sock" % (channel, identity)
+
+
+def ring(channel, identity):
     """Tell one agent something arrived. Returns True if anyone was listening.
 
     This REPLACES polling. An idle waker blocks on its doorbell at zero cost
@@ -853,7 +872,7 @@ def ring(identity):
     here is silent by design — but it is the only silent path in the send, so
     it returns whether it reached anyone and `say` reports the count.
     """
-    path = os.path.join(doorbell_dir(), "%s.sock" % identity)
+    path = os.path.join(doorbell_dir(), doorbell_name(channel, identity))
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(2)
     try:
@@ -934,7 +953,7 @@ def do_say(server, name, identity, text, audience=None):
     # to obey them or --to-none is a lie at the transport layer.
     listening = [m for m in members
                  if m != identity and wakes({"audience": audience}, m, chan)
-                 and ring(m)]
+                 and ring(name, m)]
     print(f"  {say_reach(server, name, identity, audience, chan)}")
     if listening:
         print(f"  rang {len(listening)} listening now: {', '.join(listening)}")
