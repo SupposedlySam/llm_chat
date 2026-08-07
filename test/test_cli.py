@@ -549,6 +549,43 @@ class DoctorTest(unittest.TestCase):
             self.assertIn(os.path.join(tree, "install.sh"), text)
             self.assertIn("undo that", text)
 
+    def test_a_DIRTY_source_tree_is_named_as_dirty(self):
+        """Covered by ACCIDENT until now. Nothing stubbed `checkout_dirty`, so
+        it ran against the real repo and this branch executed only while THIS
+        working tree happened to have uncommitted changes — which it does for
+        the whole time anyone is working, and stops having the moment they
+        commit. The line went uncovered on the first clean-tree run, which is
+        precisely when the gate runs before a push.
+
+        Coverage that depends on git state is not coverage, and the failure
+        arrives at the least convenient moment by construction.
+        """
+        with tempfile.TemporaryDirectory() as tree:
+            os.makedirs(os.path.join(tree, "bin"))
+            self.wired(tree, fingerprint="old-stamp")
+            real = cli.checkout_dirty
+            cli.checkout_dirty = lambda path=None: True
+            try:
+                dirty = self.report()
+            finally:
+                cli.checkout_dirty = real
+            self.assertIn("UNCOMMITTED", dirty)
+            self.assertIn("safer side", dirty)
+
+    def test_a_CLEAN_source_tree_is_not(self):
+        """Paired. A notice that always fires is not a notice."""
+        with tempfile.TemporaryDirectory() as tree:
+            os.makedirs(os.path.join(tree, "bin"))
+            self.wired(tree, fingerprint="old-stamp")
+            real = cli.checkout_dirty
+            cli.checkout_dirty = lambda path=None: False
+            try:
+                clean = self.report()
+            finally:
+                cli.checkout_dirty = real
+            self.assertIn("STALE", clean)
+            self.assertNotIn("UNCOMMITTED", clean)
+
     def test_a_repo_wired_from_THIS_checkout_gets_no_such_warning(self):
         """Paired: a note that always fires teaches nothing, and the ordinary
         case is a consumer pointed at this clone."""
