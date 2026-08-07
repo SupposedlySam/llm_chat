@@ -646,7 +646,7 @@ def audience_for(to, to_all, to_none):
 
 
 def check_recipients(server, channel, audience):
-    """Refuse to address somebody who is not in the room.
+    """Refuse to address somebody who is not in the room, or who has left it.
 
     A mention that silently no-ops is the worst failure this feature could
     have: the sender believes it delivered and stops, the recipient is never
@@ -654,16 +654,30 @@ def check_recipients(server, channel, audience):
     mistyped mention as plain text and say nothing, which is precisely the
     'reports success while doing nothing' shape this project keeps hardening
     against.
+
+    A departed member is that same failure wearing a different hat. `leave`
+    sets `done`; it does not delete the membership row — so a name-only check
+    would call them a valid recipient for as long as the room exists, and the
+    sender learns otherwise only by some OTHER means, if at all.
     """
     if not audience or audience in (AUDIENCE_ALL, AUDIENCE_NONE):
         return
-    members = {m["identity"] for m in
-               rows(server, "memberships", eq("channel", channel))}
-    missing = [n for n in audience.split(",") if n not in members]
+    everyone = rows(server, "memberships", eq("channel", channel))
+    members = {m["identity"] for m in everyone}
+    gone = {m["identity"] for m in everyone if m.get("done")}
+    names = audience.split(",")
+    missing = [n for n in names if n not in members]
     if missing:
         raise SystemExit(
             f"no {', '.join(repr(n) for n in missing)} in #{channel} — "
             f"members: {', '.join(sorted(members)) or '(none)'}\n"
+            f"  Nothing sent."
+        )
+    left = [n for n in names if n in gone]
+    if left:
+        raise SystemExit(
+            f"{', '.join(repr(n) for n in left)} already left #{channel} — "
+            f"still here: {', '.join(sorted(members - gone)) or '(nobody)'}\n"
             f"  Nothing sent."
         )
 

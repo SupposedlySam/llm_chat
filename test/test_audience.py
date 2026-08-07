@@ -197,6 +197,36 @@ class RecipientTest(ServerTest):
     def test_nothing_is_written_when_a_recipient_is_unknown(self):
         with self.assertRaises(SystemExit):
             self.say("hello", audience="dave")
+
+    def test_a_departed_member_is_refused(self):
+        """`leave` sets done; it does not delete the membership row. A
+        name-only check would call carol a valid recipient forever."""
+        self.server.get_membership("room", "carol")["done"] = 1
+        with self.assertRaises(SystemExit) as caught:
+            cli.check_recipients("srv", "room", "carol")
+        message = str(caught.exception)
+        self.assertIn("carol", message)
+        self.assertIn("left", message)
+        self.assertIn("Nothing sent", message)
+
+    def test_a_departed_member_is_distinguished_from_a_non_member(self):
+        """Two different failures need two different remedies: rejoin vs.
+        address someone who was never here at all."""
+        self.server.get_membership("room", "carol")["done"] = 1
+        with self.assertRaises(SystemExit) as gone:
+            cli.check_recipients("srv", "room", "carol")
+        with self.assertRaises(SystemExit) as missing:
+            cli.check_recipients("srv", "room", "dave")
+        self.assertNotEqual(str(gone.exception), str(missing.exception))
+
+    def test_a_departed_member_the_refusal_names_who_is_still_here(self):
+        self.server.get_membership("room", "carol")["done"] = 1
+        with self.assertRaises(SystemExit) as caught:
+            cli.check_recipients("srv", "room", "carol")
+        message = str(caught.exception)
+        self.assertIn("alice", message)
+        self.assertIn("bob", message)
+        self.assertNotIn("still here: carol", message)
         self.assertEqual(self.server.tables.get("messages", []), [])
 
 
