@@ -425,23 +425,42 @@ class CliCorrespondenceTest(McpTestCase):
     # work over MCP, not that nobody got to it.
     NOT_EXPOSED = set()
 
-    # Every optional field a builder can read, so each flag it can emit is
-    # emitted. Values need only be well-formed. Combinations the CLI refuses
-    # for other reasons (text with file, to with to_all) still PARSE, which is
-    # all this measures — that exclusivity is enforced after parsing, and is
-    # covered where it lives.
-    MAXIMAL = {
-        "channel": "probe-room", "identity": "prober", "topic": "t",
-        "max_messages": 5, "broadcast": True, "briefing": "rules",
-        "in_checkout": True, "text": "hello", "file": "/tmp/msg.txt",
-        "to": "someone", "to_all": True, "to_none": True, "mode": "ordinary",
-        "yes": True, "peek": True, "all": True, "json": True, "force": True,
-        "i_know": True, "of": ".", "server": "http://localhost:7717",
-    }
-
     def setUp(self):
         super().setUp()
         self.parser = load("llm_chat").build_parser()
+
+    def maximal(self, tool, skip=()):
+        """Every property in a tool's OWN schema, valued by its declared type.
+
+        This was a hand-written dict, which made the tests below only as
+        complete as a fixture somebody remembered to update. `leave` gained an
+        `ask` property and the dict did not, so the flag it emits was never
+        emitted here and the check silently stopped covering it — the same
+        fixture-written-from-the-same-belief failure this whole class exists to
+        catch, one level up, in the thing doing the catching.
+
+        Read off the schema, a property is exercised the moment it is
+        declared. Values need only be well-formed: combinations the CLI refuses
+        for other reasons (text with file, to with to_all) still PARSE, and
+        that exclusivity is enforced after parsing and covered where it lives.
+        """
+        args = {}
+        for name, spec in tool["schema"]["properties"].items():
+            if name in skip:
+                continue
+            if "enum" in spec:
+                args[name] = spec["enum"][0]
+            elif spec.get("type") == "boolean":
+                args[name] = True
+            elif spec.get("type") == "integer":
+                args[name] = 5
+            else:
+                args[name] = "x"
+        return args
+
+    def argv_for(self, tool, skip=()):
+        args = self.maximal(tool, skip)
+        return self.mod._server_argv(args) + tool["build"](args)
 
     def cli_verbs(self):
         for action in self.parser._actions:
@@ -461,8 +480,7 @@ class CliCorrespondenceTest(McpTestCase):
         runs, so this fails on exactly the drift the argv fixtures cannot
         see."""
         for tool in self.mod.TOOLS:
-            argv = (self.mod._server_argv(self.MAXIMAL)
-                    + tool["build"](self.MAXIMAL))
+            argv = self.argv_for(tool)
             with self.subTest(tool=tool["name"], argv=argv):
                 try:
                     with redirect_stderr(io.StringIO()):
@@ -470,6 +488,28 @@ class CliCorrespondenceTest(McpTestCase):
                 except SystemExit:
                     self.fail("the CLI rejects the argv the %s tool builds: %s"
                               % (tool["name"], " ".join(argv)))
+
+    def test_every_DECLARED_property_actually_reaches_the_argv(self):
+        """A property in the schema that no builder reads is worse than a
+        missing one.
+
+        The schema is what the model sees, so a declared-but-ignored field is
+        an instruction to pass something that then does nothing — silently.
+        `say --to-none` arriving as a no-op does not fail, it just wakes
+        everybody, and neither end can tell it was dropped. Nothing else here
+        would notice: the argv fixtures only assert what the builder DOES
+        emit, never that everything offered was.
+        """
+        for tool in self.mod.TOOLS:
+            required = set(tool["schema"].get("required") or ())
+            for name in tool["schema"]["properties"]:
+                if name in required:
+                    continue      # its absence is refused, which is different
+                with self.subTest(tool=tool["name"], property=name):
+                    self.assertNotEqual(
+                        self.argv_for(tool), self.argv_for(tool, skip=(name,)),
+                        "the %s tool declares %r and builds the same argv "
+                        "with or without it" % (tool["name"], name))
 
 
 if __name__ == "__main__":
