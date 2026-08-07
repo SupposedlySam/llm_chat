@@ -5,13 +5,14 @@ shells out to zonai through one seam, `call` — so a test replaces that single
 function instead of the shared `subprocess` module, and never risks leaking a
 stub into a test file that runs after it.
 """
+import argparse
 import io
 import json
 import os
 import subprocess as real_subprocess
 import sys
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from support import load  # noqa: E402
@@ -82,7 +83,11 @@ class PingTest(McpTestCase):
 
 
 class ToolsListTest(McpTestCase):
-    def test_lists_every_cli_subcommand_as_a_tool(self):
+    def test_lists_the_expected_tool_set(self):
+        """A fixture of the PUBLISHED surface — adding or removing a tool is a
+        change to what clients see, so it should not be silent. It is not a
+        check that the CLI and the tool table agree; that is
+        CliCorrespondenceTest below, which asks the real parser."""
         resp = self.dispatch({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         names = {t["name"] for t in resp["result"]["tools"]}
         self.assertEqual(names, {
@@ -396,6 +401,71 @@ class MainLoopTest(McpTestCase):
             sys.stdin = stdin
         self.assertEqual(code, 0)
         self.assertEqual(len(out.getvalue().strip().splitlines()), 1)
+
+
+class CliCorrespondenceTest(McpTestCase):
+    """The MCP server and the CLI, checked against each other rather than
+    against each other's descriptions.
+
+    Every other test in this file replaces `run_cli` and asserts the argv a
+    builder produced against a fixture written beside it. Both come from the
+    same belief about what bin/llm_chat accepts, so they agree with each other
+    no matter what the CLI actually does: rename a flag there and all of them
+    stay green while every real MCP call fails. The two tests here are the
+    only ones that consult the real parser, so they are the only ones that can
+    notice the two halves drifting apart.
+    """
+
+    # Verbs deliberately not exposed over MCP. Empty, and an entry here should
+    # have to be argued for — the reason to leave one out is that it cannot
+    # work over MCP, not that nobody got to it.
+    NOT_EXPOSED = set()
+
+    # Every optional field a builder can read, so each flag it can emit is
+    # emitted. Values need only be well-formed. Combinations the CLI refuses
+    # for other reasons (text with file, to with to_all) still PARSE, which is
+    # all this measures — that exclusivity is enforced after parsing, and is
+    # covered where it lives.
+    MAXIMAL = {
+        "channel": "probe-room", "identity": "prober", "topic": "t",
+        "max_messages": 5, "broadcast": True, "briefing": "rules",
+        "in_checkout": True, "text": "hello", "file": "/tmp/msg.txt",
+        "to": "someone", "to_all": True, "to_none": True, "mode": "ordinary",
+        "yes": True, "peek": True, "all": True, "json": True, "force": True,
+        "i_know": True, "of": ".", "server": "http://localhost:7717",
+    }
+
+    def setUp(self):
+        super().setUp()
+        self.parser = load("llm_chat").build_parser()
+
+    def cli_verbs(self):
+        for action in self.parser._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return set(action.choices)
+        self.fail("the CLI parser has no subcommands")
+
+    def test_every_cli_verb_is_exposed_as_a_tool(self):
+        """Named for what it checks. The tool list this replaces was a set
+        literal copied by hand, so a verb added to the CLI left it green and
+        the MCP silently short of a tool."""
+        self.assertEqual(self.cli_verbs() - self.NOT_EXPOSED,
+                         set(self.mod.TOOLS_BY_NAME))
+
+    def test_every_built_argv_is_accepted_by_the_real_parser(self):
+        """argparse rejects an unknown or misspelled flag before any handler
+        runs, so this fails on exactly the drift the argv fixtures cannot
+        see."""
+        for tool in self.mod.TOOLS:
+            argv = (self.mod._server_argv(self.MAXIMAL)
+                    + tool["build"](self.MAXIMAL))
+            with self.subTest(tool=tool["name"], argv=argv):
+                try:
+                    with redirect_stderr(io.StringIO()):
+                        self.parser.parse_args(argv)
+                except SystemExit:
+                    self.fail("the CLI rejects the argv the %s tool builds: %s"
+                              % (tool["name"], " ".join(argv)))
 
 
 if __name__ == "__main__":

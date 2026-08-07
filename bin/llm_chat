@@ -1890,7 +1890,17 @@ def do_setup(server, channel, identity, topic, max_messages, in_checkout=False):
     )
 
 
-def main() -> int:
+def build_parser():
+    """The argument surface, built separately from running it.
+
+    Extracted from main() so a test can ask the REAL parser what verbs and
+    flags exist, rather than comparing against a list somebody copied by hand.
+    bin/llm-chat-mcp translates MCP tool calls into argv for this parser and
+    is tested against argv fixtures — which are written from the same belief
+    as the builder, so they agree with each other whatever the CLI accepts.
+    Renaming a flag here left every one of those tests green and broke the MCP
+    only in a live session. This is what closes that.
+    """
     ap = argparse.ArgumentParser(prog="llm_chat", description=__doc__.split("\n")[0])
     ap.add_argument("--server", default=DEFAULT_SERVER)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -2017,7 +2027,11 @@ def main() -> int:
                    help="reload even though SessionStart has never been seen "
                         "firing; you accept being stranded")
 
-    args = ap.parse_args()
+    return ap
+
+
+def main() -> int:
+    args = build_parser().parse_args()
     server = args.server
 
     if args.cmd == "identify":
