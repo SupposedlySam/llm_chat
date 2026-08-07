@@ -8,6 +8,7 @@ stub into a test file that runs after it.
 import io
 import json
 import os
+import subprocess as real_subprocess
 import sys
 import unittest
 from contextlib import redirect_stdout
@@ -36,6 +37,14 @@ class McpTestCase(unittest.TestCase):
 
     def dispatch(self, message):
         return self.mod.dispatch(message)
+
+    def call(self, name, arguments):
+        """Dispatch a tools/call and return the argv the (faked) CLI saw."""
+        fake = RunCli((0, "ok"))
+        self.mod.run_cli = fake
+        self.dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": name, "arguments": arguments}})
+        return fake.calls[0][0]
 
     def run_main(self, *messages):
         payload = "".join(json.dumps(m) + "\n" for m in messages)
@@ -76,9 +85,11 @@ class ToolsListTest(McpTestCase):
     def test_lists_every_cli_subcommand_as_a_tool(self):
         resp = self.dispatch({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
         names = {t["name"] for t in resp["result"]["tools"]}
-        self.assertEqual(names, {"setup", "open", "join", "say", "read",
-                                 "leave", "reopen", "invite", "channels",
-                                 "doctor", "fingerprint", "reload"})
+        self.assertEqual(names, {
+            "open", "join", "setup", "say", "sync", "mode", "pending", "read",
+            "leave", "reopen", "invite", "channels", "briefing", "identify",
+            "doctor", "fingerprint", "reload",
+        })
 
     def test_every_tool_carries_a_description_and_object_schema(self):
         resp = self.dispatch({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
@@ -113,9 +124,9 @@ class ToolsCallTest(McpTestCase):
     def test_a_missing_required_argument_is_a_protocol_error(self):
         resp = self.dispatch({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
                               "params": {"name": "say",
-                                        "arguments": {"channel": "room"}}})
+                                        "arguments": {"text": "hi"}}})
         self.assertEqual(resp["error"]["code"], -32602)
-        self.assertIn("text", resp["error"]["message"])
+        self.assertIn("channel", resp["error"]["message"])
 
     def test_a_successful_call_is_not_flagged_as_an_error(self):
         fake = RunCli((0, "sent #1 to room as me"))
@@ -157,12 +168,22 @@ class ArgvBuildersTest(McpTestCase):
     """Every optional flag, at least once, so its branch is exercised and not
     just present."""
 
-    def call(self, name, arguments):
-        fake = RunCli((0, "ok"))
-        self.mod.run_cli = fake
-        self.dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
-                       "params": {"name": name, "arguments": arguments}})
-        return fake.calls[0][0]
+    def test_open_with_every_optional_field(self):
+        argv = self.call("open", {"channel": "c", "identity": "me",
+                                  "broadcast": True, "topic": "t",
+                                  "briefing": "rules", "max_messages": 50})
+        self.assertEqual(argv, ["open", "c", "--as", "me", "--broadcast",
+                                "--topic", "t", "--briefing", "rules",
+                                "--max-messages", "50"])
+
+    def test_open_bare(self):
+        self.assertEqual(self.call("open", {"channel": "c"}), ["open", "c"])
+
+    def test_join_with_every_optional_field(self):
+        argv = self.call("join", {"channel": "c", "identity": "me",
+                                  "topic": "t", "max_messages": 50})
+        self.assertEqual(argv, ["join", "c", "--as", "me", "--topic", "t",
+                                "--max-messages", "50"])
 
     def test_setup_with_every_optional_field(self):
         argv = self.call("setup", {"channel": "c", "identity": "me",
@@ -171,26 +192,47 @@ class ArgvBuildersTest(McpTestCase):
         self.assertEqual(argv, ["setup", "c", "--as", "me", "--topic", "t",
                                 "--max-messages", "50", "--in-checkout"])
 
-    def test_open_with_every_optional_field(self):
-        argv = self.call("open", {"channel": "c", "identity": "me",
-                                  "topic": "t", "max_messages": 50})
-        self.assertEqual(argv, ["open", "c", "--as", "me", "--topic", "t",
-                                "--max-messages", "50"])
+    def test_say_with_text_only(self):
+        self.assertEqual(self.call("say", {"channel": "c", "text": "hi"}),
+                         ["say", "c", "hi"])
 
-    def test_join_with_every_optional_field(self):
-        argv = self.call("join", {"channel": "c", "identity": "me",
-                                  "topic": "t", "max_messages": 50})
-        self.assertEqual(argv, ["join", "c", "--as", "me", "--topic", "t",
-                                "--max-messages", "50"])
+    def test_say_with_file_instead_of_text(self):
+        argv = self.call("say", {"channel": "c", "file": "/tmp/msg.txt"})
+        self.assertEqual(argv, ["say", "c", "--file", "/tmp/msg.txt"])
 
-    def test_say_without_identity(self):
-        argv = self.call("say", {"channel": "c", "text": "hi"})
-        self.assertEqual(argv, ["say", "c", "hi"])
+    def test_say_addressed_to_specific_identities(self):
+        argv = self.call("say", {"channel": "c", "text": "hi", "to": "a,b"})
+        self.assertEqual(argv, ["say", "c", "hi", "--to", "a,b"])
 
-    def test_read_with_peek_and_all(self):
+    def test_say_to_all(self):
+        argv = self.call("say", {"channel": "c", "text": "hi", "to_all": True})
+        self.assertEqual(argv, ["say", "c", "hi", "--to-all"])
+
+    def test_say_to_none(self):
+        argv = self.call("say", {"channel": "c", "text": "hi", "to_none": True})
+        self.assertEqual(argv, ["say", "c", "hi", "--to-none"])
+
+    def test_sync_takes_no_arguments(self):
+        self.assertEqual(self.call("sync", {}), ["sync"])
+
+    def test_mode_with_yes_and_identity(self):
+        argv = self.call("mode", {"channel": "c", "mode": "broadcast",
+                                  "identity": "me", "yes": True})
+        self.assertEqual(argv, ["mode", "c", "broadcast", "--as", "me", "--yes"])
+
+    def test_mode_bare(self):
+        argv = self.call("mode", {"channel": "c", "mode": "ordinary"})
+        self.assertEqual(argv, ["mode", "c", "ordinary"])
+
+    def test_pending(self):
+        argv = self.call("pending", {"channel": "c", "identity": "me"})
+        self.assertEqual(argv, ["pending", "c", "--as", "me"])
+
+    def test_read_with_peek_all_and_json(self):
         argv = self.call("read", {"channel": "c", "identity": "me",
-                                  "peek": True, "all": True})
-        self.assertEqual(argv, ["read", "c", "--as", "me", "--peek", "--all"])
+                                  "peek": True, "all": True, "json": True})
+        self.assertEqual(argv, ["read", "c", "--as", "me", "--peek", "--all",
+                                "--json"])
 
     def test_read_bare(self):
         self.assertEqual(self.call("read", {"channel": "c"}), ["read", "c"])
@@ -213,13 +255,34 @@ class ArgvBuildersTest(McpTestCase):
     def test_invite(self):
         self.assertEqual(self.call("invite", {"channel": "c"}), ["invite", "c"])
 
-    def test_channels(self):
+    def test_channels_with_json_and_all(self):
+        argv = self.call("channels", {"json": True, "all": True})
+        self.assertEqual(argv, ["channels", "--json", "--all"])
+
+    def test_channels_bare(self):
         self.assertEqual(self.call("channels", {}), ["channels"])
+
+    def test_briefing_with_text(self):
+        argv = self.call("briefing", {"channel": "c", "text": "be nice",
+                                      "identity": "me"})
+        self.assertEqual(argv, ["briefing", "c", "be nice", "--as", "me"])
+
+    def test_briefing_with_file(self):
+        argv = self.call("briefing", {"channel": "c", "file": "/tmp/rules.md"})
+        self.assertEqual(argv, ["briefing", "c", "--file", "/tmp/rules.md"])
+
+    def test_identify(self):
+        self.assertEqual(self.call("identify", {"identity": "me"}),
+                         ["identify", "me"])
 
     def test_doctor(self):
         self.assertEqual(self.call("doctor", {}), ["doctor"])
 
-    def test_fingerprint(self):
+    def test_fingerprint_of_a_specific_tree(self):
+        argv = self.call("fingerprint", {"of": "/some/checkout"})
+        self.assertEqual(argv, ["fingerprint", "--of", "/some/checkout"])
+
+    def test_fingerprint_bare(self):
         self.assertEqual(self.call("fingerprint", {}), ["fingerprint"])
 
     def test_reload_bare(self):
@@ -234,14 +297,36 @@ class RunCliTest(McpTestCase):
     """run_cli's own internals — the only tests here that touch `subprocess`,
     and only as an attribute on THIS loaded module, never the shared one."""
 
-    def test_a_timeout_is_reported_rather_than_raised(self):
-        import subprocess as real_subprocess
+    def test_stdin_is_devnull_so_a_file_dash_cannot_hang_or_race(self):
+        """`say --file -` and `briefing --file -` read the CLI's stdin. Left
+        unset, that is inherited from THIS server's own stdin — the same pipe
+        `main()` reads JSON-RPC frames from — so a client passing file: "-"
+        would race this process's read loop against the child's on the same
+        fd. DEVNULL turns that into a harmless immediate EOF instead."""
+        captured = {}
 
+        def fake_run(cmd, **kwargs):
+            captured.update(kwargs)
+
+            class FakeResult:
+                stdout, stderr, returncode = "ok", "", 0
+            return FakeResult()
+
+        self.mod.subprocess = type("Sub", (), {
+            "run": staticmethod(fake_run),
+            "DEVNULL": real_subprocess.DEVNULL,
+            "TimeoutExpired": real_subprocess.TimeoutExpired,
+        })
+        self.mod.run_cli(["channels"], 5)
+        self.assertEqual(captured.get("stdin"), real_subprocess.DEVNULL)
+
+    def test_a_timeout_is_reported_rather_than_raised(self):
         def explode(*a, **kw):
             raise real_subprocess.TimeoutExpired(cmd="x", timeout=1)
 
         self.mod.subprocess = type("Sub", (), {
             "run": staticmethod(explode),
+            "DEVNULL": real_subprocess.DEVNULL,
             "TimeoutExpired": real_subprocess.TimeoutExpired,
         })
         code, text = self.mod.run_cli(["channels"], 1)
@@ -256,6 +341,7 @@ class RunCliTest(McpTestCase):
 
         self.mod.subprocess = type("Sub", (), {
             "run": staticmethod(lambda *a, **kw: FakeResult()),
+            "DEVNULL": real_subprocess.DEVNULL,
         })
         code, text = self.mod.run_cli(["channels"], 5)
         self.assertEqual(code, 3)

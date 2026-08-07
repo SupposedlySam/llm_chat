@@ -610,6 +610,77 @@ NOT_SWEPT = {
     "triggers/learnings-digest:main": "every branch asserted directly, "
         "including that a read failure is loud rather than an empty digest",
 
+    # The MCP server (bin/llm-chat-mcp). Everything CLI-facing is behind one
+    # seam, run_cli, and asserted directly against a fake exactly the way the
+    # Slack bridge's _call is above; nothing here is network- or process-
+    # facing enough to need a live mutation instead of a precise assertion.
+    "bin/llm-chat-mcp:run_cli": "every branch — stdin=DEVNULL so `--file -` "
+        "cannot hang or race this server's own stdin, timeout handling, and "
+        "stdout/stderr ordering — asserted directly against a faked "
+        "subprocess module",
+    "bin/llm-chat-mcp:dispatch": "every branch — notification silence "
+        "regardless of method, unknown method, ToolError, a generic "
+        "exception, and a successful call — asserted directly",
+    "bin/llm-chat-mcp:handle_initialize": "asserted directly, including the "
+        "protocol-version fallback",
+    "bin/llm-chat-mcp:handle_ping": "trivial, asserted directly",
+    "bin/llm-chat-mcp:handle_tools_list": "asserted directly, including that "
+        "every listed tool carries a description and an object schema",
+    "bin/llm-chat-mcp:handle_tools_call": "every branch — unknown tool, a "
+        "missing required argument, success, a non-zero exit, empty output, "
+        "and the server flag threaded before the subcommand — asserted "
+        "directly",
+    "bin/llm-chat-mcp:main": "every branch — one response per request, "
+        "notifications silenced, blank lines skipped, unparseable JSON and "
+        "non-dict frames ignored rather than fatal — asserted directly",
+    "bin/llm-chat-mcp:_require": "both the raise and the pass-through "
+        "asserted directly",
+    "bin/llm-chat-mcp:_server_argv": "asserted directly, with and without a "
+        "server override",
+    "bin/llm-chat-mcp:_as_flag": "asserted directly by every builder test "
+        "that does and does not pass identity",
+    "bin/llm-chat-mcp:_topic_flag": "asserted directly by every builder test "
+        "that does and does not pass topic",
+    "bin/llm-chat-mcp:_max_messages_flag": "asserted directly by every "
+        "builder test that does and does not pass max_messages",
+    "bin/llm-chat-mcp:_error": "asserted directly by every test that checks "
+        "an error response's shape",
+    "bin/llm-chat-mcp:_result": "asserted directly by every successful "
+        "dispatch",
+    "bin/llm-chat-mcp:_build_open": "every branch, with and without every "
+        "optional field, asserted directly for the exact argv produced",
+    "bin/llm-chat-mcp:_build_join": "asserted directly for the exact argv "
+        "produced with every optional field set",
+    "bin/llm-chat-mcp:_build_setup": "asserted directly for the exact argv "
+        "produced with every optional field set",
+    "bin/llm-chat-mcp:_build_say": "every branch — text, file, to, to_all, "
+        "to_none — asserted directly for the exact argv produced",
+    "bin/llm-chat-mcp:_build_sync": "trivial, asserted directly (constant "
+        "argv)",
+    "bin/llm-chat-mcp:_build_mode": "both branches asserted directly for "
+        "the exact argv produced",
+    "bin/llm-chat-mcp:_build_pending": "asserted directly for the exact "
+        "argv produced",
+    "bin/llm-chat-mcp:_build_read": "every branch asserted directly for "
+        "the exact argv produced",
+    "bin/llm-chat-mcp:_build_leave": "both branches asserted directly for "
+        "the exact argv produced",
+    "bin/llm-chat-mcp:_build_reopen": "both branches asserted directly for "
+        "the exact argv produced",
+    "bin/llm-chat-mcp:_build_invite": "trivial, asserted directly",
+    "bin/llm-chat-mcp:_build_channels": "both flags, and their absence, "
+        "asserted directly for the exact argv produced",
+    "bin/llm-chat-mcp:_build_briefing": "both branches — text, file — "
+        "asserted directly for the exact argv produced",
+    "bin/llm-chat-mcp:_build_identify": "asserted directly for the exact "
+        "argv produced",
+    "bin/llm-chat-mcp:_build_doctor": "trivial, asserted directly (constant "
+        "argv)",
+    "bin/llm-chat-mcp:_build_fingerprint": "both branches asserted directly "
+        "for the exact argv produced",
+    "bin/llm-chat-mcp:_build_reload": "both branches asserted directly for "
+        "the exact argv produced",
+
     # Honest gaps. These SHOULD be swept and are not yet. Saying so beats an
     # exclusion that is technically true and practically a dodge.
     "bin/llm_chat:do_setup": "SHOULD BE SWEPT — the in-checkout guard and the "
