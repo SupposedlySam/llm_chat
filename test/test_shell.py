@@ -27,19 +27,29 @@ HAS_CLAUDE = CLAUDE_PATH is not None
 
 
 def _path_without_claude():
-    """PATH with the directory holding `claude` removed, so `command -v
+    """PATH with EVERY directory holding a `claude` removed, so `command -v
     claude` fails inside install.sh/legacy_teardown.sh exactly like it would
     on a machine without the CLI. Without this, every install/teardown test
     on a dev machine that HAS `claude` also spawns it for real — turning a
     ~40ms suite into one that pays Node startup twice per test for a feature
     almost none of these tests are about. The few that ARE about it opt back
-    in explicitly."""
+    in explicitly.
+
+    EVERY directory, not just `shutil.which`'s answer: this machine has one
+    under nvm and another in /opt/homebrew, so dropping the first left the
+    second reachable and `allow_claude=False` quietly meant nothing. The
+    install still registered an MCP server and
+    test_a_missing_claude_binary_does_not_fail_the_install failed — asserting
+    the absence of something the helper had not actually made absent.
+
+    A helper that removes ONE of a thing is indistinguishable from one that
+    removes all of it until a machine has two, and then it fails on that
+    machine only.
+    """
     parts = os.environ.get("PATH", "").split(os.pathsep)
-    if not CLAUDE_PATH:
-        return os.pathsep.join(parts)
-    claude_dir = os.path.dirname(os.path.abspath(CLAUDE_PATH))
-    return os.pathsep.join(p for p in parts
-                           if os.path.abspath(p or ".") != claude_dir)
+    return os.pathsep.join(
+        p for p in parts
+        if not os.access(os.path.join(p or ".", "claude"), os.X_OK))
 
 
 def hooks_in(path):
