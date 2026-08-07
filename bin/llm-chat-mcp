@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 """llm-chat-mcp — the llm_chat CLI, spoken over MCP.
 
-Every llm_chat subcommand (setup, open, join, say, read, leave, reopen,
-invite, channels, doctor, fingerprint, reload) as one MCP tool each, so an MCP
-client calls `say` with a JSON object instead of building
-`llm_chat say <channel> "<text>" --as <identity>` as a shell string. The CLI
-does the actual work; this is a translation layer over stdio, nothing more.
+Every llm_chat subcommand (open, join, setup, say, sync, mode, pending, read,
+leave, reopen, invite, channels, briefing, identify, doctor, fingerprint,
+reload) as one MCP tool each, so an MCP client calls `say` with a JSON object
+instead of building `llm_chat say <channel> "<text>" --as <identity>` as a
+shell string. The CLI does the actual work; this is a translation layer over
+stdio, nothing more.
 
 STDLIB ONLY, like every other entrypoint here — an MCP client that spawns this
 should not need a `pip install` to talk to it, any more than an agent should
@@ -66,10 +67,19 @@ def run_cli(argv, timeout):
     writes them — `SystemExit(msg)` in bin/llm_chat prints its message to
     stderr, and a caller reading only stdout would see nothing at all for
     every error path there is.
+
+    `stdin=DEVNULL`, deliberately: `say --file -` and `briefing --file -`
+    read the CLI's own stdin, which without this would be inherited from THIS
+    server's stdin — the same pipe `main()` below is reading JSON-RPC frames
+    from. A client that passed `file: "-"` would then race this process's own
+    read loop against the child's, on the same underlying fd. DEVNULL turns
+    that into an immediate, harmless EOF (an empty message) instead of a
+    server-wide hang or a corrupted JSON-RPC stream.
     """
     try:
         done = subprocess.run([sys.executable, CLI] + argv,
-                              capture_output=True, text=True, timeout=timeout)
+                              capture_output=True, text=True, timeout=timeout,
+                              stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
         return 1, "timed out after %ds: llm_chat %s" % (timeout, " ".join(argv))
     return done.returncode, (done.stdout or "") + (done.stderr or "")
@@ -87,65 +97,92 @@ def _server_argv(arguments):
     return ["--server", server] if server else []
 
 
+def _as_flag(a):
+    return ["--as", a["identity"]] if a.get("identity") else []
+
+
+def _topic_flag(a):
+    return ["--topic", a["topic"]] if a.get("topic") else []
+
+
+def _max_messages_flag(a):
+    return (["--max-messages", str(a["max_messages"])]
+            if a.get("max_messages") is not None else [])
+
+
+def _build_open(a):
+    argv = ["open", _require(a, "channel")] + _as_flag(a)
+    if a.get("broadcast"):
+        argv += ["--broadcast"]
+    argv += _topic_flag(a)
+    if a.get("briefing"):
+        argv += ["--briefing", a["briefing"]]
+    argv += _max_messages_flag(a)
+    return argv
+
+
+def _build_join(a):
+    return (["join", _require(a, "channel")] + _as_flag(a) + _topic_flag(a)
+            + _max_messages_flag(a))
+
+
 def _build_setup(a):
-    argv = ["setup", _require(a, "channel"), "--as", _require(a, "identity")]
-    if a.get("topic"):
-        argv += ["--topic", a["topic"]]
-    if a.get("max_messages") is not None:
-        argv += ["--max-messages", str(a["max_messages"])]
+    argv = ["setup", _require(a, "channel")] + _as_flag(a) + _topic_flag(a)
+    argv += _max_messages_flag(a)
     if a.get("in_checkout"):
         argv += ["--in-checkout"]
     return argv
 
 
-def _build_open(a):
-    argv = ["open", _require(a, "channel"), "--as", _require(a, "identity")]
-    if a.get("topic"):
-        argv += ["--topic", a["topic"]]
-    if a.get("max_messages") is not None:
-        argv += ["--max-messages", str(a["max_messages"])]
-    return argv
-
-
-def _build_join(a):
-    argv = ["join", _require(a, "channel"), "--as", _require(a, "identity")]
-    if a.get("topic"):
-        argv += ["--topic", a["topic"]]
-    if a.get("max_messages") is not None:
-        argv += ["--max-messages", str(a["max_messages"])]
-    return argv
-
-
 def _build_say(a):
-    argv = ["say", _require(a, "channel"), _require(a, "text")]
-    if a.get("identity"):
-        argv += ["--as", a["identity"]]
+    argv = ["say", _require(a, "channel")]
+    if a.get("text") is not None:
+        argv.append(a["text"])
+    if a.get("file"):
+        argv += ["--file", a["file"]]
+    if a.get("to"):
+        argv += ["--to", a["to"]]
+    if a.get("to_all"):
+        argv += ["--to-all"]
+    if a.get("to_none"):
+        argv += ["--to-none"]
+    argv += _as_flag(a)
     return argv
+
+
+def _build_sync(a):
+    return ["sync"]
+
+
+def _build_mode(a):
+    argv = ["mode", _require(a, "channel"), _require(a, "mode")]
+    argv += _as_flag(a)
+    if a.get("yes"):
+        argv += ["--yes"]
+    return argv
+
+
+def _build_pending(a):
+    return ["pending", _require(a, "channel")] + _as_flag(a)
 
 
 def _build_read(a):
-    argv = ["read", _require(a, "channel")]
-    if a.get("identity"):
-        argv += ["--as", a["identity"]]
+    argv = ["read", _require(a, "channel")] + _as_flag(a)
     if a.get("peek"):
         argv += ["--peek"]
     if a.get("all"):
         argv += ["--all"]
+    if a.get("json"):
+        argv += ["--json"]
     return argv
 
 
 def _build_leave(a):
-    argv = ["leave", _require(a, "channel")]
-    if a.get("identity"):
-        argv += ["--as", a["identity"]]
-    return argv
+    return ["leave", _require(a, "channel")] + _as_flag(a)
 
 
 def _build_reopen(a):
-    argv = ["reopen", _require(a, "channel")]
-    if a.get("max_messages") is not None:
-        argv += ["--max-messages", str(a["max_messages"])]
-    return argv
+    return ["reopen", _require(a, "channel")] + _max_messages_flag(a)
 
 
 def _build_invite(a):
@@ -153,7 +190,26 @@ def _build_invite(a):
 
 
 def _build_channels(a):
-    return ["channels"]
+    argv = ["channels"]
+    if a.get("json"):
+        argv += ["--json"]
+    if a.get("all"):
+        argv += ["--all"]
+    return argv
+
+
+def _build_briefing(a):
+    argv = ["briefing", _require(a, "channel")]
+    if a.get("text") is not None:
+        argv.append(a["text"])
+    if a.get("file"):
+        argv += ["--file", a["file"]]
+    argv += _as_flag(a)
+    return argv
+
+
+def _build_identify(a):
+    return ["identify", _require(a, "identity")]
 
 
 def _build_doctor(a):
@@ -161,7 +217,10 @@ def _build_doctor(a):
 
 
 def _build_fingerprint(a):
-    return ["fingerprint"]
+    argv = ["fingerprint"]
+    if a.get("of"):
+        argv += ["--of", a["of"]]
+    return argv
 
 
 def _build_reload(a):
@@ -178,8 +237,11 @@ def _build_reload(a):
 _CHANNEL = {"type": "string",
             "description": "Channel name, 1-64 chars of [a-z0-9._-]."}
 _IDENTITY = {"type": "string",
-             "description": "This agent's identity in the room, 1-64 chars "
-                             "of [a-z0-9._-]."}
+             "description": "This agent's identity, 1-64 chars of "
+                             "[a-z0-9._-]. Defaults to what this project "
+                             "already joined this channel as, or the "
+                             "project-wide identity set by the identify "
+                             "tool, if either exists."}
 _SERVER = {"type": "string",
            "description": "zonai server URL. Defaults to $LLM_CHAT_SERVER "
                            "or http://localhost:7717."}
@@ -188,8 +250,49 @@ _TOPIC = {"type": "string",
 _MAX_MESSAGES = {"type": "integer",
                   "description": "Message cap before the channel auto-closes "
                                   "(default 200)."}
+_FILE_NOTE = ("Do not pass \"-\" here to mean stdin — this is an MCP tool "
+              "call, not a terminal, and there is no stdin to read; pass "
+              "text directly instead.")
 
 TOOLS = [
+    {
+        "name": "open",
+        "description": "Create a channel (or join one that already exists) "
+                        "and return the invite block for another agent. "
+                        "broadcast makes it a room every identified project "
+                        "auto-joins, where a message wakes nobody by "
+                        "default; briefing sets its initial house rules.",
+        "build": _build_open,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "channel": _CHANNEL, "identity": _IDENTITY, "topic": _TOPIC,
+                "broadcast": {"type": "boolean",
+                              "description": "Make this a broadcast room."},
+                "briefing": {"type": "string",
+                             "description": "House rules shown to every "
+                                            "agent that joins, up to 2000 "
+                                            "chars."},
+                "max_messages": _MAX_MESSAGES, "server": _SERVER,
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "join",
+        "description": "Join an existing channel (or create it if "
+                        "missing), without printing the invite block.",
+        "build": _build_join,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {"channel": _CHANNEL, "identity": _IDENTITY,
+                            "topic": _TOPIC, "max_messages": _MAX_MESSAGES,
+                            "server": _SERVER},
+            "required": ["channel"],
+        },
+    },
     {
         "name": "setup",
         "description": "Set THIS project up and join a channel, in one "
@@ -211,57 +314,101 @@ TOOLS = [
                                                 "may."},
                 "server": _SERVER,
             },
-            "required": ["channel", "identity"],
-        },
-    },
-    {
-        "name": "open",
-        "description": "Create a channel (or join one that already exists) "
-                        "and return the invite block for another agent.",
-        "build": _build_open,
-        "timeout": 30,
-        "schema": {
-            "type": "object",
-            "properties": {"channel": _CHANNEL, "identity": _IDENTITY,
-                            "topic": _TOPIC, "max_messages": _MAX_MESSAGES,
-                            "server": _SERVER},
-            "required": ["channel", "identity"],
-        },
-    },
-    {
-        "name": "join",
-        "description": "Join an existing channel (or create it if "
-                        "missing), without printing the invite block.",
-        "build": _build_join,
-        "timeout": 30,
-        "schema": {
-            "type": "object",
-            "properties": {"channel": _CHANNEL, "identity": _IDENTITY,
-                            "topic": _TOPIC, "max_messages": _MAX_MESSAGES,
-                            "server": _SERVER},
-            "required": ["channel", "identity"],
+            "required": ["channel"],
         },
     },
     {
         "name": "say",
         "description": "Send a message to a channel, as the given identity "
-                        "or the one this project already joined as.",
+                        "or the one this project resolves to. Give exactly "
+                        "one of text or file — " + _FILE_NOTE + " Control "
+                        "who it wakes with to (comma-separated identities), "
+                        "to_all, or to_none; give at most one. With none of "
+                        "the three, the room's mode decides: ordinary rooms "
+                        "wake every member, broadcast rooms wake nobody.",
         "build": _build_say,
         "timeout": 30,
         "schema": {
             "type": "object",
-            "properties": {"channel": _CHANNEL,
-                            "text": {"type": "string",
-                                     "description": "The message body."},
-                            "identity": _IDENTITY, "server": _SERVER},
-            "required": ["channel", "text"],
+            "properties": {
+                "channel": _CHANNEL,
+                "text": {"type": "string", "description": "The message body."},
+                "file": {"type": "string",
+                         "description": "Read the message from this path "
+                                        "instead of text."},
+                "to": {"type": "string",
+                       "description": "Wake only these identities "
+                                      "(comma-separated). Everyone else "
+                                      "still sees it, just not woken."},
+                "to_all": {"type": "boolean",
+                           "description": "Wake every member."},
+                "to_none": {"type": "boolean",
+                            "description": "Wake nobody; leave it for "
+                                           "people to find."},
+                "identity": _IDENTITY, "server": _SERVER,
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "sync",
+        "description": "Pick up broadcast rooms opened or converted to "
+                        "broadcast since this project last identified. "
+                        "Silent and a no-op if this project has never run "
+                        "identify.",
+        "build": _build_sync,
+        "timeout": 30,
+        "schema": {"type": "object", "properties": {"server": _SERVER},
+                   "required": []},
+    },
+    {
+        "name": "mode",
+        "description": "Convert a room between ordinary (a message wakes "
+                        "every member; for a live conversation) and "
+                        "broadcast (every identified project auto-joins; a "
+                        "message wakes nobody by default; for reference "
+                        "material). Refuses without yes, since it changes "
+                        "how every OTHER member is interrupted.",
+        "build": _build_mode,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "channel": _CHANNEL,
+                "mode": {"type": "string", "enum": ["broadcast", "ordinary"],
+                         "description": "The mode to convert this room to."},
+                "identity": _IDENTITY,
+                "yes": {"type": "boolean",
+                        "description": "Confirm the conversion; without "
+                                       "this the CLI only explains the "
+                                       "impact and refuses."},
+                "server": _SERVER,
+            },
+            "required": ["channel", "mode"],
+        },
+    },
+    {
+        "name": "pending",
+        "description": "What is waiting in a channel, as JSON, WITHOUT "
+                        "consuming it — including whether any of it wakes "
+                        "this identity. Check this before read when you "
+                        "only need to decide whether reading is worth it.",
+        "build": _build_pending,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {"channel": _CHANNEL, "identity": _IDENTITY,
+                            "server": _SERVER},
+            "required": ["channel"],
         },
     },
     {
         "name": "read",
         "description": "Pull messages waiting in a channel: unread since "
                         "your last read and never your own, unless all is "
-                        "set, which returns the whole transcript.",
+                        "set, which returns the whole transcript. json "
+                        "returns one machine-readable record per message "
+                        "instead of the rendered transcript.",
         "build": _build_read,
         "timeout": 30,
         "schema": {
@@ -274,6 +421,9 @@ TOOLS = [
                         "description": "Return the whole transcript from "
                                        "the beginning, including your own "
                                        "messages."},
+                "json": {"type": "boolean",
+                         "description": "One record per message instead of "
+                                        "the rendered transcript."},
                 "server": _SERVER,
             },
             "required": ["channel"],
@@ -320,11 +470,64 @@ TOOLS = [
     {
         "name": "channels",
         "description": "List every channel that exists, its members, and "
-                        "message counts.",
+                        "message counts. all also lists closed channels "
+                        "(which join refuses). json returns one "
+                        "machine-readable record per room instead of the "
+                        "rendered listing.",
         "build": _build_channels,
         "timeout": 30,
-        "schema": {"type": "object", "properties": {"server": _SERVER},
-                   "required": []},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "json": {"type": "boolean",
+                         "description": "One record per room instead of "
+                                        "the rendered listing."},
+                "all": {"type": "boolean",
+                        "description": "Include closed channels."},
+                "server": _SERVER,
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "briefing",
+        "description": "Set or replace the house rules shown to every "
+                        "agent that joins a channel. Give exactly one of "
+                        "text or file — " + _FILE_NOTE + " Capped at 2000 "
+                        "characters — say the rules, link the rest.",
+        "build": _build_briefing,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "channel": _CHANNEL,
+                "text": {"type": "string", "description": "The house rules."},
+                "file": {"type": "string",
+                         "description": "Read the house rules from this "
+                                        "path instead of text."},
+                "identity": _IDENTITY, "server": _SERVER,
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "identify",
+        "description": "Set this project's identity, once, so open/join/"
+                        "setup no longer need identity and this project "
+                        "auto-joins every existing broadcast room.",
+        "build": _build_identify,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "identity": {"type": "string",
+                             "description": "The identity this project "
+                                            "adopts, 1-64 chars of "
+                                            "[a-z0-9._-]."},
+                "server": _SERVER,
+            },
+            "required": ["identity"],
+        },
     },
     {
         "name": "doctor",
@@ -339,11 +542,21 @@ TOOLS = [
     },
     {
         "name": "fingerprint",
-        "description": "Hash of this checkout's hook scripts, used to "
-                        "detect installs that are running stale wiring.",
+        "description": "Hash of a checkout's hook scripts, used to detect "
+                        "installs that are running stale wiring.",
         "build": _build_fingerprint,
         "timeout": 10,
-        "schema": {"type": "object", "properties": {}, "required": []},
+        "schema": {
+            "type": "object",
+            "properties": {
+                "of": {"type": "string",
+                       "description": "Which tree to hash. Defaults to "
+                                      "this checkout; a repo wired from a "
+                                      "vendored copy must be compared "
+                                      "against that copy instead."},
+            },
+            "required": [],
+        },
     },
     {
         "name": "reload",
