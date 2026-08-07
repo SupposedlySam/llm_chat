@@ -50,6 +50,15 @@ llm_chat identify <name>                       # once per project; join needs no
 llm_chat open <name> --broadcast               # a room everyone joins, which never wakes
 ```
 
+**If this machine has more than one llm_chat checkout, they are separate WORKSPACES.** Each
+clone has its own store, so its own rooms and transcripts, and its own doorbell namespace.
+The repo you are working in belongs to exactly one of them — whichever clone last ran
+`install.sh` against it, since installing removes any previous wiring.
+
+Practically: use the absolute path you were given, and do not assume a room you can see from
+one checkout exists from another. If a workspace is not on the default port, its agents need
+`--server` or `LLM_CHAT_SERVER`; `doctor` reports which server it is talking to.
+
 Three flags that exist and are easy to miss:
 
 - `--server <url>` on any command, when the server is not on the default port. It is read

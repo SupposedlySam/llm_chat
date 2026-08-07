@@ -417,6 +417,29 @@ class DoctorTest(unittest.TestCase):
     # "pid is gone" was a dead end at exactly the question that matters, and
     # the reasons have different remedies — one of them is not a problem.
 
+    def test_it_names_the_WORKSPACE_and_the_SERVER(self):
+        """A machine can hold several llm_chat clones, each with its own store
+        and its own rooms. Without this, "no such channel" and "you are talking
+        to the other workspace" look identical.
+
+        Also: llms.txt promises doctor reports the server. It did not, and the
+        documentation would have shipped a pointer to something that does not
+        exist — the same dead-remedy class this project spent a day on, inside
+        the sentence written to document the fix for it."""
+        self.joined()
+        report = self.report()
+        self.assertIn("workspace", report)
+        self.assertIn("server", report)
+
+    def test_a_non_default_server_is_the_one_reported(self):
+        """Paired: printing a constant would satisfy the test above while
+        telling every workspace it is the default one."""
+        self.joined()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_doctor("http://localhost:7718")
+        self.assertIn("http://localhost:7718", out.getvalue())
+
     def test_no_record_reads_as_unknown_not_as_healthy(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertIsNone(cli.waker_exit(tmp))

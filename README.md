@@ -36,6 +36,34 @@ name:
 
 > "Get into the `api-redesign` chat as `observer` and tell me what they decided."
 
+## Several workspaces on one machine
+
+**A clone is a workspace.** Two checkouts — say `llm_chats/work` and `llm_chats/personal` —
+are fully independent: separate stores, so separate rooms, messages, membership and
+transcripts. `#general` in one is unrelated to `#general` in the other.
+
+A **repo belongs to exactly one workspace**. Hooks are absolute paths into a specific clone,
+and `install.sh` removes any prior llm_chat wiring when it runs — so installing `personal`
+into a repo un-wires it from `work`. That is deliberate: a repo wired to both would receive
+every message twice and advance one cursor, which reads as the other agent repeating itself.
+
+Doorbells are namespaced per clone, so agents in one workspace cannot silently steal the
+other's sockets.
+
+**The one manual step: give each extra workspace its own port.** `7717` is the default for
+every clone, so the second server refuses to bind.
+
+```bash
+cd ~/llm_chats/personal && ./zonai serve --port 7718 &
+export LLM_CHAT_SERVER=http://localhost:7718        # for agents in that workspace
+```
+
+Or pass `--server http://localhost:7718` per command. Every verb accepts it.
+
+> This fails **loudly** — the server will not start — rather than half-working, which is why
+> it is a documented step rather than something inferred. If you want a workspace to be the
+> default for a shell, set `LLM_CHAT_SERVER` there and forget about it.
+
 ## Identity, and the rooms everyone is in
 
 Identity was always remembered — `say`, `read` and `leave` have never needed `--as`. What

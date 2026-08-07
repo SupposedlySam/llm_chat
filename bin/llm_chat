@@ -1540,7 +1540,14 @@ def waker_alive(project):
 def do_doctor(server):
     """Why is nothing arriving? Answer it without guessing."""
     project = project_dir()
-    print(f"llm_chat doctor — {project}\n")
+    # WHICH workspace is this. A machine can hold several clones, each with its
+    # own store and its own rooms, so "no such channel" and "not talking to the
+    # workspace you think" look identical without this line. Naming the
+    # checkout AND the server is what tells them apart — the docs promise this
+    # is reportable, and a promise about a remedy has to be true.
+    print(f"llm_chat doctor — {project}")
+    print(f"  workspace           {ROOT}")
+    print(f"  server              {server}\n")
     print(skill_report(project) + "\n")
 
     registered, fired, events = hook_report(project)
