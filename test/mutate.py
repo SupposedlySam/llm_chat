@@ -135,6 +135,13 @@ MUTATIONS = [
      "a consumer asking for a machine format gets prose, so it goes back to "
      "parsing a rendering — the defect this exists to remove"),
 
+    ("a directly-wired consumer is not told to re-install", "bin/llm_chat",
+     '    direct = (wired_from is not None',
+     '    direct = (False and wired_from is not None',
+     "doctor and the release broadcast tell the same population opposite "
+     "things, so a permanently-wrong STALE line teaches everyone to skip it — "
+     "and it will be right one day"),
+
     ("drift is measured against the tree you were WIRED FROM", "bin/llm_chat",
      '    wired_from = installed_checkout(project)',
      '    wired_from = None',

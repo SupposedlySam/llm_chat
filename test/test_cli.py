@@ -508,6 +508,35 @@ class DoctorTest(unittest.TestCase):
         with open(os.path.join(d, "installed.json"), "w") as f:
             json.dump({"fingerprint": fingerprint, "checkout": checkout}, f)
 
+    def test_a_DIRECT_consumer_is_not_told_to_reinstall(self):
+        """Its hooks are absolute paths into this checkout, so it is already
+        running the current scripts and only the STAMP is behind.
+
+        Reported by an agent standing in two places at once: a broadcast told
+        the directly-wired population "you need do nothing" while doctor told
+        the same population to re-install. Both true about different facts, and
+        a consumer cannot follow both. The expensive half is not a wasted
+        re-install — it is that a line permanently on, and permanently wrong
+        for this reader, teaches them to skip it, and it will be right one day.
+        """
+        here = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        self.wired(here, fingerprint="old-stamp")
+        text = self.report()
+        self.assertIn("stamp is behind", text)
+        self.assertNotIn("STALE:", text)
+        self.assertIn("already running the current scripts", text)
+
+    def test_a_VENDORED_consumer_that_drifted_still_gets_the_loud_one(self):
+        """Paired, and the reason the check exists at all: a vendored copy that
+        has drifted really is running old code, and softening that for everyone
+        would remove the only warning that matters."""
+        with tempfile.TemporaryDirectory() as tree:
+            os.makedirs(os.path.join(tree, "bin"))
+            self.wired(tree, fingerprint="old-stamp")
+            text = self.report()
+            self.assertIn("STALE", text)
+            self.assertIn("install.sh", text)
+
     def test_a_vendored_consumer_is_told_not_to_reinstall_from_elsewhere(self):
         """Re-installing from any other tree would repoint their hooks and
         silently undo the vendoring, so the remedy names THEIR tree and says

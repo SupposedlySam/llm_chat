@@ -1622,7 +1622,32 @@ def do_doctor(server):
               f"    {os.path.join(ROOT, 'install.sh')} {project}")
         stamp = None            # nothing meaningful to compare against
     current = wiring_fingerprint(source)
-    if stamp and stamp != current:
+    # A DIRECTLY-WIRED consumer is already running these scripts. Its hooks are
+    # absolute paths into this checkout, so the code it executes is current by
+    # construction and only the STAMP is behind. Saying "STALE, re-install"
+    # there is true about the record and wrong about the risk — and a broadcast
+    # telling the same population "you need do nothing" then contradicts it.
+    #
+    # Reported by the agent standing in both places at once. The expensive half
+    # is not the wasted re-install: it is that a line permanently on, and
+    # permanently wrong for this reader, teaches them to skip it — and it will
+    # be right some day. A warning that cries wolf about the wrong population is
+    # worse than none, which is this project's own finding turned on itself.
+    # Only when we KNOW it was wired from here. A stamp with no `checkout`
+    # predates that field, and unknown provenance cannot prove the scripts are
+    # current — a vendored consumer with an old stamp would get the soft
+    # message and stay on old code. Absence is not evidence of directness, and
+    # the safe default for "we cannot tell" is the loud one. Caught by an older
+    # test whose fixture omits the field, which is exactly the population this
+    # would have got wrong.
+    direct = (wired_from is not None
+              and os.path.abspath(source) == os.path.abspath(ROOT))
+    if stamp and stamp != current and direct:
+        print(f"\nstamp is behind ({stamp} → {current}), but your hooks are "
+              f"ABSOLUTE PATHS into\nthis checkout, so you are already running "
+              f"the current scripts. Nothing to do\nunless a hook is listed "
+              f"missing above — re-installing would only refresh the\nrecord.")
+    elif stamp and stamp != current:
         if checkout_dirty():
             print("\nNOTE: that checkout has UNCOMMITTED changes. Re-installing "
                   "would wire you to\n  them, not to a commit anybody blessed — "
