@@ -14,8 +14,10 @@
 #   1. stops this project's background waker, if one is polling
 #   2. leaves any joined channels (skip with --keep-membership)
 #   3. strips llm_chat hooks from settings.local.json AND settings.json
-#   4. deletes .llm_chat/ and any legacy .claude/settings.json.bak.*
-#   5. removes the .gitignore entry it added for .llm_chat/
+#   4. unregisters the llm_chat MCP server (local scope), if `claude` is on
+#      PATH and one was registered
+#   5. deletes .llm_chat/ and any legacy .claude/settings.json.bak.*
+#   6. removes the .gitignore entry it added for .llm_chat/
 #
 # It only ever removes things it can positively identify as ours: hooks whose
 # command names llm-chat-deliver or llm-chat-wake, and the exact comment+entry
@@ -179,7 +181,19 @@ for f in settings.local.json settings.json; do
   [ "$RESULT" = "nothing of ours" ] || say "$f: $RESULT"
 done
 
-# 4. Local state, plus the backups older installs leaked into the repo.
+# 4. Unregister the MCP server install.sh may have added. Local scope only —
+#    that is the only scope install.sh ever writes to, so it is the only one
+#    this is entitled to touch. Best-effort: a missing `claude` binary must
+#    not block the rest of teardown, and "never registered" is the common
+#    case, not an error.
+if command -v claude >/dev/null 2>&1 && (cd "$TARGET" && claude mcp get llm_chat) >/dev/null 2>&1; then
+  say "unregister llm_chat MCP server (local scope)"
+  if [ "$DRY" = 0 ]; then
+    (cd "$TARGET" && claude mcp remove llm_chat --scope local >/dev/null 2>&1) || true
+  fi
+fi
+
+# 5. Local state, plus the backups older installs leaked into the repo.
 if [ -d "$TARGET/.llm_chat" ]; then
   say "delete .llm_chat/"
   [ "$DRY" = 1 ] || rm -rf "$TARGET/.llm_chat"
@@ -194,7 +208,7 @@ if [ -d "$TARGET/.claude" ] && [ -z "$(ls -A "$TARGET/.claude" 2>/dev/null)" ]; 
   [ "$DRY" = 1 ] || rmdir "$TARGET/.claude"
 fi
 
-# 5. The .gitignore entry. The .claude/settings.local.json line is KEPT by
+# 6. The .gitignore entry. The .claude/settings.local.json line is KEPT by
 #    default: other tools put machine-specific absolute paths in that file too,
 #    and un-ignoring it could get someone's local config committed. Removing
 #    our line is safe; removing theirs is not our call. --purge-gitignore opts

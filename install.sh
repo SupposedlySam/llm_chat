@@ -49,7 +49,8 @@ cp "$LOCAL" "$BACKUPS/$(basename "$TARGET").settings.local.json.$(date +%s)"
 
 HOOK="$HERE/bin/llm-chat-deliver"
 WAKE="$HERE/bin/llm-chat-wake"
-chmod +x "$HOOK" "$WAKE" "$HERE/bin/llm_chat"
+MCP="$HERE/bin/llm-chat-mcp"
+chmod +x "$HOOK" "$WAKE" "$MCP" "$HERE/bin/llm_chat"
 
 python3 - "$LOCAL" "$SHARED" "$HOOK" "$WAKE" <<'PY'
 import json, os, sys
@@ -216,6 +217,36 @@ add_ignore() {
 }
 add_ignore ".llm_chat/" "llm_chat identity for this project"
 add_ignore ".claude/settings.local.json" "machine-local hook config (absolute paths)"
+
+# Register the MCP server too, so the same CLI shows up as structured tools
+# for an MCP client, not just delivered messages. Local scope, for the same
+# reason the hook went into settings.local.json rather than settings.json:
+# the command is an absolute path to this machine's checkout, and `claude
+# mcp add` for local scope already keeps that out of anything tracked
+# (~/.claude.json, not the repo). Remove-then-add rather than checking first,
+# matching "replace rather than stack" above — re-running always converges on
+# the current checkout's path rather than leaving a stale one in place.
+#
+# Best-effort: the hook is what makes this install work at all, and neither a
+# missing `claude` binary nor an older CLI without `mcp add` may fail the rest
+# of it over an optional convenience.
+MCP_NAME="llm_chat"
+if command -v claude >/dev/null 2>&1; then
+  if MCP_OUT="$(
+      cd "$TARGET" \
+        && { claude mcp remove "$MCP_NAME" --scope local >/dev/null 2>&1 || true; } \
+        && claude mcp add --scope local "$MCP_NAME" -- python3 "$MCP" 2>&1
+    )"; then
+    echo "registered $MCP_NAME as an MCP server (local scope) in $TARGET"
+  else
+    echo "could not register the MCP server — the hook above is unaffected. Register by hand:"
+    echo "  cd $TARGET && claude mcp add --scope local $MCP_NAME -- python3 $MCP"
+    printf '%s\n' "$MCP_OUT" | sed 's/^/  /'
+  fi
+else
+  echo "\`claude\` not on PATH, skipped the MCP server — register by hand once it is:"
+  echo "  cd $TARGET && claude mcp add --scope local $MCP_NAME -- python3 $MCP"
+fi
 
 cat <<EOF
 
