@@ -1140,10 +1140,48 @@ def do_read(server, name, identity, peek=False, all_messages=False,
     return waiting
 
 
-def do_leave(server, name, identity):
+def announce(server, name, identity, text, audience):
+    """Say something on the way out, best-effort.
+
+    A closed room, or one already at its message cap, makes `do_say` raise —
+    and neither is a reason to fail the leave itself. Silent on failure,
+    deliberately: the membership update below is what actually matters, and
+    an agent that cannot tell a departure was announced from one that was not
+    would just stop trusting this at all.
+    """
+    try:
+        do_say(server, name, identity, text, audience)
+    except SystemExit:
+        pass
+
+
+def do_leave(server, name, identity, ask=False):
     member = get_membership(server, name, identity)
     if member is None:
         raise SystemExit(f"{identity} has not joined {name}")
+
+    if ask:
+        # THE NEGOTIATION STEP. Still a member afterward — not done, not
+        # forgotten locally, still polled and still addressable — so this is
+        # exactly a `say` with an agreed meaning, not a new kind of state.
+        # Normal wake rules apply (ordinary rooms wake everyone by default)
+        # because unlike the plain departure below, this one is actually
+        # asking for an answer.
+        announce(server, name, identity,
+                 "I think I'm done here — say something if you still need "
+                 f"me, or I'll leave with: llm_chat leave {name}", None)
+        print(f"{identity} asked #{name} whether they are still needed — "
+              f"still a member; run `llm_chat leave {name}` when ready")
+        return
+
+    # AUDIENCE_NONE: this is an FYI, not a question, and the departing agent
+    # will not be there to see a reply — waking the room just to say goodbye
+    # is exactly the cost this project asks senders to weigh before paying.
+    announce(server, name, identity,
+             f"{identity} is done here — nothing further unless something "
+             f"comes up. Rejoin any time: llm_chat join {name} --as {identity}",
+             AUDIENCE_NONE)
+
     update(server, "memberships", eq("id", member["id"]), {"done": b(True)})
 
     # Forget it locally too. Without this, joined.json only ever grows: every
@@ -2009,6 +2047,10 @@ def build_parser():
     p = sub.add_parser("leave", help="say you are finished")
     p.add_argument("channel")
     p.add_argument("--as", dest="identity")
+    p.add_argument("--ask", action="store_true",
+                   help="ask whether you are still needed instead of "
+                        "leaving outright — stays a member; a plain leave "
+                        "when you are ready finishes it")
 
     p = sub.add_parser("reopen", help="bring a closed channel back")
     p.add_argument("channel")
@@ -2122,7 +2164,7 @@ def main() -> int:
         do_read(server, args.channel, identity, args.peek, args.all_messages,
                 args.as_json)
     elif args.cmd == "leave":
-        do_leave(server, args.channel, identity)
+        do_leave(server, args.channel, identity, args.ask)
     return 0
 
 

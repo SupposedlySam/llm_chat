@@ -249,6 +249,10 @@ class ArgvBuildersTest(McpTestCase):
         argv = self.call("leave", {"channel": "c", "identity": "me"})
         self.assertEqual(argv, ["leave", "c", "--as", "me"])
 
+    def test_leave_with_ask(self):
+        argv = self.call("leave", {"channel": "c", "ask": True})
+        self.assertEqual(argv, ["leave", "c", "--ask"])
+
     def test_reopen_without_max_messages(self):
         self.assertEqual(self.call("reopen", {"channel": "c"}),
                          ["reopen", "c"])

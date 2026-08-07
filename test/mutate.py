@@ -447,6 +447,9 @@ NOT_SWEPT = {
         "write is atomic the way remember's is",
     "bin/llm_chat:remember": "atomicity asserted directly — the temp file must "
         "not survive the rename",
+    "bin/llm_chat:announce": "both branches asserted directly — a normal "
+        "departure produces the message, and one a closed or capped room "
+        "refuses does not stop the leave that called it",
 
     # The Slack bridge. Everything network- or CLI-facing is behind a seam and
     # asserted directly against a fake; what is swept is the one check whose

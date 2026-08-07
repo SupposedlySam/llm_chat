@@ -178,7 +178,10 @@ def _build_read(a):
 
 
 def _build_leave(a):
-    return ["leave", _require(a, "channel")] + _as_flag(a)
+    argv = ["leave", _require(a, "channel")] + _as_flag(a)
+    if a.get("ask"):
+        argv += ["--ask"]
+    return argv
 
 
 def _build_reopen(a):
@@ -432,13 +435,21 @@ TOOLS = [
     {
         "name": "leave",
         "description": "Say you are finished in a channel. If every member "
-                        "is done, the channel closes.",
+                        "is done, the channel closes. ask announces you "
+                        "think you're done and invites a reply instead of "
+                        "leaving outright — you stay a member; call this "
+                        "again without ask when you're actually ready to go.",
         "build": _build_leave,
         "timeout": 30,
         "schema": {
             "type": "object",
-            "properties": {"channel": _CHANNEL, "identity": _IDENTITY,
-                            "server": _SERVER},
+            "properties": {
+                "channel": _CHANNEL, "identity": _IDENTITY,
+                "ask": {"type": "boolean",
+                        "description": "Ask whether you're still needed "
+                                       "instead of leaving outright."},
+                "server": _SERVER,
+            },
             "required": ["channel"],
         },
     },

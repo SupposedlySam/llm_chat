@@ -100,6 +100,47 @@ class RoomTest(unittest.TestCase):
         self.quiet(cli.do_leave, "http://127.0.0.1:1", "room", "other")
         self.assertEqual(self.fake.get_channel("room")["closed"], 1)
 
+    def test_leave_announces_the_departure(self):
+        """Nobody else learns you left otherwise — the print above only ever
+        reached the leaver's own stdout."""
+        self.fake.channel("room")
+        self.fake.membership("room", "me", done=0)
+        self.fake.membership("room", "other", done=0)
+        self.quiet(cli.do_leave, "http://127.0.0.1:1", "room", "me")
+        messages = self.fake.tables["messages"]
+        self.assertEqual(len(messages), 1)
+        self.assertEqual(messages[0]["from_identity"], "me")
+        self.assertEqual(messages[0]["audience"], cli.AUDIENCE_NONE,
+                         "an FYI must not wake anyone just to say goodbye")
+
+    def test_ask_announces_but_does_not_finalize(self):
+        """The negotiation step: still a member, still polled, still
+        reachable — a `say` with an agreed meaning, not a departure."""
+        self.fake.channel("room")
+        self.fake.membership("room", "me", done=0)
+        self.fake.membership("room", "other", done=0)
+        cli.remember("room", "me", "http://127.0.0.1:1")
+        _, out = self.quiet(cli.do_leave, "http://127.0.0.1:1", "room", "me",
+                            ask=True)
+        self.assertIn("asked", out)
+        member = self.fake.get_membership("room", "me")
+        self.assertEqual(member["done"], 0, "asking must not mark done")
+        self.assertIn("room", cli.read_joined(),
+                      "asking must not forget the room locally")
+        messages = self.fake.tables["messages"]
+        self.assertEqual(len(messages), 1)
+        self.assertIsNone(messages[0]["audience"],
+                          "asking wants an answer, so normal wake rules "
+                          "apply rather than AUDIENCE_NONE")
+
+    def test_a_departure_that_cannot_be_announced_still_completes(self):
+        """A closed or capped room makes `do_say` raise — and that must
+        never block the actual membership update, which is what matters."""
+        self.fake.channel("room", closed=1, closed_reason="testing")
+        self.fake.membership("room", "me", done=0)
+        self.quiet(cli.do_leave, "http://127.0.0.1:1", "room", "me")
+        self.assertEqual(self.fake.get_membership("room", "me")["done"], 1)
+
     # ── reopening ───────────────────────────────────────────────────────────
     def test_reopen_clears_the_closure(self):
         self.fake.channel("room", closed=1, closed_reason="every member is done")
