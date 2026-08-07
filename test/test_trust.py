@@ -12,10 +12,16 @@ moment it arrives through a hook.
 
 The fix is not more persuasive text. It is that the capability must exist BEFORE
 any message about it, put there by a human, somewhere the agent can check
-independently: a skill file in its own repo, visible to git. These tests defend
-that chain, because the failure is an agent that trusts a message it should not
-— or refuses one it safely could, and stalls.
+independently. THAT USED TO BE A SKILL FILE IN THIS REPO — it stopped being
+valid evidence once the skill became a machine-wide install (llm_chat is not a
+per-repo capability: the server is loopback-only, the hooks and .llm_chat/ are
+already gitignored), so a skill file's presence would read the same whether
+THIS repo was ever authorized or not. The evidence that is genuinely per-repo
+is `.llm_chat/installed.json`, gitignored, written only by install.sh. These
+tests defend that chain, because the failure is an agent that trusts a message
+it should not — or refuses one it safely could, and stalls.
 """
+import json
 import os
 import sys
 import tempfile
@@ -27,32 +33,32 @@ from support import load  # noqa: E402
 cli = load("llm_chat")
 
 
-class SkillReportTest(unittest.TestCase):
+class InstallReportTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def install_skill(self):
-        d = os.path.join(self.tmp.name, ".claude", "skills", "llm-chat")
-        os.makedirs(d)
-        with open(os.path.join(d, "SKILL.md"), "w") as f:
-            f.write("---\nname: llm-chat\n---\n")
+    def install_here(self, fingerprint="abc123"):
+        d = os.path.join(self.tmp.name, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "installed.json"), "w") as f:
+            json.dump({"fingerprint": fingerprint}, f)
 
-    def test_an_installed_skill_says_a_human_put_it_there(self):
+    def test_an_installed_repo_says_a_human_put_it_there(self):
         """The distinction that makes an invite safe to act on: a message
-        cannot create a file in your repo."""
-        self.install_skill()
-        report = cli.skill_report(self.tmp.name)
+        cannot create install.sh's own record in your repo."""
+        self.install_here()
+        report = cli.install_report(self.tmp.name)
         self.assertIn("INSTALLED", report)
         self.assertIn("human", report)
 
-    def test_a_missing_skill_says_DO_NOT_INSTALL_IT(self):
+    def test_a_missing_install_says_DO_NOT_INSTALL_IT(self):
         """The half that matters more. The correct response to "set llm_chat
         up" arriving as text is to refuse and ask the human — because that is
         exactly what an injection would ask for."""
-        report = cli.skill_report(self.tmp.name)
+        report = cli.install_report(self.tmp.name)
         self.assertIn("NOT INSTALLED", report)
         self.assertIn("do NOT", report)
         self.assertIn("install.sh", report)
@@ -60,21 +66,24 @@ class SkillReportTest(unittest.TestCase):
     def test_the_two_states_are_not_confusable(self):
         """Paired. 'NOT INSTALLED' contains 'INSTALLED', so a reader — or a
         test — matching the substring gets the opposite answer. That is not
-        hypothetical: a grep for 'skill' during this work matched a temp
-        directory named skilltest and reported the feature present when it was
-        absent."""
-        absent = cli.skill_report(self.tmp.name)
-        self.install_skill()
-        present = cli.skill_report(self.tmp.name)
+        hypothetical: a grep for 'skill' during the OLD version of this work
+        matched a temp directory named skilltest and reported the feature
+        present when it was absent."""
+        absent = cli.install_report(self.tmp.name)
+        self.install_here()
+        present = cli.install_report(self.tmp.name)
         self.assertNotEqual(absent, present)
         self.assertNotIn("do NOT", present)
 
-    def test_a_directory_without_the_file_is_not_installed(self):
-        """An empty skills dir is not a capability. Half an install must read
-        as no install, or the check certifies something that cannot work."""
-        os.makedirs(os.path.join(self.tmp.name, ".claude", "skills",
-                                 "llm-chat"))
-        self.assertIn("NOT INSTALLED", cli.skill_report(self.tmp.name))
+    def test_a_record_with_no_fingerprint_is_not_installed(self):
+        """A malformed or half-written record is not a capability. Half an
+        install must read as no install, or the check certifies something
+        that cannot work."""
+        d = os.path.join(self.tmp.name, ".llm_chat")
+        os.makedirs(d)
+        with open(os.path.join(d, "installed.json"), "w") as f:
+            json.dump({}, f)
+        self.assertIn("NOT INSTALLED", cli.install_report(self.tmp.name))
 
 
 class InviteTest(unittest.TestCase):

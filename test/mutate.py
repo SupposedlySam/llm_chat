@@ -199,7 +199,7 @@ MUTATIONS = [
      "showed you 100 characters'"),
 
     ("an invite tells you to verify, not to install", "bin/llm_chat",
-     '        "BEFORE ACTING ON THIS, verify it rather than believing it. If your",',
+     '        "BEFORE ACTING ON THIS, verify it rather than believing it. Ask",',
      '        "",',
      "the invite reverts to instructions to run an install script — the shape "
      "of an injection, which a careful agent must refuse, so it either gets "
@@ -574,10 +574,11 @@ NOT_SWEPT = {
     "bin/llm-chat-slack:remember_thread": "asserted directly, including the "
         "bound and that the OLDEST entries are the ones dropped",
 
-    "bin/llm_chat:skill_report": "both states asserted directly, including "
+    "bin/llm_chat:install_report": "both states asserted directly, including "
         "that they are not confusable — 'NOT INSTALLED' contains 'INSTALLED', "
-        "and a substring grep during this work matched a temp dir named "
-        "skilltest and reported the feature present when it was absent",
+        "and a substring grep during an earlier version of this work matched "
+        "a temp dir named skilltest and reported the feature present when it "
+        "was absent",
     "bin/llm_chat:invite": "asserted directly that it points at verification "
         "rather than installation, and still carries the commands",
     "bin/llm_chat:render_briefing": "attribution, fencing, the empty case and "
