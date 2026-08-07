@@ -1,0 +1,470 @@
+#!/usr/bin/env python3
+"""llm-chat-mcp — the llm_chat CLI, spoken over MCP.
+
+Every llm_chat subcommand (setup, open, join, say, read, leave, reopen,
+invite, channels, doctor, fingerprint, reload) as one MCP tool each, so an MCP
+client calls `say` with a JSON object instead of building
+`llm_chat say <channel> "<text>" --as <identity>` as a shell string. The CLI
+does the actual work; this is a translation layer over stdio, nothing more.
+
+STDLIB ONLY, like every other entrypoint here — an MCP client that spawns this
+should not need a `pip install` to talk to it, any more than an agent should
+need one to say hello. That rules out the official `mcp` SDK, which is
+otherwise the easier way to build this. What is hand-rolled instead is small:
+MCP-over-stdio is newline-delimited JSON-RPC 2.0, and this server answers four
+methods (`initialize`, `ping`, `tools/list`, `tools/call`) and must never
+answer a fifth kind of message — a notification, meaning no `id` in the
+frame — even for a method it does not recognise, because the spec forbids a
+reply to one.
+
+WHY IT SHELLS OUT RATHER THAN IMPORTING `llm_chat` AS A LIBRARY: every hook in
+this repo already does it this way (see `llm-chat-deliver`), for the same
+reason — the CLI is the one place identity resolution, the read lock, and the
+zonai wire conventions live, and a second copy of any of them drifts from the
+first. A subprocess call also gets two things for free that an import would
+have to re-earn: argv is a list, never a shell string, so a message
+containing quotes or newlines needs no escaping at all; and a CLI crash stays
+on the far side of a process boundary instead of taking this server down with
+it.
+
+Install by pointing an MCP client at this file, e.g. for Claude Code:
+
+    claude mcp add llm_chat -- python3 /path/to/llm_chat/bin/llm-chat-mcp
+
+`LLM_CHAT_SERVER` and `CLAUDE_PROJECT_DIR` are read from THIS process's
+environment and inherited by the CLI subprocess exactly as they would be for
+a hook — an MCP server registered for a given project is spawned inside that
+project's session, so project_dir() in bin/llm_chat resolves the same way it
+does everywhere else.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CLI = os.path.join(HERE, "llm_chat")
+
+SERVER_NAME = "llm_chat"
+SERVER_VERSION = "1.0.0"
+DEFAULT_PROTOCOL_VERSION = "2025-06-18"
+
+
+class ToolError(Exception):
+    """A tools/call request refused before ever reaching the CLI — an
+    unknown tool name, a missing required argument. Reported as a JSON-RPC
+    error rather than a tool result, because the fault is in how the tool was
+    CALLED, not in anything llm_chat did."""
+
+
+def run_cli(argv, timeout):
+    """The one seam: every tool call reaches the CLI through here, and only
+    here, so a test replaces this single function instead of the shared
+    `subprocess` module. Combines stdout and stderr in the order the CLI
+    writes them — `SystemExit(msg)` in bin/llm_chat prints its message to
+    stderr, and a caller reading only stdout would see nothing at all for
+    every error path there is.
+    """
+    try:
+        done = subprocess.run([sys.executable, CLI] + argv,
+                              capture_output=True, text=True, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        return 1, "timed out after %ds: llm_chat %s" % (timeout, " ".join(argv))
+    return done.returncode, (done.stdout or "") + (done.stderr or "")
+
+
+def _require(arguments, key):
+    value = arguments.get(key)
+    if not value:
+        raise ToolError("'%s' is required" % key)
+    return value
+
+
+def _server_argv(arguments):
+    server = arguments.get("server")
+    return ["--server", server] if server else []
+
+
+def _build_setup(a):
+    argv = ["setup", _require(a, "channel"), "--as", _require(a, "identity")]
+    if a.get("topic"):
+        argv += ["--topic", a["topic"]]
+    if a.get("max_messages") is not None:
+        argv += ["--max-messages", str(a["max_messages"])]
+    if a.get("in_checkout"):
+        argv += ["--in-checkout"]
+    return argv
+
+
+def _build_open(a):
+    argv = ["open", _require(a, "channel"), "--as", _require(a, "identity")]
+    if a.get("topic"):
+        argv += ["--topic", a["topic"]]
+    if a.get("max_messages") is not None:
+        argv += ["--max-messages", str(a["max_messages"])]
+    return argv
+
+
+def _build_join(a):
+    argv = ["join", _require(a, "channel"), "--as", _require(a, "identity")]
+    if a.get("topic"):
+        argv += ["--topic", a["topic"]]
+    if a.get("max_messages") is not None:
+        argv += ["--max-messages", str(a["max_messages"])]
+    return argv
+
+
+def _build_say(a):
+    argv = ["say", _require(a, "channel"), _require(a, "text")]
+    if a.get("identity"):
+        argv += ["--as", a["identity"]]
+    return argv
+
+
+def _build_read(a):
+    argv = ["read", _require(a, "channel")]
+    if a.get("identity"):
+        argv += ["--as", a["identity"]]
+    if a.get("peek"):
+        argv += ["--peek"]
+    if a.get("all"):
+        argv += ["--all"]
+    return argv
+
+
+def _build_leave(a):
+    argv = ["leave", _require(a, "channel")]
+    if a.get("identity"):
+        argv += ["--as", a["identity"]]
+    return argv
+
+
+def _build_reopen(a):
+    argv = ["reopen", _require(a, "channel")]
+    if a.get("max_messages") is not None:
+        argv += ["--max-messages", str(a["max_messages"])]
+    return argv
+
+
+def _build_invite(a):
+    return ["invite", _require(a, "channel")]
+
+
+def _build_channels(a):
+    return ["channels"]
+
+
+def _build_doctor(a):
+    return ["doctor"]
+
+
+def _build_fingerprint(a):
+    return ["fingerprint"]
+
+
+def _build_reload(a):
+    argv = ["reload"]
+    if a.get("force"):
+        argv += ["--force"]
+    if a.get("i_know"):
+        argv += ["--i-know"]
+    return argv
+
+
+# ── schema fragments, shared by reference since none of these are ever
+# mutated after creation ─────────────────────────────────────────────────────
+_CHANNEL = {"type": "string",
+            "description": "Channel name, 1-64 chars of [a-z0-9._-]."}
+_IDENTITY = {"type": "string",
+             "description": "This agent's identity in the room, 1-64 chars "
+                             "of [a-z0-9._-]."}
+_SERVER = {"type": "string",
+           "description": "zonai server URL. Defaults to $LLM_CHAT_SERVER "
+                           "or http://localhost:7717."}
+_TOPIC = {"type": "string",
+          "description": "Room topic, recorded only if the channel is new."}
+_MAX_MESSAGES = {"type": "integer",
+                  "description": "Message cap before the channel auto-closes "
+                                  "(default 200)."}
+
+TOOLS = [
+    {
+        "name": "setup",
+        "description": "Set THIS project up and join a channel, in one "
+                        "call: starts a zonai server if none is running, "
+                        "registers this project's delivery hooks, and joins "
+                        "the room. Refuses inside the llm_chat checkout "
+                        "itself unless in_checkout is set.",
+        "build": _build_setup,
+        "timeout": 930,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "channel": _CHANNEL, "identity": _IDENTITY, "topic": _TOPIC,
+                "max_messages": _MAX_MESSAGES,
+                "in_checkout": {"type": "boolean",
+                                "description": "Allow running inside the "
+                                                "llm_chat checkout itself; "
+                                                "only one agent per machine "
+                                                "may."},
+                "server": _SERVER,
+            },
+            "required": ["channel", "identity"],
+        },
+    },
+    {
+        "name": "open",
+        "description": "Create a channel (or join one that already exists) "
+                        "and return the invite block for another agent.",
+        "build": _build_open,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {"channel": _CHANNEL, "identity": _IDENTITY,
+                            "topic": _TOPIC, "max_messages": _MAX_MESSAGES,
+                            "server": _SERVER},
+            "required": ["channel", "identity"],
+        },
+    },
+    {
+        "name": "join",
+        "description": "Join an existing channel (or create it if "
+                        "missing), without printing the invite block.",
+        "build": _build_join,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {"channel": _CHANNEL, "identity": _IDENTITY,
+                            "topic": _TOPIC, "max_messages": _MAX_MESSAGES,
+                            "server": _SERVER},
+            "required": ["channel", "identity"],
+        },
+    },
+    {
+        "name": "say",
+        "description": "Send a message to a channel, as the given identity "
+                        "or the one this project already joined as.",
+        "build": _build_say,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {"channel": _CHANNEL,
+                            "text": {"type": "string",
+                                     "description": "The message body."},
+                            "identity": _IDENTITY, "server": _SERVER},
+            "required": ["channel", "text"],
+        },
+    },
+    {
+        "name": "read",
+        "description": "Pull messages waiting in a channel: unread since "
+                        "your last read and never your own, unless all is "
+                        "set, which returns the whole transcript.",
+        "build": _build_read,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "channel": _CHANNEL, "identity": _IDENTITY,
+                "peek": {"type": "boolean",
+                         "description": "Do not advance the read cursor."},
+                "all": {"type": "boolean",
+                        "description": "Return the whole transcript from "
+                                       "the beginning, including your own "
+                                       "messages."},
+                "server": _SERVER,
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "leave",
+        "description": "Say you are finished in a channel. If every member "
+                        "is done, the channel closes.",
+        "build": _build_leave,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {"channel": _CHANNEL, "identity": _IDENTITY,
+                            "server": _SERVER},
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "reopen",
+        "description": "Bring a closed channel back. Pass max_messages to "
+                        "raise the cap, required if it closed by hitting "
+                        "one.",
+        "build": _build_reopen,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {"channel": _CHANNEL,
+                            "max_messages": _MAX_MESSAGES, "server": _SERVER},
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "invite",
+        "description": "Reprint the invite block for an existing channel.",
+        "build": _build_invite,
+        "timeout": 15,
+        "schema": {
+            "type": "object",
+            "properties": {"channel": _CHANNEL, "server": _SERVER},
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "channels",
+        "description": "List every channel that exists, its members, and "
+                        "message counts.",
+        "build": _build_channels,
+        "timeout": 30,
+        "schema": {"type": "object", "properties": {"server": _SERVER},
+                   "required": []},
+    },
+    {
+        "name": "doctor",
+        "description": "Diagnose why messages are not arriving: which "
+                        "hooks are registered in this project, whether "
+                        "they have ever fired, and whether the wiring is "
+                        "stale.",
+        "build": _build_doctor,
+        "timeout": 15,
+        "schema": {"type": "object", "properties": {"server": _SERVER},
+                   "required": []},
+    },
+    {
+        "name": "fingerprint",
+        "description": "Hash of this checkout's hook scripts, used to "
+                        "detect installs that are running stale wiring.",
+        "build": _build_fingerprint,
+        "timeout": 10,
+        "schema": {"type": "object", "properties": {}, "required": []},
+    },
+    {
+        "name": "reload",
+        "description": "Reload the VSCode window so newly-written hooks "
+                        "register. macOS + VSCode-extension sessions only; "
+                        "drives the command palette and ends the current "
+                        "turn. force actually does it; i_know overrides the "
+                        "refusal when llm-chat-wake has never been observed "
+                        "firing on SessionStart.",
+        "build": _build_reload,
+        "timeout": 60,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "force": {"type": "boolean",
+                          "description": "Actually reload; without this "
+                                         "the CLI only explains what would "
+                                         "happen."},
+                "i_know": {"type": "boolean",
+                          "description": "Accept being stranded if "
+                                         "SessionStart has never fired."},
+            },
+            "required": [],
+        },
+    },
+]
+
+TOOLS_BY_NAME = {t["name"]: t for t in TOOLS}
+
+
+def _error(msg_id, code, message):
+    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
+
+
+def _result(msg_id, result):
+    return {"jsonrpc": "2.0", "id": msg_id, "result": result}
+
+
+def handle_initialize(params):
+    return {
+        "protocolVersion": params.get("protocolVersion") or DEFAULT_PROTOCOL_VERSION,
+        "capabilities": {"tools": {}},
+        "serverInfo": {"name": SERVER_NAME, "version": SERVER_VERSION},
+    }
+
+
+def handle_ping(params):
+    return {}
+
+
+def handle_tools_list(params):
+    return {"tools": [{"name": t["name"], "description": t["description"],
+                       "inputSchema": t["schema"]} for t in TOOLS]}
+
+
+def handle_tools_call(params):
+    name = params.get("name")
+    tool = TOOLS_BY_NAME.get(name)
+    if tool is None:
+        raise ToolError("unknown tool: %r" % (name,))
+    arguments = params.get("arguments") or {}
+    argv = _server_argv(arguments) + tool["build"](arguments)
+    code, text = run_cli(argv, tool["timeout"])
+    return {"content": [{"type": "text", "text": text.strip() or "(no output)"}],
+            "isError": code != 0}
+
+
+METHODS = {
+    "initialize": handle_initialize,
+    "ping": handle_ping,
+    "tools/list": handle_tools_list,
+    "tools/call": handle_tools_call,
+}
+
+
+def dispatch(message):
+    """One JSON-RPC message in, at most one response out.
+
+    A notification — no `id` in the frame — gets silence no matter what its
+    method is: the spec forbids replying to one, and replying to an
+    unrecognised one specifically would tell a client this server understood
+    a message it did not.
+
+    Anything a handler raises that is not a `ToolError` is this server's own
+    bug or a malformed request it cannot make sense of either way — reported
+    as an internal error rather than left to crash a process a client expects
+    to keep running for the rest of the session.
+    """
+    if "id" not in message:
+        return None
+    msg_id = message["id"]
+    method = message.get("method")
+    handler = METHODS.get(method)
+    if handler is None:
+        return _error(msg_id, -32601, "method not found: %r" % (method,))
+    try:
+        return _result(msg_id, handler(message.get("params") or {}))
+    except ToolError as e:
+        return _error(msg_id, -32602, str(e))
+    except Exception as e:
+        return _error(msg_id, -32603, "internal error: %s" % e)
+
+
+def main() -> int:
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            message = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(message, dict):
+            continue
+        response = dispatch(message)
+        if response is None:
+            continue
+        sys.stdout.write(json.dumps(response) + "\n")
+        sys.stdout.flush()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
