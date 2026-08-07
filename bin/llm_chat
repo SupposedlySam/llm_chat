@@ -888,7 +888,18 @@ def doorbell_dir():
     two equal; two copies of a path convention drift, and a doorbell nobody
     can find is silence that looks like nobody having spoken.
     """
-    return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells")
+    # QUALIFIED BY CLONE. Two checkouts on one machine are two workspaces —
+    # separate stores, separate rooms, separate agents — and an unqualified
+    # directory made them share doorbells. A room called `general` with an
+    # identity `owner` exists in both, so one waker binds `general__owner.sock`
+    # and the other finds a healthy holder and quietly declines. Deaf, with no
+    # error anywhere: the same silent-collision shape as keying by identity
+    # instead of membership, one level further out.
+    #
+    # ROOT is the clone, and both halves of a clone compute it identically, so
+    # the ringer and the listener agree without a shared constant.
+    tag = hashlib.sha256(os.path.abspath(ROOT).encode()).hexdigest()[:10]
+    return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells-%s" % tag)
 
 
 def doorbell_name(channel, identity):

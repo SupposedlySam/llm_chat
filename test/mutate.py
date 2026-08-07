@@ -234,6 +234,13 @@ MUTATIONS = [
      "every message lands in full in every member's context — measured at 8.6x "
      "amplification and half a million tokens before this"),
 
+    ("two clones do not share a doorbell directory", "bin/llm_chat",
+     '    tag = hashlib.sha256(os.path.abspath(ROOT).encode()).hexdigest()[:10]',
+     '    tag = "shared"',
+     "a second checkout on the same machine is a second workspace, and its "
+     "agents silently steal each other's sockets — one binds, the other goes "
+     "deaf with no error anywhere"),
+
     ("a doorbell is keyed by MEMBERSHIP, not identity", "bin/llm_chat",
      '    return "%s__%s.sock" % (channel, identity)',
      '    return "%s.sock" % identity',

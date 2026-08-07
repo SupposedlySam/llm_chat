@@ -55,6 +55,35 @@ class ConventionTest(unittest.TestCase):
         self.assertNotEqual(cli.doorbell_name("room", "a"),
                             cli.doorbell_name("room", "b"))
 
+    def test_TWO_CLONES_DO_NOT_SHARE_DOORBELLS(self):
+        """A second checkout on one machine is a second WORKSPACE — its own
+        store, rooms and agents — and an unqualified directory made them share
+        sockets. `general__owner.sock` exists in both, so one waker binds it
+        and the other finds a healthy holder and quietly declines. Deaf, with
+        no error anywhere: the same silent-collision shape as keying by
+        identity instead of membership, one level further out.
+
+        Loaded with SourceFileLoader because these entrypoints have no .py
+        suffix — spec_from_file_location returns None for them, which fails as
+        an AttributeError three lines later rather than at the cause."""
+        import importlib.util
+        import shutil
+        from importlib.machinery import SourceFileLoader
+
+        other = tempfile.mkdtemp()
+        try:
+            os.makedirs(os.path.join(other, "bin"))
+            here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            target = os.path.join(other, "bin", "llm-chat-wake")
+            shutil.copy(os.path.join(here, "bin", "llm-chat-wake"), target)
+            loader = SourceFileLoader("other_wake", target)
+            spec = importlib.util.spec_from_loader("other_wake", loader)
+            module = importlib.util.module_from_spec(spec)
+            loader.exec_module(module)
+            self.assertNotEqual(module.doorbell_dir(), waker.doorbell_dir())
+        finally:
+            shutil.rmtree(other, ignore_errors=True)
+
     def test_it_is_machine_local_and_not_inside_a_repo(self):
         """A doorbell is meaningless after a reboot and belongs to no project.
         Putting it in a checkout makes one project's temp state another's

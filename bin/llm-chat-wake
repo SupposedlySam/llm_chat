@@ -27,6 +27,7 @@ If the harness ever stops honouring `asyncRewake`, this fails SILENT — the pol
 still runs and the wake simply never lands. Nothing here would notice. The
 symptom is replies that only arrive once the agent does something else.
 """
+import hashlib
 import json
 import os
 import select
@@ -128,8 +129,16 @@ def on_term(_signum, _frame):
 def doorbell_dir():
     """MIRRORED in bin/llm_chat, which rings what this binds. A test pins the
     two equal — two copies of a path convention drift, and a doorbell nobody
-    can find is silence that looks like nobody having spoken."""
-    return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells")
+    can find is silence that looks like nobody having spoken.
+
+    Qualified by CLONE: two checkouts on one machine are two workspaces, and an
+    unqualified directory made them share sockets. `general__owner.sock` exists
+    in both, so one waker binds it and the other finds a healthy holder and
+    quietly declines — deaf, with no error anywhere.
+    """
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tag = hashlib.sha256(root.encode()).hexdigest()[:10]
+    return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells-%s" % tag)
 
 
 def doorbell_name(channel, identity):
