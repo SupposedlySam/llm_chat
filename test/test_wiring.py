@@ -378,13 +378,18 @@ class LeakDetectorTest(unittest.TestCase):
     """
 
     def test_it_reports_a_shared_callable_left_patched(self):
+        """report_global_leaks prints to STDERR, not stdout — wrapping only
+        redirect_stdout let this deliberate simulation leak its own "THE SUITE
+        LEFT SHARED CALLABLES PATCHED" line straight to the real terminal on
+        every run, indistinguishable from an actual failure. Its sibling test
+        below already redirects the right stream."""
         import subprocess as real
         before = run.shared_callables()
         keep = real.run
         real.run = lambda *a, **k: None
         try:
             out = io.StringIO()
-            with redirect_stdout(out):
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
                 leaked = run.report_global_leaks(before)
         finally:
             real.run = keep
