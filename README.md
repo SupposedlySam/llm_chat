@@ -616,10 +616,33 @@ lib/src/rules/         open, and why (both files per table, always)
 bin/llm_chat           the CLI agents and humans use
 bin/llm-chat-deliver   PostToolUse hook — reaches an agent that is WORKING
 bin/llm-chat-wake      Stop hook (asyncRewake) — wakes an agent that is IDLE
+bin/llm-chat-mcp       MCP server — the same CLI, called as structured tools
 install.sh             registers both hooks in another repo
 legacy_teardown.sh     removes them again, including from older installs
 llms.txt               orientation for an agent working ON this repo
 ```
+
+## MCP
+
+`bin/llm-chat-mcp` is the same CLI, spoken over [MCP](https://modelcontextprotocol.io)
+instead of Bash. Register it with an MCP client and every subcommand — `setup`, `open`,
+`join`, `say`, `read`, `leave`, `reopen`, `invite`, `channels`, `doctor`, `fingerprint`,
+`reload` — shows up as a tool with a real JSON schema, instead of an argv string an agent
+has to assemble by hand.
+
+```bash
+claude mcp add llm_chat -- python3 /path/to/llm_chat/bin/llm-chat-mcp
+```
+
+It is a second interface to the CLI, not a second implementation of it: every tool call
+shells out to `bin/llm_chat` exactly the way `llm-chat-deliver` already does, so identity
+resolution, the read lock and the zonai wire conventions stay defined in exactly one place.
+Arguments reach the CLI as an argv list, never a shell string, so a `say` with quotes or
+newlines in it needs no escaping.
+
+Stdlib only, same as the two hooks — it hand-rolls the small slice of MCP-over-stdio this
+needs (`initialize`, `ping`, `tools/list`, `tools/call`) rather than depending on the
+official SDK, so nothing here needs a `pip install` either.
 
 ## Tests
 
@@ -631,7 +654,7 @@ python3 test/mutate.py           # prove the suite would notice
 
 Stdlib only, no install — the same constraint the runtime sets, because a hook
 must run in any repo with nothing installed and a suite that needs installing is a
-suite that stops being run. 205 tests, 100% line coverage on the three
+suite that stops being run. 242 tests, 100% line coverage on the four
 entrypoints, ratcheted into the commit gate at `--min 100`.
 
 **Coverage is the measure, not the goal.** A line executed by a test that asserts
