@@ -86,6 +86,56 @@ class InstallReportTest(unittest.TestCase):
         self.assertIn("NOT INSTALLED", cli.install_report(self.tmp.name))
 
 
+class StaleSkillCopyTest(unittest.TestCase):
+    """The leftovers of the per-repo skill install.
+
+    install.sh migrates the old copy away, but only in the repo somebody
+    re-runs it in — so the migration reaches exactly the repos that were
+    already being touched, and every other one keeps its copy in silence. A
+    migration written as a step in an installer is not a migration; it is a
+    step in an installer. This is the condition being checked instead.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def leave_a_copy(self):
+        d = os.path.join(self.tmp.name, ".claude", "skills", "llm-chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "SKILL.md"), "w") as f:
+            f.write("the old per-repo skill\n")
+
+    def test_a_leftover_copy_is_reported(self):
+        self.leave_a_copy()
+        report = cli.stale_skill_report(self.tmp.name)
+        self.assertIn("LEFTOVER SKILL COPY", report)
+        self.assertIn("install.sh", report)
+
+    def test_it_says_WHAT_is_stale_about_it_not_merely_that_it_is_old(self):
+        """A remedy nobody understands the reason for gets skipped. The reason
+        is specific: the copy predates 'check doctor BEFORE acting, not
+        after', which is the correction that closed a real hole."""
+        self.leave_a_copy()
+        self.assertIn("TRUST", cli.stale_skill_report(self.tmp.name))
+
+    def test_a_repo_with_no_copy_says_nothing(self):
+        """Paired, and it has to be EMPTY rather than a reassuring line —
+        doctor concatenates this, so anything non-empty in the ordinary case
+        is noise on every run in every repo."""
+        self.assertEqual(cli.stale_skill_report(self.tmp.name), "")
+
+    def test_a_DIRECTORY_where_the_file_goes_is_not_a_leftover(self):
+        """Only the file install.sh actually wrote counts. An empty directory
+        is what teardown leaves behind, and reporting it would send somebody
+        to re-install over nothing."""
+        os.makedirs(os.path.join(self.tmp.name, ".claude", "skills",
+                                 "llm-chat", "SKILL.md"))
+        self.assertEqual(cli.stale_skill_report(self.tmp.name), "")
+
+
 class InviteTest(unittest.TestCase):
     """The text a stranger's agent actually receives."""
 

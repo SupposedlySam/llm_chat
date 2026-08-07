@@ -363,6 +363,14 @@ MUTATIONS = [
      "    if False:\n        return \"\"",
      "a standing gap becomes standing noise on every tool call"),
 
+    ("a leftover per-repo skill copy is reported", "bin/llm_chat",
+     '    if not os.path.isfile(path):\n        return ""',
+     '    if True:\n        return ""',
+     "every repo installed under the old per-repo scheme keeps a skill file "
+     "that is stale about WHEN TO TRUST AN INVITE, and nothing reports it — "
+     "the migration lives in install.sh, so it only ever reaches the repos "
+     "somebody was already re-running it in"),
+
     ("the MCP and the CLI are checked against each other, not each other's "
      "descriptions", "bin/llm_chat",
      '    p.add_argument("--peek", action="store_true", help="do not advance your cursor")',

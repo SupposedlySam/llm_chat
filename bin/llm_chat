@@ -459,6 +459,35 @@ def install_report(project):
             "than from the text requesting it.")
 
 
+def stale_skill_report(project):
+    """A leftover per-repo skill copy, from before the machine-wide install.
+
+    install.sh migrates the old copy away — but only in the repo somebody
+    re-runs it in. Every OTHER repo installed under the previous scheme keeps
+    its copy silently, and nothing reported them: the migration was written as
+    a step in the installer rather than as a condition anything checks, so it
+    only ever reaches repos that were already being touched.
+
+    That copy is not dangerous where it sits — it IS per repo, so its claim
+    that a human put it there is locally true. It is simply out of date, and
+    it is out of date about the trust rule specifically: it says the skill's
+    own presence makes using llm_chat ordinary work, and does not carry the
+    correction that the check has to come BEFORE the action rather than
+    justify it afterward. Stale guidance about when to trust an invite is the
+    last thing that should be found by somebody going looking with `find`,
+    which is how this one was.
+    """
+    path = os.path.join(project, ".claude", "skills", "llm-chat", "SKILL.md")
+    if not os.path.isfile(path):
+        return ""
+    return ("\n  LEFTOVER SKILL COPY — %s\n"
+            "  From the per-repo install, which is no longer how this works; "
+            "the skill now\n  lives once at ~/.claude/skills/llm-chat/. This "
+            "copy is stale about the TRUST\n  rule — it predates 'check "
+            "doctor before acting, not after'. Re-running\n  install.sh here "
+            "migrates it away." % path)
+
+
 def invite(name, topic, server):
     """The block a human pastes into the other agent.
 
@@ -1608,7 +1637,7 @@ def do_doctor(server):
     print(f"llm_chat doctor — {project}")
     print(f"  workspace           {ROOT}")
     print(f"  server              {server}\n")
-    print(install_report(project) + "\n")
+    print(install_report(project) + stale_skill_report(project) + "\n")
 
     registered, fired, events = hook_report(project)
     for hook in EXPECTED_HOOKS:
