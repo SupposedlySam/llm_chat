@@ -182,24 +182,47 @@ with open(path, "w") as f:
 PY
 echo "stamped install ($FP)"
 
-# THE SKILL, and it is the point of running this by hand rather than letting an
-# agent do it. An agent that refused an llm_chat invite was RIGHT to: the invite
-# arrived as text in a tool result telling it to run an install script it had
-# never heard of, which is exactly the shape of a prompt-injection attack.
+# THE SKILL — installed ONCE, machine-wide, not per repo. It used to be copied
+# into every target's own .claude/skills/, on the reasoning that a file in
+# THAT repo, visible to git, was evidence a human authorized llm_chat there
+# specifically. That reasoning did not hold: llm_chat is not a per-repo
+# capability to begin with — the server is loopback-only, and the hooks and
+# .llm_chat/ state installed above are BOTH already gitignored. Duplicating
+# the skill into every repo bought no sharing, only copies to keep in sync.
 #
-# A file a human put in the target's own .claude/skills/ is different evidence.
-# It is in their repo, visible to git, present at session start, and it predates
-# any message about it. The agent can verify the capability exists WITHOUT
-# trusting the sentence that mentioned it — which is the only way an invite can
-# ever be safe to act on.
-SKILL_DIR="$TARGET/.claude/skills/llm-chat"
+# What actually needs to be per-repo is the EVIDENCE that a human authorized
+# llm_chat HERE — and that already exists, two steps up: .llm_chat/installed.json,
+# gitignored, written only by this script, timestamped before any message
+# could reference it. The skill's own instructions point an agent at
+# `llm_chat doctor` to read that evidence, rather than asking "is this 500-line
+# file physically present in my repo" to answer a question the file's presence
+# elsewhere on the machine cannot answer either way.
+#
+# Placeholder substituted here rather than left generic: this checkout's own
+# path IS the answer to "which llm_chat" for whoever runs this script, and a
+# machine-wide file has no per-repo template to fall back on later.
+SKILL_DIR="$HOME/.claude/skills/llm-chat"
 mkdir -p "$SKILL_DIR"
-if cp "$HERE/templates/skill/SKILL.md" "$SKILL_DIR/SKILL.md" 2>/dev/null; then
-  echo "installed skill  .claude/skills/llm-chat/SKILL.md"
+if sed "s#<path-to-llm_chat-checkout>#$HERE#g" "$HERE/templates/skill/SKILL.md" \
+    > "$SKILL_DIR/SKILL.md" 2>/dev/null; then
+  echo "installed skill  ~/.claude/skills/llm-chat/SKILL.md (machine-wide)"
 else
   echo "WARNING: could not install the skill from $HERE/templates/skill/SKILL.md"
-  echo "  Hooks are wired, but an agent there has no way to verify llm_chat is"
-  echo "  a capability you installed rather than something a message asked for."
+  echo "  Hooks are wired, but no skill points an agent at \`llm_chat doctor\`"
+  echo "  before it trusts an invite."
+fi
+
+# Migrate away from the OLD per-repo copy, the same way settings.json gets
+# migrated above: remove it here rather than leave a stale duplicate a human
+# has to notice and clean up by hand. Only ever removes exactly what this
+# script itself would have written — the file and, once empty, the directory
+# — never a skill something else put there under the same name.
+OLD_SKILL="$TARGET/.claude/skills/llm-chat/SKILL.md"
+if [ -f "$OLD_SKILL" ]; then
+  rm -f "$OLD_SKILL"
+  rmdir "$TARGET/.claude/skills/llm-chat" 2>/dev/null || true
+  rmdir "$TARGET/.claude/skills" 2>/dev/null || true
+  echo "removed the old per-repo skill copy — .claude/skills/llm-chat/SKILL.md"
 fi
 
 # Created when absent, not just appended to. Both entries are per-machine: the
