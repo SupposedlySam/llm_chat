@@ -22,6 +22,25 @@ from support import ROOT  # noqa: E402
 INSTALL = os.path.join(ROOT, "install.sh")
 TEARDOWN = os.path.join(ROOT, "legacy_teardown.sh")
 
+CLAUDE_PATH = shutil.which("claude")
+HAS_CLAUDE = CLAUDE_PATH is not None
+
+
+def _path_without_claude():
+    """PATH with the directory holding `claude` removed, so `command -v
+    claude` fails inside install.sh/legacy_teardown.sh exactly like it would
+    on a machine without the CLI. Without this, every install/teardown test
+    on a dev machine that HAS `claude` also spawns it for real — turning a
+    ~40ms suite into one that pays Node startup twice per test for a feature
+    almost none of these tests are about. The few that ARE about it opt back
+    in explicitly."""
+    parts = os.environ.get("PATH", "").split(os.pathsep)
+    if not CLAUDE_PATH:
+        return os.pathsep.join(parts)
+    claude_dir = os.path.dirname(os.path.abspath(CLAUDE_PATH))
+    return os.pathsep.join(p for p in parts
+                           if os.path.abspath(p or ".") != claude_dir)
+
 
 def hooks_in(path):
     """{event: [command, ...]} from a settings file, or {} if absent."""
@@ -44,24 +63,53 @@ class ShellTestCase(unittest.TestCase):
         self.repo = os.path.join(self.tmp.name, "project")
         os.makedirs(self.repo)
         subprocess.run(["git", "init", "-q"], cwd=self.repo, check=True)
+        # install.sh also registers an MCP server via `claude mcp add`, keyed
+        # by $HOME/.claude.json under this test's repo PATH. Without an
+        # isolated HOME that writes into the developer's REAL global config —
+        # and the entry outlives the test, since self.repo is deleted at
+        # tearDown but nothing ever un-registers a project that was never
+        # torn down through legacy_teardown.sh. Found exactly that way: a
+        # dozen dead temp-dir entries in ~/.claude.json after one test run.
+        self.fake_home = os.path.join(self.tmp.name, "home")
+        os.makedirs(self.fake_home)
 
     def tearDown(self):
         self.tmp.cleanup()
 
-    def run_script(self, script, *args, expect_success=True):
+    def run_script(self, script, *args, expect_success=True, allow_claude=False):
         """Run it, and by default REQUIRE it to have worked.
 
         Swallowing the exit code turns a script failure into a confusing
         FileNotFoundError three lines later, on the file it never wrote. The
         failure should name itself.
+
+        `claude` is off PATH by default so ordinary hook/gitignore assertions
+        never pay to spawn it; `allow_claude=True` opts back in for the tests
+        that are actually about the MCP registration step.
         """
+        env = dict(os.environ, HOME=self.fake_home)
+        if not allow_claude:
+            env["PATH"] = _path_without_claude()
         done = subprocess.run([script] + list(args), capture_output=True,
-                              text=True, cwd=ROOT)
+                              text=True, cwd=ROOT, env=env)
         if expect_success and done.returncode != 0:
             self.fail("%s failed (exit %d)\n  stdout: %s\n  stderr: %s"
                       % (os.path.basename(script), done.returncode,
                          done.stdout.strip()[-400:], done.stderr.strip()[-400:]))
         return done
+
+    def mcp_registered(self):
+        """Whether this test's isolated home has our server registered for
+        ANY project — not matched by exact path, because macOS resolves
+        $TMPDIR through a symlink (/tmp -> /private/tmp) that `claude`
+        follows and this test's own `self.repo` string does not."""
+        try:
+            with open(os.path.join(self.fake_home, ".claude.json")) as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            return False
+        return any("llm_chat" in (proj.get("mcpServers") or {})
+                   for proj in data.get("projects", {}).values())
 
     @property
     def local(self):
@@ -279,6 +327,41 @@ class TeardownTest(ShellTestCase):
         done = self.run_script(TEARDOWN, "--help")
         self.assertEqual(done.returncode, 0)
         self.assertIn("Remove llm_chat from a repo", done.stdout)
+
+
+@unittest.skipUnless(HAS_CLAUDE, "requires the `claude` CLI on PATH")
+class McpRegistrationTest(ShellTestCase):
+    """The one thing worth spawning the real CLI for: does install.sh
+    actually register a working server, does re-running converge rather than
+    duplicate, and does teardown undo it. Everything else in InstallTest and
+    TeardownTest runs with `claude` off PATH on purpose — see
+    `_path_without_claude`."""
+
+    def test_install_registers_the_mcp_server(self):
+        self.run_script(INSTALL, self.repo, allow_claude=True)
+        self.assertTrue(self.mcp_registered())
+
+    def test_re_running_install_leaves_exactly_one_registration(self):
+        self.run_script(INSTALL, self.repo, allow_claude=True)
+        self.run_script(INSTALL, self.repo, allow_claude=True)
+        with open(os.path.join(self.fake_home, ".claude.json")) as f:
+            data = json.load(f)
+        count = sum(1 for proj in data.get("projects", {}).values()
+                    if "llm_chat" in (proj.get("mcpServers") or {}))
+        self.assertEqual(count, 1)
+
+    def test_a_missing_claude_binary_does_not_fail_the_install(self):
+        """The MCP server is a convenience on top of the hooks, not a
+        requirement — an install must still succeed without it."""
+        done = self.run_script(INSTALL, self.repo, allow_claude=False)
+        self.assertEqual(done.returncode, 0)
+        self.assertFalse(self.mcp_registered())
+
+    def test_teardown_unregisters_the_mcp_server(self):
+        self.run_script(INSTALL, self.repo, allow_claude=True)
+        self.assertTrue(self.mcp_registered())
+        self.run_script(TEARDOWN, self.repo, allow_claude=True)
+        self.assertFalse(self.mcp_registered())
 
 
 if __name__ == "__main__":
