@@ -327,10 +327,53 @@ def undocumented(names, docs):
     return sorted(n for n in names if n not in text)
 
 
+def unmentioned_entrypoints(repo, bindir, agent_doc):
+    """Executables in bin/ that the AGENT-facing doc never names.
+
+    Every other check here pools the docs: a name found in README.md counts as
+    documented and llms.txt is never asked about it separately. For flags that
+    is right — spelling every option out twice is noise nobody reads.
+
+    For an ENTRYPOINT it is the blind spot. `bin/llm-chat-mcp` shipped with
+    three mentions in README.md and none in llms.txt, so an entire integration
+    surface — the one that puts these verbs in an agent's tool list — was
+    invisible to the readers the file exists for, while every name-level check
+    stayed green. Pooling made the gap unreportable: the name WAS documented,
+    just not anywhere its audience starts.
+
+    So this one file is asked on its own. It is deliberately about existence,
+    not quality: a surface an agent cannot discover is worse than one
+    described badly, because the second at least gets read.
+    """
+    try:
+        with open(os.path.join(repo, agent_doc)) as f:
+            text = f.read()
+    except OSError:
+        return []                     # a missing agent doc is reported elsewhere
+    try:
+        entries = sorted(os.listdir(os.path.join(repo, bindir)))
+    except OSError:
+        return []
+    missing = []
+    for name in entries:
+        path = os.path.join(repo, bindir, name)
+        if name.startswith(".") or name.startswith("__") or os.path.isdir(path):
+            continue
+        if not os.access(path, os.X_OK):
+            continue
+        if name not in text:
+            missing.append(name)
+    return missing
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", nargs="+", default=["bin/llm_chat"])
     ap.add_argument("--docs", nargs="+", default=["README.md", "llms.txt"])
+    ap.add_argument("--bindir", default="bin")
+    ap.add_argument("--agent-doc", dest="agent_doc", default="llms.txt",
+                    help="the doc an AGENT starts from, asked about "
+                         "entrypoints on its own rather than pooled")
     ap.add_argument("--repo", default=None)
     ap.add_argument("--tool", default="llm_chat",
                     help="the command name that precedes a subcommand")
@@ -396,7 +439,19 @@ def main(argv=None):
                   "is the announcement, which a fixed caveat could never be.\n"
                   % assembled)
 
-    if not missing_verbs and not missing_options and not ghosts and not stale:
+    strangers = unmentioned_entrypoints(repo, args.bindir, args.agent_doc)
+    if strangers:
+        print("NOT IN %s — a shipped entrypoint the agent-facing doc never "
+              "names:" % args.agent_doc)
+        for name in strangers:
+            print("  %s/%s" % (args.bindir, name))
+        print("\n  Every other check here pools the docs, so a mention in "
+              "README.md counts and\n  this file is never asked separately. "
+              "That is how an entire integration\n  surface shipped "
+              "documented and undiscoverable at once.\n")
+
+    if (not missing_verbs and not missing_options and not ghosts and not stale
+            and not strangers):
         print("every command and option is named in the docs "
               "(which is the floor, not the goal — it cannot tell you whether "
               "they are correct or merely mentioned)")

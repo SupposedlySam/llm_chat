@@ -362,6 +362,24 @@ MUTATIONS = [
      "    if os.path.exists(marker):\n        return \"\"",
      "    if False:\n        return \"\"",
      "a standing gap becomes standing noise on every tool call"),
+
+    ("the MCP and the CLI are checked against each other, not each other's "
+     "descriptions", "bin/llm_chat",
+     '    p.add_argument("--peek", action="store_true", help="do not advance your cursor")',
+     '    p.add_argument("--peek-at", action="store_true", help="do not advance your cursor")',
+     "bin/llm-chat-mcp builds argv this parser rejects, and every argv fixture "
+     "in test_mcp.py stays green — both halves were written from the same "
+     "belief about what the CLI accepts, so they agree with each other "
+     "whatever it actually does, and the break only shows in a live session"),
+
+    ("an entrypoint the AGENT-facing doc never names is reported",
+     "triggers/undocumented-surface",
+     "        if name not in text:\n            missing.append(name)",
+     "        if False:\n            missing.append(name)",
+     "bin/llm-chat-mcp shipped with three mentions in README.md and none in "
+     "llms.txt: every other check pools the docs, so the name counted as "
+     "documented while the whole integration surface stayed invisible to the "
+     "readers that file exists for"),
 ]
 
 

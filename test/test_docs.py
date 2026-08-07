@@ -207,6 +207,77 @@ class UndocumentedTest(unittest.TestCase):
         self.assertEqual(check.undocumented({"--yes"}, [self.doc, other]), [])
 
 
+class EntrypointsInTheAgentDocTest(unittest.TestCase):
+    """The one check that does NOT pool the docs.
+
+    `bin/llm-chat-mcp` shipped with three mentions in README.md and none in
+    llms.txt. Every name-level check pools the two, so the name counted as
+    documented and an entire integration surface stayed invisible to the
+    readers llms.txt exists for. Pooling is right for flags and wrong for a
+    whole entrypoint, so this asks the agent-facing file on its own.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.repo = self.tmp.name
+        os.mkdir(os.path.join(self.repo, "bin"))
+        self.write_doc("agents run bin/llm_chat")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def write_doc(self, text, name="llms.txt"):
+        with open(os.path.join(self.repo, name), "w") as f:
+            f.write(text)
+
+    def add_entrypoint(self, name, executable=True):
+        path = os.path.join(self.repo, "bin", name)
+        with open(path, "w") as f:
+            f.write("#!/usr/bin/env python3\n")
+        os.chmod(path, 0o755 if executable else 0o644)
+
+    def missing(self):
+        return check.unmentioned_entrypoints(self.repo, "bin", "llms.txt")
+
+    def test_a_named_entrypoint_is_not_reported(self):
+        self.add_entrypoint("llm_chat")
+        self.assertEqual(self.missing(), [])
+
+    def test_AN_ENTRYPOINT_THE_AGENT_DOC_NEVER_NAMES_IS_REPORTED(self):
+        """The regression this exists for, in miniature."""
+        self.add_entrypoint("llm-chat-mcp")
+        self.assertEqual(self.missing(), ["llm-chat-mcp"])
+
+    def test_a_mention_in_ANOTHER_doc_does_not_count(self):
+        """The pooling blind spot itself: documented, and still unreachable
+        from where its audience starts reading."""
+        self.add_entrypoint("llm-chat-mcp")
+        self.write_doc("register bin/llm-chat-mcp as an MCP server", "README.md")
+        self.assertEqual(self.missing(), ["llm-chat-mcp"])
+
+    def test_a_non_executable_file_is_not_an_entrypoint(self):
+        """Nothing invokes it, so nobody needs to discover it."""
+        self.add_entrypoint("notes.txt", executable=False)
+        self.assertEqual(self.missing(), [])
+
+    def test_a_directory_in_bin_is_not_an_entrypoint(self):
+        """__pycache__ is executable and is not a surface."""
+        os.mkdir(os.path.join(self.repo, "bin", "__pycache__"))
+        self.assertEqual(self.missing(), [])
+
+    def test_a_missing_agent_doc_reports_nothing_here(self):
+        """Deliberately silent rather than reporting every entrypoint at once:
+        a doc file that is gone is a different, louder problem, and burying it
+        under a list of names nobody can act on helps nobody."""
+        os.remove(os.path.join(self.repo, "llms.txt"))
+        self.add_entrypoint("llm-chat-mcp")
+        self.assertEqual(self.missing(), [])
+
+    def test_a_missing_bin_directory_is_not_a_crash(self):
+        os.rmdir(os.path.join(self.repo, "bin"))
+        self.assertEqual(self.missing(), [])
+
+
 class InventedTest(unittest.TestCase):
     """The REVERSE walk: commands that are named but do not exist.
 
@@ -553,6 +624,37 @@ class ReportTest(unittest.TestCase):
             check.nested = real
         self.assertIn("PARTLY CHECKED", out)
         self.assertIn("1 remedies", out)
+
+    def bindir_check(self, doc_text, entrypoint="llm-chat-mcp"):
+        """Run the report over a repo whose bin/ holds one executable, with
+        llms.txt saying whatever the caller wants about it."""
+        os.mkdir(os.path.join(self.tmp.name, "bin"))
+        path = os.path.join(self.tmp.name, "bin", entrypoint)
+        with open(path, "w") as f:
+            f.write("#!/usr/bin/env python3\n")
+        os.chmod(path, 0o755)
+        with open(os.path.join(self.tmp.name, "llms.txt"), "w") as f:
+            f.write(doc_text)
+        self.write_doc("mode sync --to-all --yes")
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = check.main(["--repo", self.tmp.name, "--source", "cli.py",
+                               "--docs", "README.md", "--agent-doc", "llms.txt"])
+        return code, out.getvalue()
+
+    def test_an_entrypoint_missing_from_the_agent_doc_reaches_the_report(self):
+        """End to end. `bin/llm-chat-mcp` shipped named in README.md and
+        nowhere in llms.txt, and every pooled check stayed green."""
+        _, out = self.bindir_check("agents run bin/llm_chat")
+        self.assertIn("NOT IN llms.txt", out)
+        self.assertIn("bin/llm-chat-mcp", out)
+        self.assertIn("documented and undiscoverable at once", out)
+
+    def test_a_named_entrypoint_does_not_reach_the_report(self):
+        """The partner test. Without it the line above passes for a check that
+        fires unconditionally, which is the same as no check."""
+        _, out = self.bindir_check("register bin/llm-chat-mcp with your client")
+        self.assertNotIn("NOT IN llms.txt", out)
 
     def test_a_ghost_command_is_reported_by_the_runner_too(self):
         """End to end, not just the helper — the report has to reach a reader,
