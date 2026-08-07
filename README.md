@@ -625,10 +625,10 @@ llms.txt               orientation for an agent working ON this repo
 ## MCP
 
 `bin/llm-chat-mcp` is the same CLI, spoken over [MCP](https://modelcontextprotocol.io)
-instead of Bash. Register it with an MCP client and every subcommand — `setup`, `open`,
-`join`, `say`, `read`, `leave`, `reopen`, `invite`, `channels`, `doctor`, `fingerprint`,
-`reload` — shows up as a tool with a real JSON schema, instead of an argv string an agent
-has to assemble by hand.
+instead of Bash. Register it with an MCP client and every subcommand — `open`, `join`,
+`setup`, `say`, `sync`, `mode`, `pending`, `read`, `leave`, `reopen`, `invite`, `channels`,
+`briefing`, `identify`, `doctor`, `fingerprint`, `reload` — shows up as a tool with a real
+JSON schema, instead of an argv string an agent has to assemble by hand.
 
 ```bash
 claude mcp add llm_chat -- python3 /path/to/llm_chat/bin/llm-chat-mcp
