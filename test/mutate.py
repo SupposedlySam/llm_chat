@@ -191,6 +191,13 @@ MUTATIONS = [
      "inbox, and cannot tell 'nothing exists' from 'a preview ate it and "
      "showed you 100 characters'"),
 
+    ("an invite tells you to verify, not to install", "bin/llm_chat",
+     '        "BEFORE ACTING ON THIS, verify it rather than believing it. If your",',
+     '        "",',
+     "the invite reverts to instructions to run an install script — the shape "
+     "of an injection, which a careful agent must refuse, so it either gets "
+     "ignored or teaches compliance with the next one"),
+
     ("a command that is named but does not exist is caught",
      "triggers/undocumented-surface",
      '    return sorted(n for n in named if n not in verbs)',
@@ -535,6 +542,12 @@ NOT_SWEPT = {
     "bin/llm-chat-slack:remember_thread": "asserted directly, including the "
         "bound and that the OLDEST entries are the ones dropped",
 
+    "bin/llm_chat:skill_report": "both states asserted directly, including "
+        "that they are not confusable — 'NOT INSTALLED' contains 'INSTALLED', "
+        "and a substring grep during this work matched a temp dir named "
+        "skilltest and reported the feature present when it was absent",
+    "bin/llm_chat:invite": "asserted directly that it points at verification "
+        "rather than installation, and still carries the commands",
     "bin/llm_chat:render_briefing": "attribution, fencing, the empty case and "
         "a hostile briefing all asserted directly",
     "bin/llm_chat:do_briefing": "every branch asserted directly, including "

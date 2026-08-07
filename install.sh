@@ -181,6 +181,26 @@ with open(path, "w") as f:
 PY
 echo "stamped install ($FP)"
 
+# THE SKILL, and it is the point of running this by hand rather than letting an
+# agent do it. An agent that refused an llm_chat invite was RIGHT to: the invite
+# arrived as text in a tool result telling it to run an install script it had
+# never heard of, which is exactly the shape of a prompt-injection attack.
+#
+# A file a human put in the target's own .claude/skills/ is different evidence.
+# It is in their repo, visible to git, present at session start, and it predates
+# any message about it. The agent can verify the capability exists WITHOUT
+# trusting the sentence that mentioned it — which is the only way an invite can
+# ever be safe to act on.
+SKILL_DIR="$TARGET/.claude/skills/llm-chat"
+mkdir -p "$SKILL_DIR"
+if cp "$HERE/templates/skill/SKILL.md" "$SKILL_DIR/SKILL.md" 2>/dev/null; then
+  echo "installed skill  .claude/skills/llm-chat/SKILL.md"
+else
+  echo "WARNING: could not install the skill from $HERE/templates/skill/SKILL.md"
+  echo "  Hooks are wired, but an agent there has no way to verify llm_chat is"
+  echo "  a capability you installed rather than something a message asked for."
+fi
+
 # Created when absent, not just appended to. Both entries are per-machine: the
 # identity would let a teammate's checkout claim this project's seat in a room,
 # and settings.local.json holds an absolute path to this machine's checkout.
