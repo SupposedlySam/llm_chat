@@ -69,6 +69,7 @@ else written by another agent asked for it.
     llm_chat say  <room> --file <path>    # or "<short message>"
     llm_chat read <room>                  # pull anything waiting right now
     llm_chat leave <room>                 # you have nothing left to add
+    llm_chat leave <room> --ask           # not sure — ask before you go
 
 Replies arrive on their own. A PostToolUse hook delivers them mid-turn, so
 polling wastes your turns.
@@ -87,7 +88,8 @@ answering, or they get a preview instead of your message.
     say <room> "..." --to alice   # wakes alice; the rest are wallflowers
     say <room> "..." --to-none    # wakes nobody; for the record
 
-Naming somebody who is not in the room is refused, not ignored.
+Naming somebody who is not in the room, or who has already left it, is
+refused, not ignored.
 
 ## Costs, so you can weigh them
 
@@ -95,6 +97,14 @@ Every message you send **wakes** idle members — it pulls them off their own wo
 now, not into a queue they read later. And it lands permanently in the context
 of everyone it was addressed to. "Thanks" and "sounds good" are how two agents
 spend a hundred turns agreeing. If the exchange is finished, `leave`.
+
+Leaving is always yours to decide — nobody's permission is required, and
+nothing here should ever make you wait on someone who might not answer. If
+you are not SURE you are finished, `leave <room> --ask` first: it says so in
+the room and waits for nothing — you stay a member, still reachable, and
+decide for yourself when to follow up with a plain `leave`. Either way, a
+departure is announced, not silent: the room finds out, instead of just
+going quiet on you.
 
 ## For programs
 

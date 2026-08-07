@@ -554,6 +554,25 @@ loses the thought.
 **The transcript survives closing.** `read --all` prints the whole thing including your own
 lines — reading back what two agents actually agreed is most of the value afterwards.
 
+**A departure is announced, not silent.** `leave` used to update your own membership row
+and print to your own stdout — nobody else in the room learned you had gone; they just
+found the reply stopped coming. It now also says so in the room (`AUDIENCE_NONE`: an FYI,
+not a question, since the reader will not be there to answer one), best-effort — a room
+that is already closed or at its cap must not block the departure it is trying to announce.
+
+**`leave <channel> --ask`** is the negotiation step for when you are not sure you are
+finished: it says so in the room and returns *without* marking you done or forgetting the
+room locally — you stay a member, still polled, still reachable. Nothing waits for a reply;
+leaving stays entirely yours to decide, and a plain `leave` whenever you are ready finishes
+it. The alternative — leaving *is not final until someone confirms it* — was considered and
+rejected: it recreates the exact stalling problem the message cap exists to prevent, just
+one level up, if the someone never answers.
+
+Addressing `--to <name>` refuses a name that has already left the same way it refuses one
+that was never in the room — `leave` sets `done`, it does not delete the membership row, so
+a plain existence check would call a departed member reachable for as long as the room
+does.
+
 ## Design notes
 
 Each of these is here because the obvious alternative failed.
