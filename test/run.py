@@ -161,11 +161,28 @@ def report_global_leaks(before):
     return True
 
 
+# Written by the LIVE hooks on every tool call in this repo, asynchronously
+# with respect to the suite — `llm-chat-deliver` stamps post-tool-use, the
+# waker stamps its own. Their contents are evidence about the SESSION, not
+# about the suite, and this check cannot tell the two apart: a marker that
+# appears mid-run means an agent ran a tool, which is the normal state of
+# working here.
+#
+# Including them made the gate fail intermittently on its own author. It cost
+# a refused `lamp publish` whose reason was then discarded by a pager, and the
+# failure was written up as unreproducible — it was not, it was this, and it
+# only reproduces while something is actively using the repo.
+UNGUARDED = (os.path.join(".llm_chat", "probe"),)
+
+
 def fingerprint_repo():
     state = {}
     for relative in GUARDED:
         base = os.path.join(ROOT, relative)
         for dirpath, _, filenames in os.walk(base):
+            if any(os.path.relpath(dirpath, ROOT).startswith(skip)
+                   for skip in UNGUARDED):
+                continue
             for name in filenames:
                 path = os.path.join(dirpath, name)
                 try:
