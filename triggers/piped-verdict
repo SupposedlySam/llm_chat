@@ -1,0 +1,254 @@
+#!/usr/bin/env python3
+"""PreToolUse hook: refuse to read a verdict through `tail` or `head`.
+
+Wired in `.claude/settings.local.json` against the `Bash` tool.
+
+THE DEFECT, three times in one session, twice after saying it would stop:
+
+    python3 test/run.py --min 100 2>&1 | tail -20      # exit code is TAIL's
+    lamp publish 2>&1 | tail -25                       # failure detail gone
+
+A pipeline's exit status is the LAST command's. `tail` almost never fails, so
+`cmd | tail` reports success whatever `cmd` did — a green that was never
+measured. The first time this ran, a failing suite was read as passing and
+reported to a human as a clean gate.
+
+The second harm is worse because it looks like the first one working. `2>&1 |
+tail -N` merges stderr into the pipe and then throws away everything above the
+last N lines — which is precisely where a traceback, an assertion, or a
+"REFUSED" lives. A publish failed here with `test/run.py exited 1`; the reason
+scrolled past inside the discarded region, the rerun passed, and the failure
+became unreproducible. The evidence was destroyed by the command asking for it.
+
+WHAT IT REFUSES, narrowly, because a check that cries wolf gets routed around:
+
+  1. stderr merged into a pipe that ends in tail/head — `cmd 2>&1 | tail`. If
+     you are redirecting error output INTO something whose job is to discard
+     most of its input, the discarding is the bug. There is no version of this
+     that wants the errors.
+  2. a VERDICT command piped into tail/head at all — a test runner, the verify
+     gate, a publish. Their exit status is the whole point of running them.
+
+Everything else is left alone. `git log --oneline | tail -3` is fine, `grep x
+f | head` is fine, and `tail -50 some.log` — reading a FILE, no pipe — is the
+remedy, not the offence.
+
+THE REMEDY IS TWO LINES AND ALWAYS AVAILABLE:
+
+    cmd > /path/out.log 2>&1; echo "EXIT=$?"
+    grep -nE 'FAIL|Error|Traceback' /path/out.log
+
+That keeps the status, keeps the whole log for the next question, and survives
+the run — which is what made the one unreproduced failure unreproducible.
+
+WHY A HOOK AND NOT A RESOLUTION. Because the resolution was made, in writing,
+to a human, and then broken twice in the next hour. It does not survive a busy
+moment and it does not survive compaction: the next context window inherits
+the habit with none of the reasons. If it can be broken it was never a rule.
+"""
+import json
+import os
+import re
+import sys
+
+# Written in the command itself, so a reader of the transcript sees the
+# exception was taken and by whom. An environment variable would belong to
+# THIS process rather than to the command being inspected — a hatch the caller
+# could never actually open, which is how the sibling guard's first one shipped
+# decorative.
+ALLOW = "llm_chat:allow-piped-verdict"
+
+# A pipe into tail/head, however much whitespace. `|&` is bash's own
+# merge-stderr-and-pipe, so it is the same offence spelled shorter.
+INTO_PAGER = re.compile(r"(\|&|\|)\s*(tail|head)\b")
+
+# stderr merged into the pipeline anywhere before it.
+MERGES_STDERR = re.compile(r"2>&1|\|&")
+
+# Commands run FOR their verdict: the exit status or the failure text is the
+# reason you ran them at all. Deliberately short — every entry is something
+# that has actually been misread here, or is the same kind of thing one step
+# away. A list that tries to name everything fallible becomes a list that
+# fires on everything.
+VERDICT = re.compile(
+    r"\b("
+    r"test/(run|mutate|contract)\.py"          # this repo's own gates
+    r"|bin/verify|/verify\b"                   # the game_loop gate
+    r"|lamp\s+(publish|upgrade)"               # releases, and consumers
+    r"|install\.sh|legacy_teardown\.sh"
+    r"|pytest|unittest|tox|nox"
+    r"|npm\s+(test|run)|yarn\s+(test|run)|pnpm\s+(test|run)"
+    r"|cargo\s+(test|build|check)|go\s+test"
+    r"|dart\s+test|flutter\s+test|make\b"
+    r")")
+
+
+# `;`, `&&`, `||`, and newlines end one command and begin another. Splitting on
+# them is what keeps this scoped to the pipeline the pager is actually IN.
+SEPARATORS = re.compile(r";|&&|\|\||\n")
+
+# Interpreters that take the real command as an argument, so the verdict is in
+# the SECOND position rather than the first.
+RUNNERS = ("python", "python3", "node", "ruby", "perl", "sh", "bash", "zsh",
+           "npx", "uv", "poetry")
+
+# A bare subcommand word — `lamp publish`, `npm test`. Anything with a slash or
+# a dot is a path, which is an ARGUMENT, not a subcommand.
+SUBCOMMAND = re.compile(r"^[a-z][a-z-]*$")
+
+
+def command_head(stage):
+    """The part of a pipeline stage that says what is being RUN.
+
+    Naming a verdict command is not running one. `grep -n x test/mutate.py |
+    head` reads a file and was refused by the first version, because the
+    pattern matched the filename sitting in argument position — which is the
+    same mistake this repo already corrected once, in the check that counts
+    remedies: five of the twelve it found were prose that merely mentioned a
+    command. It cost a false count there and a false refusal here, and both
+    times the fix was to ask WHERE the name appears, not whether it does.
+    """
+    tokens = stage.strip().split()
+    if not tokens:
+        return ""
+    head = [tokens[0]]
+    i = 1
+    if os.path.basename(tokens[0]) in RUNNERS:
+        while i < len(tokens) and tokens[i].startswith("-"):
+            head.append(tokens[i])
+            i += 1
+        if i < len(tokens):
+            head.append(tokens[i])       # the script, or `-m`'s module
+            i += 1
+            if head[-1] in ("unittest", "pytest") and i < len(tokens):
+                head.append(tokens[i])
+    elif i < len(tokens) and SUBCOMMAND.match(tokens[i]):
+        head.append(tokens[i])           # `lamp publish`, not `cat file.py`
+    return " ".join(head)
+
+
+HEREDOC = re.compile(r"<<-?\s*['\"]?(\w+)['\"]?")
+
+
+def strip_heredocs(command):
+    """Remove heredoc BODIES, which are data rather than commands.
+
+    The commit message describing this guard quoted the two pipelines it was
+    written to refuse — inside a `git commit -F - <<'MSG'` — and the guard
+    refused the commit. That is the third false positive it shipped with, and
+    the one its own sibling had already written down: "Prose that MENTIONS a
+    write is not a write." The lesson was on the next file over, in a
+    docstring, and it still had to be relearned by being blocked.
+
+    A guard that cannot describe itself in a commit message is a guard whose
+    reasons never get written down.
+    """
+    out, rest = [], command
+    while True:
+        found = HEREDOC.search(rest)
+        if not found:
+            out.append(rest)
+            return "".join(out)
+        out.append(rest[:found.end()])
+        after = rest[found.end():]
+        # The body starts on the next line and ends at the delimiter alone.
+        end = re.search(r"^\s*%s\s*$" % re.escape(found.group(1)),
+                        after, re.M)
+        rest = after[end.end():] if end else ""
+        if not end:
+            return "".join(out)
+
+
+def offence(command):
+    """(kind, snippet) for a verdict read through a pager, or None.
+
+    Only the pipeline the pager is actually in, and only what is UPSTREAM of
+    it. `tail -5 out.log | grep x` has no pager at the end and is not this;
+    a verdict named after the pipe — `head -1 list | xargs pytest` — is not
+    being truncated by it.
+
+    THE SEGMENT SPLIT IS NOT A DETAIL. The first version searched the whole
+    prefix, so this — the exact remedy this guard recommends —
+
+        verify > log 2>&1; echo "EXIT=$?"; grep -nE 'FAIL' log | head
+
+    was refused: the `2>&1` belongs to the FIRST command, the `| head` to the
+    THIRD, and reading across the `;` welded them into an offence. It fired
+    within a minute of being registered, on its own advice.
+
+    The tests missed it because they listed the two idioms SEPARATELY — a
+    correct redirect, and a harmless `grep | head` — and never the compound
+    line that is what actually gets typed. Cases written one-per-rule cannot
+    catch a rule that only breaks when two of them meet.
+    """
+    if not command:
+        return None
+    command = strip_heredocs(command)
+    match = INTO_PAGER.search(command)
+    if not match:
+        return None
+    # Through the pager itself, so `|&` — which IS the merge — is inside it.
+    with_pager = SEPARATORS.split(command[:match.end()])[-1]
+    if MERGES_STDERR.search(with_pager):
+        return ("stderr", match.group(0).strip())
+    upstream = SEPARATORS.split(command[:match.start()])[-1]
+    for stage in upstream.split("|"):
+        found = VERDICT.search(command_head(stage))
+        if found:
+            return ("verdict", found.group(0).strip())
+    return None
+
+
+def refusal(kind, snippet):
+    if kind == "stderr":
+        why = (
+            "You merged stderr into a pipe that ENDS in `%s` — so the errors "
+            "were routed\ninto something whose job is to discard most of its "
+            "input. There is no\nversion of that which wants the error "
+            "output.\n\n"
+            "A publish here failed with `test/run.py exited 1`. The reason "
+            "was in the\ndiscarded region, the rerun passed, and the failure "
+            "became unreproducible.\nThe evidence was destroyed by the command "
+            "asking for it." % snippet
+        )
+    else:
+        why = (
+            "`%s` is run FOR its verdict, and a pipeline's exit status is the "
+            "LAST\ncommand's. `tail` almost never fails, so this reports "
+            "success whatever the\ncommand did.\n\n"
+            "That has already happened here: a failing suite was read as "
+            "passing through\na pipe and reported to a human as a clean "
+            "gate." % snippet
+        )
+    return (
+        "REFUSED: this reads a verdict through a pager.\n\n%s\n\n"
+        "Two lines, always available:\n\n"
+        "    cmd > /tmp/out.log 2>&1; echo \"EXIT=$?\"\n"
+        "    grep -nE 'FAIL|Error|Traceback' /tmp/out.log\n\n"
+        "That keeps the status, keeps the whole log for the NEXT question, "
+        "and\nsurvives the run.\n\n"
+        "Reading a file with tail is not this — `tail -50 out.log` is the "
+        "remedy.\nIf you have decided the loss is fine, put %s in the "
+        "command." % (why, ALLOW)
+    )
+
+
+def main(argv=None):
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return 0
+    if payload.get("tool_name") != "Bash":
+        return 0
+    command = (payload.get("tool_input") or {}).get("command", "")
+    if ALLOW in command:
+        return 0
+    found = offence(command)
+    if not found:
+        return 0
+    print(refusal(*found), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

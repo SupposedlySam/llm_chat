@@ -363,6 +363,39 @@ MUTATIONS = [
      "    if False:\n        return \"\"",
      "a standing gap becomes standing noise on every tool call"),
 
+    ("a verdict read through a pager is refused", "triggers/piped-verdict",
+     "    if MERGES_STDERR.search(with_pager):",
+     "    if False:",
+     "`cmd 2>&1 | tail -N` reports TAIL's exit status and discards the region "
+     "the traceback is in — a failing suite was read as passing and reported "
+     "to a human as a clean gate, and a publish failure became unreproducible "
+     "because the command asking for the reason threw it away"),
+
+    ("a heredoc BODY ends at its delimiter", "triggers/piped-verdict",
+     '        end = re.search(r"^\\s*%s\\s*$" % re.escape(found.group(1)),\n'
+     "                        after, re.M)",
+     "        end = None",
+     "every heredoc is treated as unterminated, so everything after the "
+     "opener is discarded and a real offence written AFTER a commit message "
+     "goes unseen — the guard reads as silent rather than as broken"),
+
+    ("prose in a heredoc is not a command", "triggers/piped-verdict",
+     "    command = strip_heredocs(command)",
+     "    command = command",
+     "a commit message DESCRIBING the offence is refused as the offence — "
+     "this guard blocked its own commit message, and a guard that cannot be "
+     "described in a commit message is one whose reasons never get written "
+     "down"),
+
+    ("a verdict NAMED in argument position is not being run",
+     "triggers/piped-verdict",
+     "    elif i < len(tokens) and SUBCOMMAND.match(tokens[i]):",
+     "    elif i < len(tokens):",
+     "`grep -n x test/mutate.py | head` and `cat test/run.py | head` are "
+     "refused because the filename sits in argument position — the false "
+     "alarm that gets a guard switched off within the hour, and the same "
+     "mistake this repo already corrected once in the remedy counter"),
+
     ("a leftover per-repo skill copy is reported", "bin/llm_chat",
      '    if not os.path.isfile(path):\n        return ""',
      '    if True:\n        return ""',
@@ -521,6 +554,11 @@ NOT_SWEPT = {
         "five VERBATIM smuggled writes from this session and seven legitimate "
         "commands; the allow-cases matter more, since a guard that blocks the "
         "test runner is turned off within the hour",
+    "triggers/piped-verdict:refusal": "asserted directly — both kinds must "
+        "carry the two-line remedy and name the escape hatch, or the refusal "
+        "is a wall rather than a redirection",
+    "triggers/piped-verdict:main": "every branch asserted directly, including "
+        "the visible escape hatch and the non-Bash tool",
     "triggers/write-through-interpreter:refusal": "asserted directly — it must "
         "name Write/Edit, or the refusal is a wall rather than a redirection",
     "triggers/write-through-interpreter:main": "every branch asserted "
