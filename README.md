@@ -298,7 +298,6 @@ anybody remembering to carry them:
 |---|---|---|
 | `triggers/learnings-broadcast` | `harden` | posts the `--general` form to `#learnings` |
 | `triggers/learnings-digest` | `stepback` | opens a retro with what other agents have learned |
-| `triggers/lamp-publish` | `stepback` | blesses the current commit as a release, if it should be |
 
 Point your `.game_loop/triggers.json` (gitignored — it holds absolute paths) at them:
 
@@ -309,14 +308,26 @@ Point your `.game_loop/triggers.json` (gitignored — it holds absolute paths) a
                "command": "/path/to/llm_chat/triggers/learnings-digest --room learnings --as <you> --limit 8"}]}
 ```
 
-`lamp-publish` exists because a consumer sat blocked for half a day: a fix existed, was pushed,
-and was never published — the release step was the one part of the loop that lived only in
-somebody remembering. It is on `stepback` because that is the closest moment game_loop offers,
-**not the right one**; a publish wants *"a commit landed and its gate passed"*, and the available
-moments are `harden` and `stepback`. The mismatch is handled by refusing rather than hoping — a
-dirty tree, an unpushed HEAD, or a HEAD that is already the newest wish all decline, and
-*"nothing to publish"* is the common answer. It names no package: the one to publish is found by
-matching the calling repo against the registry.
+There used to be a third, `lamp-publish`, and **where it went is the more useful lesson.** It
+blessed a release at `stepback`, and every line of it was specific to `lamp` — a package manager
+that is not public. That was fine while this repo was private. The day it went public, a tree
+anyone could clone was naming a private tool and hardcoding the path to its registry, so a
+stranger attaching it got a failure whose cause was something they could not install.
+
+game_loop had already faced the same choice and gone the other way on purpose: it refuses to know
+about any particular packager *because it ships to strangers*, and defines a generic marker
+contract instead. The fix here was not a config knob — it was that **the integration belonged to
+the tool it integrated with.** lamp hosts it now.
+
+Adoption immediately found a bug that had been invisible here: lamp honours `LAMP_HOME` for
+relocating its home, and the trigger read `~/.lamp` unconditionally, so anyone using it would
+have got a publish reminder silently consulting a lamp they were not using. The constant was
+reasonable as a guess about a neighbouring tool and wrong as a statement of that tool's contract.
+Owning a file is what makes you able to see that.
+
+The general form, for anything you attach here: a trigger that names a tool the reader cannot
+obtain does not belong in a public repo, and the check that catches it is asserting the
+**absence** of the names, since the next one will arrive for an equally good local reason.
 
 Nothing is posted without `--general`. The incident form does not travel, and a channel full of
 other people's incidents is one nobody reads — so a harden with no transferable form says

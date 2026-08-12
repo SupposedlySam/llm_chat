@@ -8,7 +8,7 @@ gate.
     .game_loop/triggers.json
     {"stepback": [{"name": "undocumented-surface",
                    "command": "/path/to/llm_chat/triggers/undocumented-surface"},
-                  {"name": "lamp-publish", "command": "..."}]}
+                  {"name": "<your-release-step>", "command": "..."}]}
 
 THE FAILURE IT CATCHES is quiet and universal: a feature lands, its reasoning
 goes into a commit message nobody will read again, and the two files a human or

@@ -328,18 +328,6 @@ MUTATIONS = [
      "anyone joining with --briefing silently replaces the room's rules for "
      "everyone, which is a takeover rather than a join"),
 
-    ("a dirty tree is never published", "triggers/lamp-publish",
-     '    if dirty:\n        return ("uncommitted changes',
-     '    if False:\n        return ("uncommitted changes',
-     "a wish names a commit whose content nobody tested, and every consumer "
-     "vendors it"),
-
-    ("an unpushed commit is never published", "triggers/lamp-publish",
-     '    if code == 0 and unpushed:',
-     '    if False:',
-     "the registry says a release is available and the consumer's fetch fails "
-     "— worse than never blessing it at all"),
-
     ("only the --general form is broadcast", "triggers/learnings-broadcast",
      '    if not general:\n        return None',
      '    if False:\n        return None',
@@ -666,17 +654,6 @@ NOT_SWEPT = {
     "triggers/authority-gate:objection": "asserted directly — it must quote "
         "the phrase and pose the theirs-or-yours question",
     "triggers/authority-gate:main": "every branch asserted directly",
-
-    "triggers/lamp-publish:geanie_for": "matched by path; missing, corrupt "
-        "and unregistered asserted directly",
-    "triggers/lamp-publish:git": "the one shell-out, asserted directly — "
-        "which repo it runs in and what a failure returns",
-    "triggers/lamp-publish:why_not": "every refusal asserted directly, paired "
-        "with the case that MUST publish so a check that refuses everything "
-        "cannot pass",
-    "triggers/lamp-publish:main": "every branch asserted directly, including "
-        "that a refusal is exit 0 and a gate refusal is exit 1",
-    "triggers/lamp-publish:calling_repo": "both links asserted directly",
 
     # The game_loop triggers. Both are thin scripts over the CLI, and what
     # matters in each is asserted directly against a fake subprocess; the two
