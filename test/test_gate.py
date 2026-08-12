@@ -54,6 +54,46 @@ class RepoDamageTest(unittest.TestCase):
         self.write(".llm_chat", "probe", "post-tool-use", text="second")
         self.assertFalse(gate.report_repo_damage(before, gate.fingerprint_repo()))
 
+    def test_A_WAKER_STAMP_MID_RUN_IS_NOT_SUITE_DAMAGE(self):
+        """The same regression as the probe marker, through the two files the
+        comment describing it already named and the exclusion list omitted.
+
+        The waker writes wake.pid and wake.exit every time it starts or is
+        superseded, which during a 20-second suite run is ordinary. It refused
+        a second `lamp publish` — 891 tests OK, 100% coverage, exit 1 — and
+        like the first one it reproduces only while an agent is working in the
+        repo, which is exactly when a release is cut.
+        """
+        for stamp in ("wake.pid", "wake.exit"):
+            with self.subTest(file=stamp):
+                before = gate.fingerprint_repo()
+                self.write(".llm_chat", stamp, text="37300")
+                self.assertFalse(
+                    gate.report_repo_damage(before, gate.fingerprint_repo()))
+
+    def test_a_CHANGED_waker_stamp_is_also_not_damage(self):
+        """Restamped on every restart, not only created."""
+        self.write(".llm_chat", "wake.pid", text="1")
+        before = gate.fingerprint_repo()
+        self.write(".llm_chat", "wake.pid", text="2")
+        self.assertFalse(gate.report_repo_damage(before, gate.fingerprint_repo()))
+
+    def test_the_exclusion_is_matched_per_FILE_not_per_directory(self):
+        """The fix would have looked applied and changed nothing.
+
+        The exclusion was tested against `dirpath`, which worked only because
+        the single entry was a DIRECTORY (`.llm_chat/probe/`). Adding a plain
+        file to the tuple would have left the walk hashing it anyway — the list
+        naming it, the gate still failing, and the difference invisible without
+        this assertion. `wake.pid` sits directly in `.llm_chat/`, whose own
+        relpath matches no exclusion."""
+        self.assertIn(os.path.join(".llm_chat", "wake.pid"), gate.UNGUARDED)
+        self.write(".llm_chat", "wake.pid", text="x")
+        hashed = gate.fingerprint_repo()
+        self.assertFalse(any(path.endswith("wake.pid") for path in hashed),
+                         "wake.pid is in UNGUARDED and still got fingerprinted "
+                         "— the exclusion is being matched against directories")
+
     def test_a_real_escape_ELSEWHERE_in_llm_chat_is_still_caught(self):
         """Paired, and the reason this is an exclusion rather than dropping
         the guard: a test writing identity or membership into the real repo is

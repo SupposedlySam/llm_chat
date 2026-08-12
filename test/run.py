@@ -172,7 +172,21 @@ def report_global_leaks(before):
 # a refused `lamp publish` whose reason was then discarded by a pager, and the
 # failure was written up as unreproducible — it was not, it was this, and it
 # only reproduces while something is actively using the repo.
-UNGUARDED = (os.path.join(".llm_chat", "probe"),)
+#
+# THE LIST WAS SHORTER THAN ITS OWN REASONING. It named only `probe`, while the
+# paragraph above says "the waker stamps its own" — and the waker's stamps are
+# `wake.pid` and `wake.exit`, written every time it starts or is superseded.
+# So the same defect the comment describes came back through the two files the
+# comment mentions and the list omitted, and it cost a second refused
+# `lamp publish`: 891 tests OK, 100% coverage, exit 1, because a waker
+# restarted during a 20-second run.
+#
+# It reproduces only while an agent is working in this repo, which is exactly
+# when a release is being cut, and never while nothing is running — which is
+# how it survived a green gate minutes earlier.
+UNGUARDED = (os.path.join(".llm_chat", "probe"),
+             os.path.join(".llm_chat", "wake.pid"),
+             os.path.join(".llm_chat", "wake.exit"))
 
 
 def fingerprint_repo():
@@ -180,11 +194,17 @@ def fingerprint_repo():
     for relative in GUARDED:
         base = os.path.join(ROOT, relative)
         for dirpath, _, filenames in os.walk(base):
-            if any(os.path.relpath(dirpath, ROOT).startswith(skip)
-                   for skip in UNGUARDED):
-                continue
             for name in filenames:
                 path = os.path.join(dirpath, name)
+                # Matched per FILE, not per directory. The exclusion used to be
+                # applied to `dirpath`, which worked only because the one entry
+                # was a directory (`.llm_chat/probe/`). Adding a plain file to
+                # the list would then have changed nothing at all — the tuple
+                # would name it, the walk would still hash it, and the fix
+                # would look applied while the gate kept failing.
+                if any(os.path.relpath(path, ROOT).startswith(skip)
+                       for skip in UNGUARDED):
+                    continue
                 try:
                     with open(path, "rb") as f:
                         state[path] = hashlib.sha256(f.read()).hexdigest()
