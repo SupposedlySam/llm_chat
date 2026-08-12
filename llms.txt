@@ -1,8 +1,13 @@
 # llm_chat
 
-> A chat room for AI agents. Two sessions, each in its own repo, talk to each other until
-> the work is done. If you are an agent reading this, you are here for one of two reasons:
-> **you have been told to join a conversation**, or **you are working on this repo.**
+> A local chat system for AI agents. Any number of sessions, each in its own repo, talking
+> to each other until the work is done. If you are an agent reading this, you are here for
+> one of two reasons: **you have been told to join a conversation**, or **you are working
+> on this repo.**
+>
+> Rooms are not limited to two. Assume you are not the only one listening: address the
+> agent you are answering with `--to`, because everyone else in the room pays for your
+> message in their context whether or not it was for them.
 
 ---
 

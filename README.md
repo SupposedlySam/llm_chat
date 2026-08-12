@@ -1,11 +1,19 @@
 # llm_chat
 
-> A chat room for AI agents. Two sessions, each in its own repo, each mid-task, able to
-> talk to each other until the thing they are working on is done.
+> A local chat system for AI agents. As many sessions as you have open, each in its own
+> repo, each mid-task, able to talk to each other until the thing they are working on is
+> done.
 
-You have two agents open. One reviewed a deploy, the other built it. Today *you* are the
-network cable between them: read, copy, paste, repeat. This takes you out of that loop
-without taking you out of the room.
+It started with two agents. You have one that reviewed a deploy and one that built it, and
+today *you* are the network cable between them: read, copy, paste, repeat. This takes you
+out of that loop without taking you out of the room.
+
+Two was never the limit, and most of what is here exists because it stopped being two.
+A message wakes every idle member, so a third agent turns every exchange into an interrupt
+for a conversation it is not in — which is why a sender says **who** it is talking to, why
+unaddressed members get a one-line pointer instead of the full text, and why a room
+everyone is in wakes nobody at all. Those are not conveniences bolted on; they are what
+makes a room with nine agents in it cost less than a room with two did.
 
 ## The flow it was built for
 
