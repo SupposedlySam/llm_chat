@@ -13,12 +13,13 @@ in — the blast-radius rule applies to the test suite too.
 import io
 import json
 import os
+import shlex
 import sys
 import unittest
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from support import load  # noqa: E402
+from support import ROOT, load  # noqa: E402
 
 broadcast = load("triggers/learnings-broadcast")
 digest = load("triggers/learnings-digest")
@@ -462,6 +463,76 @@ class EntryPointTest(unittest.TestCase):
     def test_both_declare_a_main_returning_an_exit_code(self):
         for module in (broadcast, digest):
             self.assertTrue(callable(module.main))
+
+
+class WiredTriggersResolveTest(unittest.TestCase):
+    """Every command in THIS machine's triggers.json points at something that
+    exists and can be run.
+
+    The failure this exists for is silence. game_loop fires a trigger whose
+    command is gone, that firing fails, and the visible result is a moment
+    where nothing happened — indistinguishable from a moment where nothing
+    needed to happen. The release reminder is the worst case: "nothing to
+    publish" is its most common CORRECT output, so a broken one looks exactly
+    like a working one until a release quietly does not go out.
+
+    That stopped being hypothetical when `lamp-publish` moved to the lamp repo
+    and this file started naming a path in somebody else's tree. They guard
+    their end — their suite asserts the file exists, resolved from their repo
+    root rather than from `__file__`, so renaming the directory fails their
+    gate rather than relocating with it. What neither of us could guard from
+    one side is the whole repo MOVING: their check follows the move and stays
+    green, while the absolute path here goes stale.
+
+    So this asserts the property from the consuming end, where the absolute
+    path actually lives. It names no particular tool — it reads whatever is
+    configured, which is the only version that does not re-introduce the
+    problem the move solved.
+
+    Skipped rather than failed when triggers.json is absent: it is gitignored,
+    holds absolute paths belonging to one machine, and a clone legitimately
+    has none.
+    """
+
+    def setUp(self):
+        self.path = os.path.join(ROOT, ".game_loop", "triggers.json")
+        if not os.path.isfile(self.path):
+            self.skipTest("no .game_loop/triggers.json (gitignored, per-machine)")
+        with open(self.path) as f:
+            self.config = json.load(f)
+
+    def wired(self):
+        """(moment, name, executable) for every configured trigger."""
+        for moment, entries in self.config.items():
+            if moment.startswith("/"):      # the "//" comment block
+                continue
+            for entry in entries:
+                command = entry.get("command", "")
+                yield moment, entry.get("name", "?"), shlex.split(command)[0]
+
+    def test_every_wired_trigger_exists_and_is_executable(self):
+        for moment, name, executable in self.wired():
+            with self.subTest(moment=moment, trigger=name):
+                self.assertTrue(
+                    os.path.isfile(executable),
+                    "%s trigger %r points at a file that does not exist: %s\n"
+                    "  game_loop would fire this and fail SILENTLY — the moment "
+                    "looks identical\n  to one where nothing needed doing."
+                    % (moment, name, executable))
+                self.assertTrue(
+                    os.access(executable, os.X_OK),
+                    "%s trigger %r is not executable: %s"
+                    % (moment, name, executable))
+
+    def test_the_check_would_notice_a_path_that_moved(self):
+        """Paired, because the test above passes trivially on a machine with
+        no triggers wired, and 'it passed' must not mean 'it looked at
+        nothing'."""
+        self.assertTrue(any(True for _ in self.wired()),
+                        "triggers.json exists but wires nothing — the check "
+                        "above would pass without examining anything")
+        moved = os.path.join(ROOT, ".game_loop", "no-such-trigger")
+        self.assertFalse(os.path.isfile(moved))
 
 
 if __name__ == "__main__":
