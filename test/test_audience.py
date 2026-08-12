@@ -247,7 +247,7 @@ class StoreTest(ServerTest):
         waker is still woken in the audience sense — it just picks the message
         up later — so the send says how many doorbells actually rang."""
         real = cli.ring
-        cli.ring = lambda channel, who: who == "bob"
+        cli.ring = lambda channel, who, server=None: who == "bob"
         try:
             out = self.say("hi")
         finally:
@@ -258,7 +258,7 @@ class StoreTest(ServerTest):
         """The common case. A line reporting zero would be noise on every
         message sent while the other agents are working."""
         real = cli.ring
-        cli.ring = lambda channel, who: False
+        cli.ring = lambda channel, who, server=None: False
         try:
             out = self.say("hi")
         finally:

@@ -41,6 +41,11 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLI = os.path.join(HERE, "llm_chat")
 
+# MIRRORED from bin/llm_chat, and it must stay the same expression: it is the
+# fallback for the doorbell namespace, so a difference here would put the
+# ringer and the listener in two directories that both look correct.
+DEFAULT_SERVER = os.environ.get("LLM_CHAT_SERVER") or "http://localhost:7717"
+
 def _project_dir():
     """Root of the calling repo — never the raw cwd.
 
@@ -126,18 +131,27 @@ def on_term(_signum, _frame):
     sys.exit(0)
 
 
-def doorbell_dir():
+def workspace_key(server):
+    """MIRRORED in bin/llm_chat. Normalised so two spellings of one server do
+    not become two workspaces. `localhost` and `127.0.0.1` stay distinct on
+    purpose — zonai binds `[::1]` only on macOS, so they are different
+    endpoints here."""
+    return (server or DEFAULT_SERVER).strip().rstrip("/").lower()
+
+
+def doorbell_dir(server=None):
     """MIRRORED in bin/llm_chat, which rings what this binds. A test pins the
     two equal — two copies of a path convention drift, and a doorbell nobody
     can find is silence that looks like nobody having spoken.
 
-    Qualified by CLONE: two checkouts on one machine are two workspaces, and an
-    unqualified directory made them share sockets. `general__owner.sock` exists
-    in both, so one waker binds it and the other finds a healthy holder and
-    quietly declines — deaf, with no error anywhere.
+    Qualified by SERVER, not by checkout. Keying by checkout assumed one
+    checkout = one workspace, which vendored consumers break: lamp and
+    showrunner each carry a copy under .lamp/llm_chat and all point at the same
+    server, so three copies of ONE workspace got three doorbell directories and
+    rang sockets nobody was listening on. Two clones on different ports are
+    still two workspaces and still isolated.
     """
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tag = hashlib.sha256(root.encode()).hexdigest()[:10]
+    tag = hashlib.sha256(workspace_key(server).encode()).hexdigest()[:10]
     return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells-%s" % tag)
 
 
@@ -163,14 +177,17 @@ def open_doorbells(rooms):
         identity = entry.get("identity")
         if not identity:
             continue
-        bell = open_doorbell(channel, identity)
+        bell = open_doorbell(channel, identity, entry.get("server"))
         if bell is not None:
             bells[bell] = channel
     return bells
 
 
-def open_doorbell(channel, identity):
+def open_doorbell(channel, identity, server=None):
     """Listen for "something arrived", at zero cost until it does.
+
+    `server` comes from the room's own record in joined.json, so a project
+    joined to rooms on two servers binds each bell in its own workspace.
 
     THIS REPLACES THE POLL. The waker used to ask the server every few seconds
     per room — six requests a second across five agents and sixteen rooms,
@@ -186,10 +203,10 @@ def open_doorbell(channel, identity):
     waker holding it.
     """
     try:
-        os.makedirs(doorbell_dir(), exist_ok=True)
+        os.makedirs(doorbell_dir(server), exist_ok=True)
     except OSError:
         return None      # no doorbell; the loop still runs on its heartbeat
-    path = os.path.join(doorbell_dir(), doorbell_name(channel, identity))
+    path = os.path.join(doorbell_dir(server), doorbell_name(channel, identity))
     if os.path.exists(path):
         probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         probe.settimeout(1)

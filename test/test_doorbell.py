@@ -55,13 +55,8 @@ class ConventionTest(unittest.TestCase):
         self.assertNotEqual(cli.doorbell_name("room", "a"),
                             cli.doorbell_name("room", "b"))
 
-    def test_TWO_CLONES_DO_NOT_SHARE_DOORBELLS(self):
-        """A second checkout on one machine is a second WORKSPACE — its own
-        store, rooms and agents — and an unqualified directory made them share
-        sockets. `general__owner.sock` exists in both, so one waker binds it
-        and the other finds a healthy holder and quietly declines. Deaf, with
-        no error anywhere: the same silent-collision shape as keying by
-        identity instead of membership, one level further out.
+    def other_checkout(self):
+        """A second copy of the waker at a different path on disk.
 
         Loaded with SourceFileLoader because these entrypoints have no .py
         suffix — spec_from_file_location returns None for them, which fails as
@@ -71,18 +66,65 @@ class ConventionTest(unittest.TestCase):
         from importlib.machinery import SourceFileLoader
 
         other = tempfile.mkdtemp()
-        try:
-            os.makedirs(os.path.join(other, "bin"))
-            here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            target = os.path.join(other, "bin", "llm-chat-wake")
-            shutil.copy(os.path.join(here, "bin", "llm-chat-wake"), target)
-            loader = SourceFileLoader("other_wake", target)
-            spec = importlib.util.spec_from_loader("other_wake", loader)
-            module = importlib.util.module_from_spec(spec)
-            loader.exec_module(module)
-            self.assertNotEqual(module.doorbell_dir(), waker.doorbell_dir())
-        finally:
-            shutil.rmtree(other, ignore_errors=True)
+        self.addCleanup(shutil.rmtree, other, ignore_errors=True)
+        os.makedirs(os.path.join(other, "bin"))
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        target = os.path.join(other, "bin", "llm-chat-wake")
+        shutil.copy(os.path.join(here, "bin", "llm-chat-wake"), target)
+        loader = SourceFileLoader("other_wake", target)
+        spec = importlib.util.spec_from_loader("other_wake", loader)
+        module = importlib.util.module_from_spec(spec)
+        loader.exec_module(module)
+        return module
+
+    def test_TWO_WORKSPACES_DO_NOT_SHARE_DOORBELLS(self):
+        """The original concern, kept, with the discriminator corrected.
+
+        Two workspaces on one machine have their own store, rooms and agents,
+        and an unqualified directory made them share sockets: `general__owner`
+        exists in both, so one waker binds it and the other finds a healthy
+        holder and quietly declines. Deaf, with no error anywhere.
+
+        This asserted that two CHECKOUTS differ, which was the wrong
+        discriminator — see the paired test below. What separates workspaces is
+        the SERVER, so that is what is asserted now, and the property the
+        original was protecting still holds."""
+        self.assertNotEqual(cli.doorbell_dir("http://localhost:7717"),
+                            cli.doorbell_dir("http://localhost:7718"))
+
+    def test_VENDORED_COPIES_ON_ONE_SERVER_DO_SHARE(self):
+        """The regression the old test could not see, and it was live.
+
+        lamp and showrunner each carry a copy of llm_chat under .lamp/, and all
+        of them point at the same server on 7717 — one store, one set of rooms,
+        one conversation. Keyed by checkout, that was three doorbell
+        directories: lamp rang sockets under its own hash while showrunner's
+        waker listened under another, so messages landed in the shared database
+        and woke nobody. It surfaced as a human saying "I had to tell both of
+        them to go and look", which is what a ring into an empty directory
+        looks like from the outside.
+
+        Asserted across a real second copy on disk, not by calling one function
+        twice, because the defect was precisely that two copies disagreed."""
+        other = self.other_checkout()
+        self.assertEqual(other.doorbell_dir("http://localhost:7717"),
+                         waker.doorbell_dir("http://localhost:7717"))
+
+    def test_one_server_spelled_two_ways_is_one_workspace(self):
+        """The ringer and the listener reach the server through different
+        paths — `--server`, LLM_CHAT_SERVER, the default — so they will not
+        always spell it identically. A trailing slash must not partition a
+        workspace the way a checkout path just did."""
+        self.assertEqual(cli.doorbell_dir("http://localhost:7717/"),
+                         cli.doorbell_dir("HTTP://LocalHost:7717"))
+
+    def test_localhost_and_127_0_0_1_stay_APART(self):
+        """Not normalised together, deliberately: zonai binds `[::1]` only on
+        macOS, so these are genuinely different endpoints and agents on one
+        cannot reach the other. Collapsing them would put unreachable agents in
+        one namespace — a worse bug than the one being fixed."""
+        self.assertNotEqual(cli.doorbell_dir("http://localhost:7717"),
+                            cli.doorbell_dir("http://127.0.0.1:7717"))
 
     def test_it_is_machine_local_and_not_inside_a_repo(self):
         """A doorbell is meaningless after a reboot and belongs to no project.
@@ -102,7 +144,7 @@ class RingTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.real = cli.doorbell_dir
-        cli.doorbell_dir = lambda: self.tmp.name
+        cli.doorbell_dir = lambda server=None: self.tmp.name
         self.bells = []
 
     def tearDown(self):
@@ -160,7 +202,7 @@ class DoorbellTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.real = waker.doorbell_dir
-        waker.doorbell_dir = lambda: self.tmp.name
+        waker.doorbell_dir = lambda server=None: self.tmp.name
         self.open = []
 
     def tearDown(self):
@@ -204,7 +246,7 @@ class DoorbellTest(unittest.TestCase):
         self.assertIsNotNone(self.bind())
 
     def test_an_unbindable_path_is_None_rather_than_a_crash(self):
-        waker.doorbell_dir = lambda: "/proc/nope/deeper"
+        waker.doorbell_dir = lambda server=None: "/proc/nope/deeper"
         self.assertIsNone(waker.open_doorbell("room", "me"))
 
     def test_an_unremovable_stale_socket_is_None_rather_than_a_crash(self):
@@ -236,7 +278,7 @@ class ManyBellsTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.real = waker.doorbell_dir
-        waker.doorbell_dir = lambda: self.tmp.name
+        waker.doorbell_dir = lambda server=None: self.tmp.name
 
     def tearDown(self):
         waker.doorbell_dir = self.real

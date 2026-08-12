@@ -927,7 +927,24 @@ def do_pending(server, name, identity):
     }))
 
 
-def doorbell_dir():
+def workspace_key(server):
+    """The workspace a doorbell belongs to, as a stable string.
+
+    MIRRORED in bin/llm-chat-wake. Normalised so that two spellings of one
+    server do not become two workspaces: a trailing slash and a capital letter
+    are the same address, and the ringer and the listener reach it through
+    different code paths (`--server`, `LLM_CHAT_SERVER`, the default), so they
+    will not always spell it identically.
+
+    `localhost` and `127.0.0.1` are NOT normalised together on purpose — zonai
+    binds `[::1]` only on macOS, so they are genuinely different endpoints
+    here, and pretending otherwise would put agents that cannot reach each
+    other in one namespace.
+    """
+    return (server or DEFAULT_SERVER).strip().rstrip("/").lower()
+
+
+def doorbell_dir(server=None):
     """Where agents leave a socket saying "I am listening".
 
     Machine-local and ephemeral on purpose. A doorbell is meaningless after a
@@ -939,17 +956,27 @@ def doorbell_dir():
     two equal; two copies of a path convention drift, and a doorbell nobody
     can find is silence that looks like nobody having spoken.
     """
-    # QUALIFIED BY CLONE. Two checkouts on one machine are two workspaces —
-    # separate stores, separate rooms, separate agents — and an unqualified
-    # directory made them share doorbells. A room called `general` with an
-    # identity `owner` exists in both, so one waker binds `general__owner.sock`
-    # and the other finds a healthy holder and quietly declines. Deaf, with no
-    # error anywhere: the same silent-collision shape as keying by identity
-    # instead of membership, one level further out.
+    # QUALIFIED BY SERVER, which is what actually defines a workspace.
     #
-    # ROOT is the clone, and both halves of a clone compute it identically, so
-    # the ringer and the listener agree without a shared constant.
-    tag = hashlib.sha256(os.path.abspath(ROOT).encode()).hexdigest()[:10]
+    # This was keyed by CHECKOUT, to stop two independent clones sharing
+    # sockets — `general__owner.sock` exists in both, so one waker binds it and
+    # the other finds a healthy holder and quietly declines. That reasoning was
+    # right about clones and wrong about the general case, because it assumed
+    # one checkout = one workspace.
+    #
+    # A VENDORED CONSUMER BREAKS THAT ASSUMPTION, and did. lamp and showrunner
+    # each carry their own copy under .lamp/llm_chat, and all of them point at
+    # the SAME server on 7717 — same store, same rooms, same messages. Keying
+    # by checkout put three copies of one workspace in three doorbell
+    # directories: lamp rang sockets under its own hash while showrunner's
+    # waker listened under another, so the message landed in the shared
+    # database and woke nobody. Reported as "I had to tell both of them to go
+    # look", which is exactly what a ring into an empty directory looks like.
+    #
+    # The server is the store. Two clones on different ports are still two
+    # workspaces and still isolated; three checkouts on one port are one
+    # workspace and can now hear each other.
+    tag = hashlib.sha256(workspace_key(server).encode()).hexdigest()[:10]
     return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells-%s" % tag)
 
 
@@ -972,7 +999,7 @@ def doorbell_name(channel, identity):
     return "%s__%s.sock" % (channel, identity)
 
 
-def ring(channel, identity):
+def ring(channel, identity, server=None):
     """Tell one agent something arrived. Returns True if anyone was listening.
 
     This REPLACES polling. An idle waker blocks on its doorbell at zero cost
@@ -986,7 +1013,7 @@ def ring(channel, identity):
     here is silent by design — but it is the only silent path in the send, so
     it returns whether it reached anyone and `say` reports the count.
     """
-    path = os.path.join(doorbell_dir(), doorbell_name(channel, identity))
+    path = os.path.join(doorbell_dir(server), doorbell_name(channel, identity))
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(2)
     try:
@@ -1067,7 +1094,7 @@ def do_say(server, name, identity, text, audience=None):
     # to obey them or --to-none is a lie at the transport layer.
     listening = [m for m in members
                  if m != identity and wakes({"audience": audience}, m, chan)
-                 and ring(name, m)]
+                 and ring(name, m, server)]
     print(f"  {say_reach(server, name, identity, audience, chan)}")
     if listening:
         print(f"  rang {len(listening)} listening now: {', '.join(listening)}")

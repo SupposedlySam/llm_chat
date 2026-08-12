@@ -241,12 +241,20 @@ MUTATIONS = [
      "every message lands in full in every member's context — measured at 8.6x "
      "amplification and half a million tokens before this"),
 
-    ("two clones do not share a doorbell directory", "bin/llm_chat",
-     '    tag = hashlib.sha256(os.path.abspath(ROOT).encode()).hexdigest()[:10]',
+    ("two workspaces do not share a doorbell directory", "bin/llm_chat",
+     '    tag = hashlib.sha256(workspace_key(server).encode()).hexdigest()[:10]',
      '    tag = "shared"',
-     "a second checkout on the same machine is a second workspace, and its "
-     "agents silently steal each other's sockets — one binds, the other goes "
-     "deaf with no error anywhere"),
+     "two servers on one machine are two workspaces, and their agents silently "
+     "steal each other's sockets — one binds, the other goes deaf with no "
+     "error anywhere"),
+
+    ("one server spelled two ways is ONE workspace", "bin/llm_chat",
+     '    return (server or DEFAULT_SERVER).strip().rstrip("/").lower()',
+     '    return (server or DEFAULT_SERVER)',
+     "a trailing slash partitions a workspace: the ringer and the listener "
+     "reach the server through different paths (--server, LLM_CHAT_SERVER, "
+     "the default) and will not always spell it the same, so one of them "
+     "binds in a directory the other never rings"),
 
     ("a doorbell is keyed by MEMBERSHIP, not identity", "bin/llm_chat",
      '    return "%s__%s.sock" % (channel, identity)',
@@ -256,7 +264,7 @@ MUTATIONS = [
      "room rather than a fault"),
 
     ("a message rings the doorbells it wakes", "bin/llm_chat",
-     '                 and ring(name, m)]',
+     '                 and ring(name, m, server)]',
      '                 and False]',
      "the poll is gone and nothing replaced it, so an idle agent is never "
      "signalled and only hears anything when it happens to start a new waker"),
@@ -585,6 +593,10 @@ NOT_SWEPT = {
     "bin/llm_chat:ring": "listener, no listener, stale socket and junk on "
         "disk all asserted directly",
     "bin/llm-chat-wake:doorbell_dir": "pinned equal to the CLI's copy",
+    "bin/llm-chat-wake:workspace_key": "pinned equal to the CLI's copy through "
+        "doorbell_dir, which is the only thing either side uses it for — and "
+        "the CLI's copy IS swept, so a divergence between them fails the "
+        "pinning test while the behaviour itself stays defended",
     "bin/llm-chat-wake:open_doorbell": "bind, healthy-holder, stale reclaim "
         "and three failure paths asserted directly",
     "bin/llm-chat-wake:open_doorbells": "one bell per joined room asserted "
