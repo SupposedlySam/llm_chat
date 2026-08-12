@@ -105,10 +105,27 @@
 # says so on every commit that touches it — including `.zonai/migrations/**`, deliberately: the only
 # real check for a migration is applying it, and a commit gate that mutates the database is worse
 # than an honest "unchecked".
+# ONE decision written in three files: the vendored fat `zonai` binary, `version:` in zonai.yaml,
+# and the zonai_schema `ref:` in pubspec.yaml. They were all UNCHECKED — the commit that upgraded
+# them said so, which is how this rule got written.
+#
+# Disagreement does not fail in one place, it fails in three different ways, and only one of them
+# is honest. Binary vs zonai.yaml refuses every command with "Version mismatch". Binary vs schema
+# ref does NOT refuse: `zonai compile` prints "Failed to compile rules:" and EXITS 0, so the
+# bootstrap continues and serves with no rules worker, and every /db request returns 500 — which
+# reads as a wire bug rather than a build one. That is exactly how the 0.6.2 upgrade presented.
+#
+# The README and llms.txt both say "bump all three or none". This is that sentence, enforced.
+"zonai.yaml":
+  - "python3 test/test_pins.py"
+"pubspec.yaml":
+  - "python3 test/test_pins.py"
+"zonai":
+  - "python3 test/test_pins.py"
+
 "unchecked-ok":
   - "*.md"
   - "llms.txt"
   - ".gitignore"
-  - "zonai"
   - "pubspec.lock"
   - ".game_loop/**"
