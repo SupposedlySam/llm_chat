@@ -70,11 +70,23 @@ MERGES_STDERR = re.compile(r"2>&1|\|&")
 # that has actually been misread here, or is the same kind of thing one step
 # away. A list that tries to name everything fallible becomes a list that
 # fires on everything.
+#
+# NAMES NO PRIVATE TOOL, and that is a rule rather than a coincidence. This
+# file ships in a PUBLIC repo. It listed `lamp publish|upgrade` — a package
+# manager a stranger cannot install, cannot have, and would never run — put
+# there because the original misread happened to be a `lamp publish`. The
+# entry cost that stranger a rail naming a tool they have no way to obtain,
+# which is the same defect game_loop refused to ship when it declined to know
+# about any particular packager.
+#
+# Removing it loses nothing measurable: the misread that motivated this whole
+# guard was `lamp publish 2>&1 | tail -25`, and MERGES_STDERR catches that on
+# its shape, with no idea what `lamp` is. A rule about shape outlives a list
+# of names. Found by lamp-owner, in their own repo's audit.
 VERDICT = re.compile(
     r"\b("
     r"test/(run|mutate|contract)\.py"          # this repo's own gates
     r"|bin/verify|/verify\b"                   # the game_loop gate
-    r"|lamp\s+(publish|upgrade)"               # releases, and consumers
     r"|install\.sh|legacy_teardown\.sh"
     r"|pytest|unittest|tox|nox"
     r"|npm\s+(test|run)|yarn\s+(test|run)|pnpm\s+(test|run)"

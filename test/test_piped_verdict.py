@@ -72,6 +72,23 @@ class DetectionTest(unittest.TestCase):
         kind, _ = guard.offence("some-new-tool 2>&1 | tail -5")
         self.assertEqual(kind, "stderr")
 
+    def test_the_VERDICT_list_names_no_private_tool(self):
+        """This file ships in a PUBLIC repo, so the list may only name things a
+        stranger could actually run. It listed `lamp publish|upgrade` — a
+        package manager nobody outside this machine can install — because the
+        misread that motivated the guard happened to be one.
+
+        Nothing was lost by removing it: that misread was
+        `lamp publish 2>&1 | tail -25`, which MERGES_STDERR still catches on
+        shape, knowing nothing about lamp. Asserted rather than trusted to
+        review, because the next such name will be added for an equally good
+        local reason."""
+        self.assertIsNone(guard.offence("lamp publish | tail -5"))
+        self.assertIsNotNone(guard.offence("lamp publish 2>&1 | tail -25"))
+        for private in ("lamp", "geanie", "showrunner"):
+            with self.subTest(name=private):
+                self.assertNotIn(private, guard.VERDICT.pattern)
+
     def test_a_verdict_command_is_caught_WITHOUT_merged_stderr(self):
         """The exit-status half. `cmd | tail` reports tail's status, and tail
         almost never fails, so the verdict is lost even with stderr left
