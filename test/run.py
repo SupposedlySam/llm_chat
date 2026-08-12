@@ -129,12 +129,29 @@ def executable_lines(path):
     return lines
 
 
-# Directories in THIS repo that the suite must never modify. A test that writes
-# here has escaped its temp directory: one did, setting CLAUDE_PROJECT_DIR to the
-# real checkout and leaving a junk room in .llm_chat/joined.json that the live
-# hooks would then have polled on every tool call. Nothing in the run failed;
-# it was found by accident. So the suite now proves it kept its hands to itself.
-GUARDED = (".llm_chat", ".claude")
+# The GITIGNORED state directories the suite must never modify. A test that
+# writes here has escaped its temp directory: one did, setting
+# CLAUDE_PROJECT_DIR to the real checkout and leaving a junk room in
+# .llm_chat/joined.json that the live hooks would then have polled on every
+# tool call. Nothing in the run failed; it was found by accident.
+#
+# THIS LIST USED TO BE THE WHOLE GUARD, and that was the defect wcs named in
+# #learnings: "a guard that names directories reports all-clear about a set
+# that stopped containing everything." It watched two directories, so a test
+# escaping into bin/, triggers/, lib/ or the repo root was invisible — and
+# bin/ is where the mutation sweep edits files in place, which has already
+# stranded four of them here for hours.
+#
+# Everything git can enumerate is now asked of git instead (see
+# guarded_paths), so a directory added next week is covered the day it is
+# created rather than the day somebody remembers this tuple. What stays named
+# here is only what git is TOLD to ignore, which is a genuinely closed set:
+# state our own hooks write.
+#
+# wcs's literal form was `git ls-files --cached --others`, without
+# --exclude-standard. Measured here that is 189 files including an 815MB
+# SQLite database, so the principle is adopted and the command is not.
+GUARDED_IGNORED = (".llm_chat", ".claude")
 
 # Shared callables a test might swap and forget to restore. Reaching into a
 # module the code under test imported — `mod.subprocess.run = stub` — patches
@@ -189,27 +206,52 @@ UNGUARDED = (os.path.join(".llm_chat", "probe"),
              os.path.join(".llm_chat", "wake.exit"))
 
 
-def fingerprint_repo():
-    state = {}
-    for relative in GUARDED:
+def guarded_paths():
+    """Every file the suite must leave alone: git's answer, plus the ignored
+    state directories git deliberately will not mention.
+
+    Asking git is the half that cannot go stale. A hand-written directory list
+    is complete on the day it is written and silently incomplete afterwards,
+    which is how bin/ and triggers/ went unwatched while the mutation sweep
+    was editing them in place.
+
+    A git failure falls back to the named directories rather than raising:
+    this guard runs inside every suite run, including in throwaway trees that
+    are not repositories, and a check that cannot start is worse than one
+    watching less. It is narrower, not silent — the fallback still catches the
+    escape that motivated the guard.
+    """
+    seen = set()
+    try:
+        for relative in mutate.tracked_files():
+            seen.add(os.path.join(ROOT, relative))
+    except Exception:
+        pass                      # not a checkout; the named dirs still apply
+    for relative in GUARDED_IGNORED:
         base = os.path.join(ROOT, relative)
         for dirpath, _, filenames in os.walk(base):
             for name in filenames:
-                path = os.path.join(dirpath, name)
-                # Matched per FILE, not per directory. The exclusion used to be
-                # applied to `dirpath`, which worked only because the one entry
-                # was a directory (`.llm_chat/probe/`). Adding a plain file to
-                # the list would then have changed nothing at all — the tuple
-                # would name it, the walk would still hash it, and the fix
-                # would look applied while the gate kept failing.
-                if any(os.path.relpath(path, ROOT).startswith(skip)
-                       for skip in UNGUARDED):
-                    continue
-                try:
-                    with open(path, "rb") as f:
-                        state[path] = hashlib.sha256(f.read()).hexdigest()
-                except OSError:
-                    state[path] = "unreadable"
+                seen.add(os.path.join(dirpath, name))
+    return seen
+
+
+def fingerprint_repo():
+    state = {}
+    for path in guarded_paths():
+        # Matched per FILE, not per directory. The exclusion used to be
+        # applied to `dirpath`, which worked only because the one entry was a
+        # directory (`.llm_chat/probe/`). Adding a plain file to the list
+        # would then have changed nothing at all — the tuple would name it,
+        # the walk would still hash it, and the fix would look applied while
+        # the gate kept failing.
+        if any(os.path.relpath(path, ROOT).startswith(skip)
+               for skip in UNGUARDED):
+            continue
+        try:
+            with open(path, "rb") as f:
+                state[path] = hashlib.sha256(f.read()).hexdigest()
+        except OSError:
+            continue              # absent is not evidence; only a CHANGE is
     return state
 
 

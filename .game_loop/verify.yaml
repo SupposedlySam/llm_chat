@@ -15,13 +15,28 @@
 #
 #     ./.game_loop/bin/verify --coverage
 #
-# WHAT THESE CHECKS MISS — stated here because a rail goes quiet exactly where it is blind:
-# `py_compile` is a SYNTAX gate. It does not resolve names, so it would NOT have caught the missing
-# `import subprocess` that shipped in `setup` and crashed on its first real call — a NameError at
-# runtime, not a parse error. Catching that class needs an undefined-name linter (pyflakes, which is
-# not stdlib, and this project is stdlib-only on purpose) or a smoke test that actually executes the
-# setup path against a throwaway repo. Neither exists yet. Until one does, green here means "it
-# parses", never "it works".
+# WHAT THESE CHECKS MISS — stated here because a rail goes quiet exactly where it is blind.
+#
+# THIS PARAGRAPH WAS ITSELF OUT OF DATE, which is the point showrunner made in #learnings: a stated
+# limit ages exactly like a stated premise, and only one of them ever gets re-checked. It said green
+# meant "it parses, never it works", because the gate was `py_compile` — a syntax check that does
+# not resolve names, and so would not have caught the missing `import subprocess` that shipped in
+# `setup` and crashed on its first real call. That was true when it was written. Nothing has run
+# py_compile since the suite replaced it (see below): every Python path is now covered by
+# `test/run.py --min 100` plus a mutation sweep, which execute the code rather than parse it. The
+# caveat outlived the check it described, and a reader trusting it would have UNDER-trusted a green
+# run for weeks.
+#
+# What is actually missed now, re-derived rather than inherited:
+#   - `bash -n` on the two shell scripts is still only a syntax gate. install.sh's real behaviour is
+#     covered by test_shell.py; legacy_teardown.sh's is too, but neither is exercised on a machine
+#     that differs from this one (a different Claude Code layout, a missing `claude` binary in a
+#     place we did not think of).
+#   - `./zonai compile` catches a table with rules and no row-rules; it does NOT catch a renamed
+#     column, which is why contract.py runs beside it.
+#   - Nothing here runs the MCP server against a real client, only against its own schema.
+#
+# When one of these stops being true, delete the line rather than leaving it to age.
 
 # mutate.py is the check that makes --min 100 mean something. It reverts eleven
 # fixes this project actually shipped and requires the suite to go RED for each.

@@ -94,6 +94,44 @@ class RepoDamageTest(unittest.TestCase):
                          "wake.pid is in UNGUARDED and still got fingerprinted "
                          "— the exclusion is being matched against directories")
 
+    def test_AN_ESCAPE_OUTSIDE_THE_NAMED_DIRECTORIES_IS_CAUGHT(self):
+        """The gap wcs named in #learnings: "a guard that names directories
+        reports all-clear about a set that stopped containing everything."
+
+        This watched `.llm_chat/` and `.claude/` only, so a test writing into
+        bin/, triggers/, lib/ or the repo root was invisible — and bin/ is
+        where the mutation sweep edits files in place, which has already
+        stranded four mutations here for hours. git enumerates the rest now,
+        so a directory added next week is covered on the day it is created.
+        """
+        for tracked in (os.path.join("bin", "llm_chat"),
+                        os.path.join("triggers", "piped-verdict"),
+                        "README.md"):
+            with self.subTest(file=tracked):
+                before = gate.fingerprint_repo()
+                path = os.path.join(self.tmp.name, tracked)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w") as f:
+                    f.write("a test escaped and wrote here")
+                self.assertTrue(
+                    gate.report_repo_damage(before, gate.fingerprint_repo()),
+                    "%s was modified and the guard did not notice" % tracked)
+                os.remove(path)
+
+    def test_the_guarded_set_is_not_a_hand_written_directory_list(self):
+        """Asserted directly, because the failure mode is that it silently
+        goes back to being one. The named tuple may only contain things git is
+        TOLD to ignore — everything else has to come from git, or the list
+        starts aging again the moment somebody adds a directory."""
+        self.assertEqual(set(gate.GUARDED_IGNORED), {".llm_chat", ".claude"})
+        paths = gate.guarded_paths()
+        outside = [p for p in paths
+                   if not any(os.path.relpath(p, gate.ROOT).startswith(d)
+                              for d in gate.GUARDED_IGNORED)]
+        self.assertTrue(outside,
+                        "guarded_paths returned nothing beyond the named "
+                        "directories — the git half is not contributing")
+
     def test_a_real_escape_ELSEWHERE_in_llm_chat_is_still_caught(self):
         """Paired, and the reason this is an exclusion rather than dropping
         the guard: a test writing identity or membership into the real repo is

@@ -228,6 +228,13 @@ MUTATIONS = [
      "twenty commits were authored past a guard that was refusing shell "
      "commands the whole time"),
 
+    ("the damage guard asks GIT, not a directory list", "test/run.py",
+     "        for relative in mutate.tracked_files():",
+     "        for relative in []:",
+     "the guard falls back to watching two hand-named directories, so a test "
+     "escaping into bin/, triggers/ or lib/ is invisible — wcs's finding, and "
+     "bin/ is where the mutation sweep edits in place"),
+
     ("the leak detector is itself defended", "test/run.py",
      '    if not leaked:',
      '    if True:',
