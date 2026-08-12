@@ -14,7 +14,8 @@ final class MembershipRowRules extends RowRules<MembershipTable, Membership> {
   Future<bool> canView(Jwt? jwt, Membership row) async => true;
 
   @override
-  Future<bool> canUpdate(Jwt? jwt, Membership row) async => true;
+  Future<bool> canUpdate(Jwt? jwt, Membership before, Membership after) async =>
+      true;
 
   @override
   Future<bool> canDelete(Jwt? jwt, Membership row) async => true;

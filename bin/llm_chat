@@ -1880,6 +1880,48 @@ def port_of(server) -> int:
     return parsed.port or (443 if parsed.scheme == "https" else 80)
 
 
+# The workers `zonai compile` produces for this project, one per directory
+# under lib/src that holds behaviour (schemas/ declares tables and compiles to
+# nothing). Listed rather than derived: the mapping from directory to worker is
+# zonai's, not ours, and a wrong guess here would either demand a file that is
+# never built or wave through a missing one.
+WORKERS = ("db_config", "db_crons", "db_extensions", "db_operations",
+           "db_rate_limit", "db_rules")
+
+COMPILE_FAILURE = ("Failed to compile", "AOT compilation failed",
+                   "compilation failed")
+
+
+def compile_failed(step, output):
+    """`zonai compile` reports failure in its TEXT and success in its CODE.
+
+    Measured, not assumed: upgrading to 0.6.2 with a stale schema printed
+    "Failed to compile rules:" followed by three analyzer errors, and exited
+    0. Every other step here is judged by its return code, so the bootstrap
+    sailed past it and started a server whose rules worker did not exist —
+    which 500s every single /db request. The server accepts connections and
+    fails everything, so it looks like a wire problem rather than a build one.
+
+    Only the compile step is read this way. Scanning every step's output for
+    the word "failed" would refuse on a test name or a log line quoting one.
+    """
+    if "compile" not in step:
+        return False
+    return any(marker in output for marker in COMPILE_FAILURE)
+
+
+def missing_workers():
+    """Workers that should exist after a compile and do not.
+
+    The belt to compile_failed's braces, and the one that survives zonai
+    changing its wording: the question "did it produce the files?" cannot be
+    answered wrong by a message.
+    """
+    built = os.path.join(ROOT, ".zonai", "executables")
+    return [w for w in WORKERS
+            if not os.path.isfile(os.path.join(built, w + ".exe"))]
+
+
 def start_server(server) -> None:
     """Bootstrap the checkout if needed, then leave a server running.
 
@@ -1896,11 +1938,19 @@ def start_server(server) -> None:
         print(f"  {' '.join(step)}", flush=True)
         done = subprocess.run(step, cwd=ROOT, capture_output=True, text=True,
                               timeout=900)
-        if done.returncode != 0:
+        output = (done.stdout or "") + (done.stderr or "")
+        if done.returncode != 0 or compile_failed(step, output):
             raise SystemExit(
                 f"setup failed at `{' '.join(step)}`:\n"
-                + (done.stderr or done.stdout).strip()[:800]
+                + (output.strip()[:800] or "(no output)")
             )
+    missing = missing_workers()
+    if missing:
+        raise SystemExit(
+            "`./zonai compile` reported success and did not produce: %s\n"
+            "  Every /db request 500s without them, so a server started now "
+            "would accept\n  connections and fail every one." % ", ".join(missing)
+        )
 
     state = os.path.join(ROOT, ".state")
     os.makedirs(state, exist_ok=True)

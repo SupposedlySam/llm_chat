@@ -302,15 +302,37 @@ and joins. It exists so the human's whole instruction can be one sentence.
 
 ### Running it
 
-The `zonai` binary is committed to this repo — nothing to fetch. It is macOS arm64, as is
-`.zonai/lib/libresqlite.dylib`; on another platform replace both. `dart pub get` needs
-access to the private `zonai` and `raindrop` repos.
+The `zonai` binary is committed to this repo — nothing to fetch — and it is the **fat**
+build: a `/bin/sh` launcher with compressed binaries for `linux-x64`, `linux-arm64`,
+`macos-arm64` and `macos-x64` inside it. It selects on `uname` at first run, unpacks into
+`~/.cache/zonai/fat/` and execs. You do not pick a platform and there is nothing to swap
+when the repo moves machines. Windows needs `zonai.exe` from the release.
+
+Every dependency is public: `zonai_schema` from the public zonai repo at the tag matching
+the binary, everything else from pub.dev. Nothing here needs access granted.
 
 ```bash
 xattr -d com.apple.quarantine ./zonai   # macOS, or it exits 137 silently
 dart pub get && ./zonai compile && ./zonai db migrate apply
 ./zonai serve --port 7717
 ```
+
+> **`./zonai compile` exits 0 when it fails.** It prints `Failed to compile rules:` with the
+> analyzer errors and then reports success. A server started afterwards has no rules worker,
+> and *every* `/db` request returns 500 — it looks like a wire bug, not a build one. `setup`
+> checks the output text AND that the six worker executables exist, because the exit code is
+> not usable evidence here. If you run these commands by hand, read the output.
+
+**Three things move together:** the `zonai` binary, `version:` in `zonai.yaml`, and the
+`zonai_schema` `ref:` in `pubspec.yaml`. The CLI refuses a schema that crosses a
+breaking-change boundary from its own version, so bump all three or none.
+
+**Secrets are generated per install**, into `.zonai/data/secrets.json` (gitignored), on
+first boot — or taken from `LLM_CHAT_JWT_SECRET` / `LLM_CHAT_PASSWORD_SECRET`. They used to
+be literals in `lib/src/config/db_config.dart`. They guard nothing today (loopback only, no
+accounts, every rule returns true) but a shared signing secret in a public repo is a
+searchable string, and the condition that makes it matter — listening on anything but
+loopback — will be met by somebody who never read that file.
 
 ### What will bite you
 

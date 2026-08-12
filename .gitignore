@@ -1,10 +1,25 @@
-# The `zonai` binary IS committed. zonai is a private repo, so a checkout of this
-# project cannot fetch it — carrying it here is what makes the repo self-contained.
-# It is macOS arm64; see the Gotchas section of the README for other platforms.
+# The `zonai` binary IS committed, and it is the FAT one: a /bin/sh launcher
+# with a compressed build for linux-x64, linux-arm64, macos-arm64 and macos-x64
+# embedded in it. It picks by `uname -s`/`uname -m` on first run, unpacks the
+# matching slice into ~/.cache/zonai/fat/ and execs it — so one committed file
+# serves every platform this project runs on, and nothing lands in the repo.
+#
+# It used to be a macOS arm64 Mach-O, carried because zonai was a private repo
+# a clone could not fetch from. zonai is public now, so the reason changed but
+# the answer did not: committing it is still what makes a fresh clone work
+# without a download step. Windows is not covered — zonai ships zonai.exe
+# separately.
 
-# The database and compiled workers.
+# The database, compiled workers, and the native SQLite library.
+#
+# `.zonai/lib/` used to be committed, holding a macOS arm64 libresqlite.dylib —
+# from when the platform was fixed and the docs told you to swap it by hand.
+# zonai 0.6.2 GENERATES it at compile time (verified: a tree that never had one
+# produced a byte-identical copy), so committing it is not merely redundant, it
+# would ship a macOS binary to the Linux users the fat launcher now serves.
 .zonai/data/
 .zonai/executables/
+.zonai/lib/
 .dart_tool/
 .state/
 
@@ -24,3 +39,24 @@ __pycache__/
 # sharing. Ignoring that file would hide this project's guards from a clone.
 .claude/settings.local.json
 test/.mutate.lock
+
+# Editor and OS droppings, ignored here because this repo is public and a
+# stray one of these is a permanent addition to somebody else's clone.
+.DS_Store
+*.swp
+*~
+.idea/
+.vscode/
+
+# Belt and braces for anything that should never reach a public remote. None of
+# these are produced by this project today; they are listed because the cost of
+# being wrong is unrecoverable — a secret pushed to a public repo is public the
+# moment it lands, and deleting the commit does not unpublish it.
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.keystore
+credentials.json
+secrets.yaml

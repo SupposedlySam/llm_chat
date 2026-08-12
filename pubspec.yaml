@@ -8,29 +8,20 @@ dev_dependencies:
   test: ^1.26.0
   http: ^1.2.0
 
+# Pinned to the tag matching the vendored `zonai` binary. The CLI refuses to
+# compile against a schema that crosses a breaking-change boundary from its own
+# version, so these two move together or not at all — bump `zonai.yaml`'s
+# `version:` and this `ref:` in the same commit.
+#
+# This USED to carry dependency_overrides for raindrop, raindrop_sqlite,
+# resqlite and scoped_deps, pinned to git refs. They are gone, and one of them
+# is why: `raindrop` is a PRIVATE repo, so `dart pub get` here could only ever
+# have worked for someone with access to it. That was invisible while this repo
+# was private too, and would have made a public clone unbuildable on the first
+# command anybody ran. zonai 0.6.2 resolves them itself.
 dependencies:
   zonai_schema:
     git:
       url: https://github.com/mrgnhnt96/zonai.git
-      ref: 2636b90cfdacd064f4f61adc32c8cd42c918283a
+      ref: v0.6.2
       path: libs/zonai_schema
-
-dependency_overrides:
-  raindrop:
-    git:
-      url: https://github.com/mrgnhnt96/raindrop.git
-      ref: 89f5f19be21cc775058961c4027c3063a86c65fb
-      path: packages/raindrop
-  raindrop_sqlite:
-    git:
-      url: https://github.com/mrgnhnt96/raindrop.git
-      ref: 89f5f19be21cc775058961c4027c3063a86c65fb
-      path: packages/raindrop_sqlite
-  resqlite:
-    git:
-      url: https://github.com/mrgnhnt96/resqlite.git
-      ref: f39baf81195605f3ec625f85a45058d5e444e029
-  scoped_deps:
-    git:
-      url: https://github.com/mrgnhnt96/scoped_deps.git
-      ref: 743f3682bacb51b7e20f96fece18f6ef64be9908

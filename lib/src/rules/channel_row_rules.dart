@@ -14,7 +14,7 @@ final class ChannelRowRules extends RowRules<ChannelTable, Channel> {
   Future<bool> canView(Jwt? jwt, Channel row) async => true;
 
   @override
-  Future<bool> canUpdate(Jwt? jwt, Channel row) async => true;
+  Future<bool> canUpdate(Jwt? jwt, Channel before, Channel after) async => true;
 
   @override
   Future<bool> canDelete(Jwt? jwt, Channel row) async => true;

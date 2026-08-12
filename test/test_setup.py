@@ -413,5 +413,75 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(cli.do_channels.calls[0][0][0], "http://elsewhere:9")
 
 
+class CompileVerdictTest(unittest.TestCase):
+    """`zonai compile` reports failure in its TEXT and success in its CODE.
+
+    The same shape this file opens with, met for real while upgrading to zonai
+    0.6.2: compile printed "Failed to compile rules:" and three analyzer
+    errors, then exited 0. Every step in start_server is judged by its return
+    code, so the bootstrap walked past it and started a server with no rules
+    worker — which 500s every /db request. The server accepts connections and
+    fails all of them, so it reads as a wire problem rather than a build one.
+    """
+
+    def test_a_compile_that_says_it_failed_IS_a_failure(self):
+        self.assertTrue(cli.compile_failed(
+            ["./zonai", "compile"],
+            "Analyzing rules...\nFailed to compile rules:\n  error - x"))
+
+    def test_an_AOT_failure_counts_too(self):
+        self.assertTrue(cli.compile_failed(
+            ["./zonai", "compile"], "Error: AOT compilation failed"))
+
+    def test_a_clean_compile_is_not_a_failure(self):
+        self.assertFalse(cli.compile_failed(
+            ["./zonai", "compile"], "Compiled 6 workers"))
+
+    def test_only_the_COMPILE_step_is_read_this_way(self):
+        """Scanning every step for the word "failed" would refuse on a log
+        line or a test name that merely contains it. `pub get` printing
+        somebody else's "failed" is not this project's build breaking."""
+        self.assertFalse(cli.compile_failed(
+            ["dart", "pub", "get"], "Failed to compile rules:"))
+
+
+class MissingWorkersTest(unittest.TestCase):
+    """The check a change of wording cannot defeat.
+
+    compile_failed reads a message; this asks whether the files exist. Keeping
+    both is deliberate — the first names the cause in the error, the second
+    still fires if zonai stops printing that sentence.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.saved_root = cli.ROOT
+        cli.ROOT = self.tmp.name
+        self.built = os.path.join(self.tmp.name, ".zonai", "executables")
+        os.makedirs(self.built)
+
+    def tearDown(self):
+        cli.ROOT = self.saved_root
+        self.tmp.cleanup()
+
+    def build(self, *names):
+        for name in names:
+            with open(os.path.join(self.built, name + ".exe"), "w") as f:
+                f.write("x")
+
+    def test_every_worker_present_reports_nothing(self):
+        self.build(*cli.WORKERS)
+        self.assertEqual(cli.missing_workers(), [])
+
+    def test_THE_RULES_WORKER_MISSING_IS_REPORTED(self):
+        """The exact file that was absent, and the one whose absence 500s
+        every request rather than failing the boot."""
+        self.build(*[w for w in cli.WORKERS if w != "db_rules"])
+        self.assertEqual(cli.missing_workers(), ["db_rules"])
+
+    def test_a_directory_with_no_workers_reports_all_of_them(self):
+        self.assertEqual(cli.missing_workers(), list(cli.WORKERS))
+
+
 if __name__ == "__main__":
     unittest.main()

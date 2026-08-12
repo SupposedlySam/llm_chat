@@ -363,6 +363,27 @@ MUTATIONS = [
      "    if False:\n        return \"\"",
      "a standing gap becomes standing noise on every tool call"),
 
+    ("a worker that was never built is reported missing", "bin/llm_chat",
+     '            if not os.path.isfile(os.path.join(built, w + ".exe"))]',
+     "            if False]",
+     "the belt to compile_failed's braces goes slack: asking whether the "
+     "FILES exist is the half that still works when zonai changes the wording "
+     "of its failure message"),
+
+    ("a compile that SAYS it failed is a failure", "bin/llm_chat",
+     "    return any(marker in output for marker in COMPILE_FAILURE)",
+     "    return False",
+     "zonai prints 'Failed to compile rules:' and exits 0, so the step that "
+     "reports a build error is the one step nothing reads — the exit code is "
+     "checked and the message that contradicts it is thrown away"),
+
+    ("a compile that produces nothing refuses to serve", "bin/llm_chat",
+     "    missing = missing_workers()",
+     "    missing = []",
+     "`zonai compile` exits 0 while printing that it failed, so the bootstrap "
+     "starts a server with no rules worker — it accepts connections and 500s "
+     "every /db request, which presents as a wire bug rather than a build one"),
+
     ("a verdict read through a pager is refused", "triggers/piped-verdict",
      "    if MERGES_STDERR.search(with_pager):",
      "    if False:",

@@ -105,14 +105,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.1.0"
-  ffi:
-    dependency: transitive
-    description:
-      name: ffi
-      sha256: "6d7fd89431262d8f3125e81b50d3847a091d846eafcd4fdb88dd06f36d705a45"
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.2.0"
   file:
     dependency: transitive
     description:
@@ -201,6 +193,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.0.0"
+  msgpack_dart:
+    dependency: transitive
+    description:
+      name: msgpack_dart
+      sha256: c2d235ed01f364719b5296aecf43ac330f0d7bc865fa134d0d7910a40454dffb
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.1"
   node_preamble:
     dependency: transitive
     description:
@@ -241,66 +241,22 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "2.2.0"
-  raindrop:
-    dependency: "direct overridden"
-    description:
-      path: "packages/raindrop"
-      ref: "89f5f19be21cc775058961c4027c3063a86c65fb"
-      resolved-ref: "89f5f19be21cc775058961c4027c3063a86c65fb"
-      url: "https://github.com/mrgnhnt96/raindrop.git"
-    source: git
-    version: "0.1.0+1"
-  raindrop_sqlite:
-    dependency: "direct overridden"
-    description:
-      path: "packages/raindrop_sqlite"
-      ref: "89f5f19be21cc775058961c4027c3063a86c65fb"
-      resolved-ref: "89f5f19be21cc775058961c4027c3063a86c65fb"
-      url: "https://github.com/mrgnhnt96/raindrop.git"
-    source: git
-    version: "0.1.0+1"
-  resqlite:
-    dependency: "direct overridden"
-    description:
-      path: "."
-      ref: f39baf81195605f3ec625f85a45058d5e444e029
-      resolved-ref: f39baf81195605f3ec625f85a45058d5e444e029
-      url: "https://github.com/mrgnhnt96/resqlite.git"
-    source: git
-    version: "0.3.1"
-  revali_annotations:
-    dependency: transitive
-    description:
-      name: revali_annotations
-      sha256: "3c48a313f752164641725a0864ddbbf58d0a1a787580de60f63e5e93541ebb99"
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.0.2"
   revali_core:
     dependency: transitive
     description:
       name: revali_core
-      sha256: "7443048876584bca785dc96a0c06d943b0b0bcb8189af5b35962f88c1fc83206"
+      sha256: "5f0267a8934dbb6d62c108ead838216199cd0a9573801d623edd22947f639349"
       url: "https://pub.dev"
     source: hosted
-    version: "1.6.0"
-  revali_router_core:
+    version: "2.0.1"
+  scoped_deps:
     dependency: transitive
     description:
-      name: revali_router_core
-      sha256: "8cf1d9760a62694843d520853412c20dff8bda42ec842028fca4c987dcc9331f"
+      name: scoped_deps
+      sha256: dc432cece55bb626bdf37cf82f0b9e5fd9c552ed78629a09ad38e7b5955081d3
       url: "https://pub.dev"
     source: hosted
-    version: "2.3.0"
-  scoped_deps:
-    dependency: "direct overridden"
-    description:
-      path: "."
-      ref: "743f3682bacb51b7e20f96fece18f6ef64be9908"
-      resolved-ref: "743f3682bacb51b7e20f96fece18f6ef64be9908"
-      url: "https://github.com/mrgnhnt96/scoped_deps.git"
-    source: git
-    version: "0.2.0"
+    version: "0.2.1"
   shelf:
     dependency: transitive
     description:
@@ -357,14 +313,6 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "1.10.2"
-  sqlite3:
-    dependency: transitive
-    description:
-      name: sqlite3
-      sha256: "3145bd74dcdb4fd6f5c6dda4d4e4490a8087d7f286a14dee5d37087290f0f8a2"
-      url: "https://pub.dev"
-    source: hosted
-    version: "2.9.4"
   stack_trace:
     dependency: transitive
     description:
@@ -489,10 +437,10 @@ packages:
     dependency: "direct main"
     description:
       path: "libs/zonai_schema"
-      ref: "2636b90cfdacd064f4f61adc32c8cd42c918283a"
-      resolved-ref: "2636b90cfdacd064f4f61adc32c8cd42c918283a"
+      ref: "v0.6.2"
+      resolved-ref: b187d2b9417aff501daa4cbabed5c95187d258bc
       url: "https://github.com/mrgnhnt96/zonai.git"
     source: git
-    version: "0.0.0"
+    version: "0.1.1"
 sdks:
   dart: ">=3.12.0 <4.0.0"

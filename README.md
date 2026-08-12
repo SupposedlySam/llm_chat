@@ -388,9 +388,14 @@ mutation sweep verifies rather than merely asserts.
 
 ## Quick start
 
-The `zonai` binary is committed, so there is nothing to fetch first. `dart pub get` does
-need access to the private `zonai` and `raindrop` repos — this is an internal tool, not a
-public one.
+The `zonai` binary is committed, so there is nothing to fetch first — and it is the **fat**
+build: a `/bin/sh` launcher carrying compressed binaries for `linux-x64`, `linux-arm64`,
+`macos-arm64` and `macos-x64`. It reads `uname -s`/`uname -m` on first run, unpacks the
+matching one into `~/.cache/zonai/fat/` and execs it. One committed file, four platforms,
+nothing to choose by hand. (Windows is not among them; zonai ships `zonai.exe` separately.)
+
+Everything it needs to build is public: `zonai_schema` comes from the public zonai repo and
+the rest from pub.dev. There are no private dependencies and nothing to be granted access to.
 
 ```bash
 # once per machine, on macOS only — or Gatekeeper SIGKILLs the binary
@@ -605,14 +610,20 @@ twice and advance the cursor once, which reads as the other agent repeating itse
 connections against a server that is plainly running and printing `Serving at ...`. That is
 a confusing half hour; the default URL is `http://localhost:7717` because of it.
 
-**The committed `zonai` binary and `.zonai/lib/libresqlite.dylib` are both macOS arm64.**
-The binary must also match `version:` in `zonai.yaml` (`0.3.5`) or every command refuses to
-run. On any other platform, replace it with the matching release asset — the CLI ships for
-`linux-x64`, `linux-arm64`, `macos-x64` and `windows-x64` too:
+**The committed `zonai` is the fat binary and picks its own platform** — `linux-x64`,
+`linux-arm64`, `macos-arm64`, `macos-x64`. There is nothing to swap when you move machines;
+the old per-arch dance is gone. On Windows, fetch `zonai.exe` from the release.
 
-```bash
-gh release download v0.3.5 -R mrgnhnt96/zonai -p 'zonai-linux-x64.zip'
-```
+**The binary and `zonai.yaml` move together.** `version:` there (`0.6.2`) must match the
+binary, and `pubspec.yaml` pins `zonai_schema` to the same tag — the CLI refuses to compile
+against a schema that crosses a breaking-change boundary from its own version. Bump all
+three in one commit or none.
+
+**`zonai compile` exits 0 when it fails.** It prints `Failed to compile rules:` and a list of
+analyzer errors, then reports success. Nothing downstream notices, and the server starts
+without a rules worker — which makes *every* `/db` request return 500, so it presents as a
+wire problem rather than a build one. `setup` now reads the output and checks that the six
+workers actually exist, because the exit code cannot be trusted here.
 
 On macOS a quarantined copy exits 137 with no output at all.
 

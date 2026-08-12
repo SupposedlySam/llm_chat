@@ -134,6 +134,8 @@ class CliEdgeTest(unittest.TestCase):
                  "ROOT": cli.ROOT}
         steps = []
 
+        root = self.tmp.name
+
         class Fake:
             Popen = staticmethod(lambda *a, **kw: None)
             DEVNULL = -3
@@ -141,6 +143,16 @@ class CliEdgeTest(unittest.TestCase):
             @staticmethod
             def run(argv, **kw):
                 steps.append(argv)
+                # A successful compile PRODUCES the workers. Returning 0 and
+                # writing nothing is the exact failure start_server now
+                # refuses, so a fake that only sets returncode would make this
+                # test assert the opposite of what a real compile does.
+                if "compile" in argv:
+                    built = os.path.join(root, ".zonai", "executables")
+                    os.makedirs(built, exist_ok=True)
+                    for worker in cli.WORKERS:
+                        with open(os.path.join(built, worker + ".exe"), "w") as f:
+                            f.write("x")
 
                 class Result:
                     returncode = 0
@@ -156,6 +168,37 @@ class CliEdgeTest(unittest.TestCase):
             for name, value in saved.items():
                 setattr(cli, name, value)
         self.assertIn(["dart", "pub", "get"], steps)
+
+    def test_a_compile_that_PRODUCES_NOTHING_refuses_to_start_a_server(self):
+        """The partner, and the real bug: `zonai compile` exits 0 while
+        printing that it failed. Without this the bootstrap starts a server
+        with no rules worker, which accepts connections and 500s every single
+        /db request — so it reads as a wire problem, not a build one."""
+        saved = {"subprocess": cli.subprocess, "server_up": cli.server_up,
+                 "ROOT": cli.ROOT}
+
+        class Fake:
+            Popen = staticmethod(lambda *a, **kw: None)
+            DEVNULL = -3
+
+            @staticmethod
+            def run(argv, **kw):
+                class Result:
+                    returncode = 0        # the lie
+                    stdout = stderr = ""
+                return Result
+        cli.subprocess = Fake
+        cli.server_up = lambda *a, **kw: True
+        cli.ROOT = self.tmp.name          # nothing was built
+        try:
+            with redirect_stdout(io.StringIO()):
+                with self.assertRaises(SystemExit) as caught:
+                    cli.start_server("http://localhost:7717")
+        finally:
+            for name, value in saved.items():
+                setattr(cli, name, value)
+        self.assertIn("db_rules", str(caught.exception))
+        self.assertIn("500", str(caught.exception))
 
 
 class DeliverEdgeTest(unittest.TestCase):
