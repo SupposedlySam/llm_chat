@@ -180,6 +180,24 @@ Read the two states carefully before acting on them: **no record of firing is no
 hook never fired.** The mark only exists from the probe's own start, so a hook that was
 working before probing shipped reads the same way until it next runs.
 
+**A landed wake is reported with its AGE, and checked against what is queued right now.**
+"A wake has landed here" was a fact about the past printed as a fact about the present: it
+stayed on screen for ninety minutes while every wake failed, and the agent reading it told a
+human twice that the mechanism worked. `doctor` now says `a wake LANDED 94m ago`, and if a
+message that wakes you has been waiting since then it says so and contradicts itself out loud:
+
+```
+  a wake LANDED 94m ago, so replies arrive on their own
+  BUT seq 43 has been waiting 4m and wakes you, with no wake since.
+  The poll is working and the wake is NOT landing — that is the live
+  state, whatever the line above says about earlier.
+```
+
+A landing only counts when a **turn ended** — the waker is registered on `SessionStart` too,
+and a window reload inside the grace window used to write a receipt for a wake that never
+happened. A marker written before that distinction existed says so rather than claiming to be
+one, because reading it as confirmed would preserve the bug for everyone who already has one.
+
 **If `setup` or `join` tells you the room is closed, that is not a dead end** — run
 `reopen` and try again. Closing happens whenever the last member leaves, so a room you were
 told to join can easily have ended before you got there. These verbs refuse rather than

@@ -611,6 +611,38 @@ MUTATIONS = [
      "alarm that gets a guard switched off within the hour, and the same "
      "mistake this repo already corrected once in the remedy counter"),
 
+    ("a SESSION START is not a wake landing", "bin/llm-chat-wake",
+     '    if event != "Stop":',
+     "    if False:",
+     "a window reload inside the grace window writes a receipt for a wake "
+     "that never happened — and a reload is exactly what tends to happen near "
+     "an unanswered wake, so doctor reported the path healthy for 90 minutes "
+     "while every wake failed"),
+
+    ("what is WAITING beats what landed once", "bin/llm_chat",
+     "                stuck = waiting_longer_than_the_last_wake(server, "
+     "project,\n                                                          "
+     "landed)",
+     "                stuck = None",
+     "doctor reports 'a wake landed' and stops, so a message queued right now "
+     "with no wake behind it is invisible — the agent reading it told a human "
+     "twice that the mechanism worked"),
+
+    ("a message OLDER than the landing is not evidence", "bin/llm_chat",
+     "            if landed_at and at <= landed_at:\n                continue",
+     "            if False:\n                continue",
+     "every unread message counts against the wake path, including ones the "
+     "recorded wake may well have delivered — the check cries wolf on a "
+     "healthy path, which is how a diagnostic gets ignored and then the real "
+     "failure goes unread with it"),
+
+    ("a landing marker of unknown provenance is not confirmed", "bin/llm_chat",
+     "    return None if event is None else event == \"Stop\"",
+     "    return True",
+     "every marker written before this distinction existed reads as a "
+     "confirmed turn, which is every marker anybody already has — the bug "
+     "preserved for exactly the people upgrading to the fix for it"),
+
     ("a name beats @here", "bin/llm-chat-slack",
      "    named = addressed_names(text, members)\n"
      "    if named:\n"

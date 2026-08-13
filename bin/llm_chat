@@ -2088,6 +2088,77 @@ def wake_landing(project):
     return record.get("at"), record.get("host")
 
 
+def landing_is_confirmed(project):
+    """Was the recorded landing written by a TURN ENDING, or by a reload?
+
+    True / False / None, and None is "written before anyone asked".
+
+    A landing means the harness invoked the model and the model took a turn,
+    which ends in a Stop. The waker is registered on SessionStart too, and
+    recorded a landing for both — so a window reload inside the grace window
+    left a receipt for something that never happened.
+
+    A marker with no `event` predates the distinction and cannot be read as
+    either. Reporting it as confirmed would preserve the bug for everybody who
+    already has one, which is most people the first time they upgrade.
+    """
+    try:
+        with open(os.path.join(project, ".llm_chat", "wake.landed")) as f:
+            record = json.load(f) or {}
+    except (OSError, ValueError):
+        return None
+    event = record.get("event")
+    return None if event is None else event == "Stop"
+
+
+def waiting_longer_than_the_last_wake(server, project, landed_at):
+    """(seq, seconds_waiting) for a message that should have woken us since
+    the last recorded landing, or None.
+
+    THE POINT OF THE WHOLE CHECK. "A wake has landed here" is a fact about the
+    past, and it was reported as though it were a fact about now — so `doctor`
+    read healthy for ninety minutes while every wake failed, and the agent
+    reading it told a human twice that the mechanism worked.
+
+    A message that wakes this identity, unread, and older than the newest
+    landing is the direct evidence that it does NOT work now: the poll found
+    it, the queue holds it, and no wake followed.
+
+    Returns None for every kind of not-knowing — no rooms, no server, nothing
+    waiting — because this is only ever used to make a NEGATIVE claim louder,
+    never to make a positive one.
+    """
+    oldest = None
+    for name, entry in (read_joined() or {}).items():
+        identity = entry.get("identity")
+        if not identity:
+            continue
+        try:
+            chan = get_channel(server, name)
+            member = get_membership(server, name, identity)
+        except SystemExit:
+            continue
+        if not chan or member is None:
+            continue
+        try:
+            waiting = rows(server, "messages",
+                           and_(eq("channel", name),
+                                gt("seq", member.get("seen_seq", 0))))
+        except SystemExit:
+            continue
+        for m in waiting:
+            if m["from_identity"] == identity or not wakes(m, identity, chan):
+                continue
+            at = (m.get("created_at") or 0) / 1000.0
+            if landed_at and at <= landed_at:
+                continue        # it predates the landing; that wake may be it
+            if oldest is None or at < oldest[1]:
+                oldest = (m["seq"], at)
+    if not oldest:
+        return None
+    return oldest[0], max(0, int(now_ms() / 1000.0 - oldest[1]))
+
+
 def waker_exits(project):
     """Every kept exit record, oldest first. [] when there is none.
 
@@ -2420,8 +2491,36 @@ def do_doctor(server):
             # reason `doctor` did not start crashing for everyone.
             landed, wake_host = wake_landing(project)
             if landed:
-                print("  a wake has LANDED here, so replies arrive on their "
-                      "own")
+                # THE AGE, NOT THE EXISTENCE. "A wake has landed here" is a
+                # fact about the past reported as a fact about now: it stayed
+                # on the screen for ninety minutes while every wake failed,
+                # and the agent reading it told a human twice that the
+                # mechanism worked.
+                ago = (now_ms() // 1000 - int(landed)) // 60
+                confirmed = landing_is_confirmed(project)
+                when = "just now" if ago < 1 else f"{ago}m ago"
+                if confirmed is False:
+                    print(f"  a wake was recorded {when}, but by a SESSION "
+                          "START rather than a\n  turn ending — that proves "
+                          "the hook runs, not that `asyncRewake`\n  reaches "
+                          "anybody. It is not evidence about this path.")
+                elif confirmed is None:
+                    print(f"  a wake was recorded {when}, before this check "
+                          "knew to record WHAT\n  wrote it — so it may have "
+                          "been a window reload rather than a turn.\n  The "
+                          "next real one will say.")
+                else:
+                    print(f"  a wake LANDED {when}, so replies arrive on "
+                          "their own")
+                stuck = waiting_longer_than_the_last_wake(server, project,
+                                                          landed)
+                if stuck:
+                    seq, seconds = stuck
+                    print(f"  BUT seq {seq} has been waiting "
+                          f"{seconds // 60}m and wakes you, with no wake "
+                          "since.\n  The poll is working and the wake is NOT "
+                          "landing — that is the live\n  state, whatever the "
+                          "line above says about earlier.")
             else:
                 print("  BUT NO WAKE HAS EVER BEEN OBSERVED LANDING in this "
                       "checkout.")

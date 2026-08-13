@@ -928,12 +928,69 @@ class DoctorTest(unittest.TestCase):
         text = self.report()
         self.assertIn("NO WAKE HAS EVER BEEN OBSERVED LANDING", text)
 
+    def landed(self, **fields):
+        record = {"at": cli.now_ms() / 1000.0, "host": "cli"}
+        record.update(fields)
+        with open(os.path.join(self.project, ".llm_chat", "wake.landed"),
+                  "w") as f:
+            json.dump(record, f)
+
     def test_a_landing_is_reported_when_there_is_one(self):
+        self.joined_with_waker(os.getpid())
+        self.landed(event="Stop")
+        self.assertIn("a wake LANDED", self.report())
+
+    # ── issue #13: worked ONCE is not works NOW ─────────────────────────────
+
+    def test_THE_AGE_IS_REPORTED_not_just_the_existence(self):
+        """It stayed on the screen for ninety minutes while every wake failed,
+        and the agent reading it told a human twice that the mechanism worked.
+        "94m ago" is immediately actionable; "a wake has landed here" is
+        not."""
+        self.joined_with_waker(os.getpid())
+        self.landed(at=cli.now_ms() / 1000.0 - 5640, event="Stop")
+        self.assertIn("94m ago", self.report())
+
+    def test_a_SESSION_START_landing_is_not_offered_as_evidence(self):
+        """It proves the hook runs, not that `asyncRewake` reaches anybody —
+        and on this host a window reload is exactly what tends to happen near
+        an unanswered wake."""
+        self.joined_with_waker(os.getpid())
+        self.landed(event="SessionStart")
+        text = self.report()
+        self.assertIn("SESSION START", text)
+        self.assertIn("not evidence", text)
+        self.assertNotIn("so replies arrive on their own", text)
+
+    def test_a_marker_with_no_provenance_says_it_CANNOT_TELL(self):
+        """Every existing marker is one of these. Reading it as a confirmed
+        turn would preserve the bug for everybody who already has one, which
+        is everybody, the first time they upgrade."""
+        self.joined_with_waker(os.getpid())
+        self.landed()
+        text = self.report()
+        self.assertIn("before this check knew to record WHAT", text)
+        self.assertNotIn("so replies arrive on their own", text)
+
+    def test_landing_provenance_reads_three_ways(self):
+        self.joined_with_waker(os.getpid())
+        self.landed(event="Stop")
+        self.assertIs(cli.landing_is_confirmed(self.project), True)
+        self.landed(event="SessionStart")
+        self.assertIs(cli.landing_is_confirmed(self.project), False)
+        self.landed()
+        self.assertIsNone(cli.landing_is_confirmed(self.project))
+
+    def test_no_marker_at_all_is_not_a_provenance_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertIsNone(cli.landing_is_confirmed(tmp))
+
+    def test_a_corrupt_marker_is_not_a_provenance_answer(self):
         self.joined_with_waker(os.getpid())
         with open(os.path.join(self.project, ".llm_chat", "wake.landed"),
                   "w") as f:
-            json.dump({"at": 1, "host": "cli"}, f)
-        self.assertIn("a wake has LANDED here", self.report())
+            f.write("{not json")
+        self.assertIsNone(cli.landing_is_confirmed(self.project))
 
     def test_a_dead_waker_is_reported_however_green_everything_else_is(self):
         """The failure this exists for: every other check said 'wiring looks

@@ -642,7 +642,7 @@ def note_rewake():
         pass
 
 
-def wake_landing():
+def wake_landing(event="unknown"):
     """Turn a pending rewake into recorded evidence that it landed.
 
     THE PROBLEM THIS SOLVES IS THAT SUCCESS IS INVISIBLE. `asyncRewake` is the
@@ -659,6 +659,24 @@ def wake_landing():
     and the ABSENCE of the claim is what `doctor` reports. A false negative
     says "cannot confirm", which is honest; a false positive would say
     "listening" to somebody whose replies never arrive, which is the bug.
+
+    AND IT SHIPPED WITH EXACTLY THAT FALSE POSITIVE. This hook is registered
+    on Stop and on SessionStart, and this ran for both. A rewake landing means
+    the harness invoked the model, the model took a turn, and the turn ENDED —
+    which is a Stop. A SessionStart is a window reload: it proves the hook
+    runs, not that `asyncRewake` reaches anybody, and on this host a reload is
+    exactly what tends to happen near an unanswered wake.
+
+    So a reload inside the grace window wrote a receipt for something that
+    never happened, and `doctor` reported the wake path healthy on the
+    strength of it. Reported by the agent it misled — twice in one day, into
+    telling a human the mechanism worked while their messages were arriving
+    only on the next tool call.
+
+    The event is recorded alongside, because a marker written before this
+    distinction existed cannot be told from one written after it, and reading
+    an old marker as a confirmed Stop would preserve the bug for everybody who
+    already has one.
     """
     try:
         with open(REWAKE_PATH) as f:
@@ -669,12 +687,17 @@ def wake_landing():
         os.remove(REWAKE_PATH)
     except OSError:
         pass
+    if event != "Stop":
+        # The request is consumed either way — it has been answered, just not
+        # by anything that proves the point. Leaving it would let a LATER Stop,
+        # arriving long afterwards, claim a landing it did not earn.
+        return
     if time.time() - float(pending.get("at") or 0) > REWAKE_GRACE:
         return                      # too late to attribute this turn to it
     try:
         tmp = LANDED_PATH + ".tmp"
         with open(tmp, "w") as f:
-            json.dump({"at": time.time(),
+            json.dump({"at": time.time(), "event": event,
                        "host": os.environ.get("CLAUDE_CODE_ENTRYPOINT")}, f)
         os.replace(tmp, LANDED_PATH)
     except OSError:
@@ -708,10 +731,13 @@ def main() -> int:
     except OSError:
         pass
 
-    # We are running because a turn just ended. If the previous waker asked
-    # for that turn moments ago, this is the closest thing to a receipt the
-    # harness ever gives.
-    wake_landing()
+    # THE EVENT IS PASSED BECAUSE ONLY ONE OF THEM IS EVIDENCE. This hook is
+    # registered on Stop AND SessionStart, and the comment that used to sit
+    # here — "we are running because a turn just ended" — was false for half
+    # its callers. A window reload fires SessionStart, which would land inside
+    # the grace window of any pending rewake and be recorded as a receipt for
+    # something that never happened.
+    wake_landing(event)
 
     rooms = joined_rooms()
     if not rooms:

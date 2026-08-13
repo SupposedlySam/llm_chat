@@ -150,10 +150,11 @@ class FakeServer:
         self.tables.setdefault("memberships", []).append(row)
         return row
 
-    def message(self, channel, seq, identity, text):
+    def message(self, channel, seq, identity, text, **overrides):
         row = {"id": "msg-%s-%d" % (channel, seq), "channel": channel,
                "seq": seq, "from_identity": identity, "text": text,
                "created_at": 0}
+        row.update(overrides)
         self.tables.setdefault("messages", []).append(row)
         for chan in self.tables.get("channels", []):
             if chan["name"] == channel:
