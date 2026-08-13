@@ -359,6 +359,23 @@ MUTATIONS = [
      "thread they asked in sees silence while the answer appears elsewhere in "
      "the channel — on a phone that is indistinguishable from no answer"),
 
+    ("two pending questions post at ROOT rather than guessing",
+     "bin/llm-chat-slack",
+     "    return outstanding[0] if len(outstanding) == 1 else None",
+     "    return outstanding[0] if outstanding else None",
+     "an answer attaches to the OLDEST outstanding question rather than the "
+     "one it answers, so the human watches their newest question sit "
+     "unanswered in the channel while the reply is buried in a thread they "
+     "had finished with — worse than no threading, because top-level would at "
+     "least have been findable"),
+
+    ("a human can end an exchange without a reply", "bin/llm-chat-slack",
+     "    if NO_REPLY_NEEDED.search(text):\n        return [\"--to-none\"]",
+     "    if False:\n        return [\"--to-none\"]",
+     "'No response needed' becomes a debt the stop-gate refuses to let the "
+     "turn end without clearing, so the mechanism built to stop an agent "
+     "going silent compels replies to messages that asked for none"),
+
     ("only an ADDRESSED question creates a thread debt", "bin/llm-chat-slack",
      '    if not addressing or addressing[0] != "--to" or len(addressing) < 2:',
      "    if False:",

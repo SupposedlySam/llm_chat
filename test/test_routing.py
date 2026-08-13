@@ -229,6 +229,61 @@ class SenderParseTest(unittest.TestCase):
             bridge.subprocess = real
 
 
+class NoReplyNeededTest(unittest.TestCase):
+    """Issue #9, defect 2: a human had no way to end an exchange.
+
+    `seq 25` was literally "No response needed" and still became a debt — one
+    the stop-gate would refuse to let the turn end without clearing. So the
+    mechanism built to stop an agent going silent was compelling replies to
+    messages that asked for none, into threads the human had finished with.
+    `leave` ends the agent's side; there was nothing for the other end.
+    """
+
+    def route(self, text, threads=None, **extra):
+        message = {"text": text, "user": "U1"}
+        message.update(extra)
+        return bridge.route(message, threads or {})
+
+    def test_it_wakes_NOBODY(self):
+        for phrasing in ("No response needed",
+                         "thanks — no reply needed",
+                         "no need to respond",
+                         "shipped it, nrn",
+                         "FYI only"):
+            with self.subTest(text=phrasing):
+                self.assertEqual(self.route(phrasing), ["--to-none"])
+
+    def test_it_BEATS_a_thread_so_the_debt_is_never_created(self):
+        """The failing case: it arrived as a thread reply, which is exactly
+        where the old code turned it into an obligation."""
+        self.assertEqual(
+            self.route("No response needed", {"100.0": "alice"},
+                       thread_ts="100.0", ts="101.0"),
+            ["--to-none"])
+
+    def test_it_beats_at_here_too(self):
+        """"Everyone see this" and "nobody reply" are not in conflict, and the
+        second is the more explicit statement of intent."""
+        self.assertEqual(self.route("<!here> shipping now, no reply needed"),
+                         ["--to-none"])
+
+    def test_an_ordinary_message_is_UNAFFECTED(self):
+        """Paired, because a phrase-matcher that fires too eagerly would
+        silently stop waking anyone — the failure this whole room prevents."""
+        self.assertEqual(
+            self.route("does this need a response?", {"100.0": "alice"},
+                       thread_ts="100.0", ts="101.0"),
+            ["--to", "alice"])
+
+    def test_the_marker_INSIDE_another_word_does_not_count(self):
+        """`nrn` is short enough to appear by accident. Word-bounded, or a
+        build log pasted into the room silently stops waking anybody."""
+        self.assertEqual(
+            self.route("the nrnx adapter is unresponsive", {"100.0": "alice"},
+                       thread_ts="100.0", ts="101.0"),
+            ["--to", "alice"])
+
+
 class AddressedTest(unittest.TestCase):
     """The waker's peek. Never consumes; never wakes on a non-answer."""
 

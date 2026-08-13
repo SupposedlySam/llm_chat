@@ -915,6 +915,51 @@ class OutboundThreadingTest(BridgeTest):
         self.mod.note_question({}, ["--to", "alice"])
         self.assertEqual(self.mod.read_asked(), {})
 
+    def test_TWO_PENDING_QUESTIONS_POST_AT_ROOT_RATHER_THAN_GUESSING(self):
+        """Issue #9, and the reporter's reasoning is the design.
+
+        With one debt, threading is unambiguous and confirmed working. With
+        two, nothing here knows which is being answered — llm_chat carries no
+        reply-to — and the old slot attached to whichever was stored, the
+        OLDER one. The human then watched their newest question sit unanswered
+        in the channel while the answer went into a thread they had finished
+        with. From their side that is worse than no threading at all: with
+        everything top-level they would at least have found it."""
+        self.ask()
+        self.mod.note_question(
+            {"thread_ts": "%.6f" % (time.time() + 5)}, ["--to", "alice"])
+        slack = self.answer()
+        self.assertIsNone(slack.posted[0][1])
+
+    def test_ONE_pending_question_still_threads(self):
+        """The confirmed-working case must survive the fix for the broken one."""
+        self.ask()
+        self.assertEqual(self.answer().posted[0][1], self.parent)
+
+    def test_ambiguity_is_cleared_rather_than_held(self):
+        """Holding parents after the agent has spoken would thread some later,
+        unrelated message into a stale conversation."""
+        self.ask()
+        self.mod.note_question(
+            {"thread_ts": "%.6f" % (time.time() + 5)}, ["--to", "alice"])
+        self.answer()
+        self.assertEqual(self.mod.read_asked().get("alice", []), [])
+
+    def test_a_NEW_question_appends_to_an_old_format_slot(self):
+        """Both halves have to read yesterday's file, not just the reader.
+        A bridge upgraded mid-conversation would otherwise drop the parent it
+        had already recorded the moment a second question arrived."""
+        self.mod.write_asked({"alice": self.parent})
+        later = "%.6f" % (time.time() + 5)
+        self.mod.note_question({"thread_ts": later}, ["--to", "alice"])
+        self.assertEqual(self.mod.read_asked()["alice"], [self.parent, later])
+
+    def test_a_slot_written_by_the_OLD_format_still_works(self):
+        """The file outlives the version that wrote it, and a bridge that
+        crashed on yesterday's state would take the escalation path down."""
+        self.mod.write_asked({"alice": self.parent})
+        self.assertEqual(self.answer().posted[0][1], self.parent)
+
     def test_the_asked_map_is_BOUNDED(self):
         """One entry per agent asked, forever, otherwise."""
         many = {"agent%d" % n: "%d.0" % n

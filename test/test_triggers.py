@@ -501,14 +501,37 @@ class WiredTriggersResolveTest(unittest.TestCase):
         with open(self.path) as f:
             self.config = json.load(f)
 
+    # Interpreters that take the real target as an argument. Without this the
+    # check reads `sh` as the thing to look for and asserts a file named "sh"
+    # exists — the same command-position mistake this repo fixed in
+    # piped-verdict, made again in the check written to catch missing files.
+    RUNNERS = ("sh", "bash", "zsh", "python", "python3", "node", "ruby", "env")
+
     def wired(self):
-        """(moment, name, executable) for every configured trigger."""
+        """(moment, name, target) for every configured trigger.
+
+        The TARGET, not the first token: a command may name an interpreter and
+        pass the script, and `$GAME_LOOP_ROOT` is expanded by the harness at
+        fire time rather than stored expanded.
+        """
+        root = os.path.join(ROOT, ".game_loop")
         for moment, entries in self.config.items():
             if moment.startswith("/"):      # the "//" comment block
                 continue
             for entry in entries:
-                command = entry.get("command", "")
-                yield moment, entry.get("name", "?"), shlex.split(command)[0]
+                parts = shlex.split(entry.get("command", ""))
+                if not parts:
+                    continue
+                index = 0
+                if os.path.basename(parts[0]) in self.RUNNERS:
+                    index = 1
+                    while index < len(parts) and parts[index].startswith("-"):
+                        index += 1
+                if index >= len(parts):
+                    continue
+                target = parts[index].replace("$GAME_LOOP_ROOT", root)
+                target = os.path.expandvars(target)
+                yield moment, entry.get("name", "?"), target
 
     def test_every_wired_trigger_exists_and_is_executable(self):
         for moment, name, executable in self.wired():

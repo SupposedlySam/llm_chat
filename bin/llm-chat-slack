@@ -75,6 +75,16 @@ ASKED = os.path.join(STATE, "slack-asked.json")
 # what a human sees themselves type.
 EVERYONE = re.compile(r"<!(here|channel|everyone)>|(?<!\S)@(here|channel)\b",
                       re.IGNORECASE)
+# How a human says "we are done here" from a phone, where there are no flags.
+# Deliberately several spellings of one idea, and `nrn` because a thumb typing
+# on a phone is the case this exists for. Matched anywhere in the message, so
+# it can be appended to a real sentence rather than replacing one.
+NO_REPLY_NEEDED = re.compile(
+    r"\bno (?:response|reply|answer)(?: is)? (?:needed|required|necessary)\b"
+    r"|\bno need to (?:reply|respond|answer)\b"
+    r"|\bnrn\b|\bfyi only\b",
+    re.IGNORECASE)
+
 MAX_THREADS = 500
 
 # How far back a thread stays worth polling, how many are polled at once, and
@@ -285,6 +295,15 @@ def note_question(message, addressing):
     Only for a message that both names one agent and sits in a thread. An
     `@here` reaches everyone and belongs to no single answer, and a top-level
     message has no thread for a reply to land in.
+
+    A LIST, not a slot. One parent per sender assumed there is only ever one
+    outstanding question, and on a host where no wake lands an idle agent
+    accumulates messages until it next runs a tool — so two or more pending is
+    the DEFAULT state, not a race. With a slot, the next reply attached to
+    whichever parent happened to be stored, which was the older one: the human
+    watched their newest question sit unanswered in the channel while the
+    answer went into a thread they had finished with, sometimes under a message
+    that had explicitly said no reply was needed.
     """
     if not addressing or addressing[0] != "--to" or len(addressing) < 2:
         return
@@ -292,8 +311,37 @@ def note_question(message, addressing):
     if not parent:
         return
     asked = read_asked()
-    asked[addressing[1]] = parent
+    outstanding = asked.get(addressing[1]) or []
+    if isinstance(outstanding, str):
+        outstanding = [outstanding]     # a slot written by the older format
+    if parent not in outstanding:
+        outstanding.append(parent)
+    asked[addressing[1]] = outstanding
     write_asked(asked)
+
+
+def parent_for(asked, sender):
+    """The thread an answer from `sender` belongs in, or None to post at root.
+
+    GUESS ONLY WHEN THERE IS NOTHING TO GUESS. With exactly one outstanding
+    question the answer is unambiguous and threading it is right — that case
+    was confirmed working. With two or more, nothing here knows which one is
+    being answered: llm_chat carries no reply-to, so any choice is a coin toss
+    with a bad tail.
+
+    Top level is the honest default, and the reasoning is the reporter's: from
+    the human's side a misfiled answer is WORSE than no threading at all,
+    because with everything top-level they would at least find it. A visible
+    answer in the wrong place beats an invisible one in the right-looking
+    place.
+
+    Cleared either way. Once the agent has spoken, continuing to hold parents
+    would thread some later, unrelated message into a stale conversation.
+    """
+    outstanding = asked.pop(sender, None) or []
+    if isinstance(outstanding, str):
+        outstanding = [outstanding]
+    return outstanding[0] if len(outstanding) == 1 else None
 
 
 def read_reply_state():
@@ -424,7 +472,20 @@ def route(message, threads):
     otherwise wake every agent on the machine. A human has no flags to pass,
     so in-band is the only option HERE and nowhere else.
     """
-    if EVERYONE.search(message.get("text") or ""):
+    text = message.get("text") or ""
+    # "WE ARE DONE HERE" HAD TO BE SAYABLE. A human's message became a debt
+    # even when it was literally "No response needed" — and the stop-gate then
+    # refused to let the turn end until the agent replied to it, in a thread
+    # the human had finished with. So the mechanism built to stop an agent
+    # going silent was compelling answers nobody asked for.
+    #
+    # `leave` ends the AGENT's side; there was nothing for the other end. This
+    # is that, as a convention the bridge recognises, and it beats @here
+    # because it is the more explicit statement of intent: "everyone see this"
+    # and "nobody reply" are not in conflict.
+    if NO_REPLY_NEEDED.search(text):
+        return ["--to-none"]
+    if EVERYONE.search(text):
         return ["--to-all"]
     parent = message.get("thread_ts")
     if parent and parent != message.get("ts"):
@@ -493,7 +554,7 @@ def pump_out(config, slack):
     for sender, line in lines:
         # ANSWER IN THE THREAD THAT ASKED, when there is one. The human is
         # watching that thread; a reply anywhere else reads as no reply.
-        parent = asked.pop(sender, None) if sender else None
+        parent = parent_for(asked, sender) if sender else None
         try:
             posted = slack.post(("*%s*: %s" % (sender, line)) if sender
                                 else line, thread_ts=parent)
