@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 
@@ -592,9 +593,15 @@ class ThreadRepliesTest(BridgeTest):
     """
 
     class Threaded:
-        """history returns parents with reply_count; replies returns the rest."""
+        """history returns parents with reply_count; replies returns the rest.
 
-        def __init__(self, parent_ts="100.0", replies=(), count=None):
+        Timestamps are REAL epoch seconds, not toy values. Slack ts IS an
+        epoch, and the watch window is an age computed from it — toy values
+        like "100.0" are 1970 and fall outside any sane window, so a fixture
+        using them tests a thread nobody would poll."""
+
+        def __init__(self, parent_ts=None, replies=(), count=None):
+            parent_ts = parent_ts or ("%.6f" % time.time())
             self.parent_ts = parent_ts
             self._replies = list(replies)
             self.count = len(self._replies) if count is None else count
@@ -617,39 +624,47 @@ class ThreadRepliesTest(BridgeTest):
             self.posted.append(text)
             return {"ok": True, "ts": "1.0"}
 
-    def human(self, ts, text):
-        return {"ts": ts, "thread_ts": "100.0", "user": "U1", "text": text}
+    def human(self, offset, text):
+        """A reply `offset` seconds after the parent."""
+        return {"ts": "%.6f" % (self.base + offset), "thread_ts": self.parent,
+                "user": "U1", "text": text}
 
     def setUp(self):
         super().setUp()
         self.mod.REPLIES = os.path.join(self.tmp.name, "slack-replies.json")
         self.mod.THREADS = os.path.join(self.tmp.name, "slack-threads.json")
-        self.mod.remember_thread("100.0", "asker")
+        self.base = time.time()
+        self.parent = "%.6f" % self.base
+        self.mod.remember_thread(self.parent, "asker")
+
+    def threaded(self, **kw):
+        kw.setdefault("parent_ts", self.parent)
+        return self.Threaded(**kw)
 
     def test_A_THREAD_REPLY_REACHES_THE_ROOM(self):
         """The bug, in one assertion. It was in `replies` and not in `history`,
         so nothing arrived, for every threaded reply ever sent."""
-        slack = self.Threaded(replies=[self.human("101.0", "in the thread")])
+        slack = self.threaded(replies=[self.human(1, "in the thread")])
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual([t for _, _, t, _ in self.said], ["in the thread"])
 
     def test_it_is_routed_to_the_agent_WHOSE_THREAD_IT_IS(self):
         """The whole reason threading is the primary path: it is the only
         structured gesture a phone gives a human."""
-        slack = self.Threaded(replies=[self.human("101.0", "answer")])
+        slack = self.threaded(replies=[self.human(1, "answer")])
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual(self.said[0][3], ["--to", "asker"])
 
     def test_a_reply_is_relayed_ONCE(self):
-        slack = self.Threaded(replies=[self.human("101.0", "answer")])
+        slack = self.threaded(replies=[self.human(1, "answer")])
         self.quiet(self.mod.pump_in, self.config, slack)
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual(len(self.said), 1)
 
     def test_a_LATER_reply_in_the_same_thread_still_arrives(self):
-        slack = self.Threaded(replies=[self.human("101.0", "first")])
+        slack = self.threaded(replies=[self.human(1, "first")])
         self.quiet(self.mod.pump_in, self.config, slack)
-        slack._replies.append(self.human("102.0", "second"))
+        slack._replies.append(self.human(2, "second"))
         slack.count = 2
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual([t for _, _, t, _ in self.said], ["first", "second"])
@@ -657,38 +672,119 @@ class ThreadRepliesTest(BridgeTest):
     def test_the_PARENT_is_not_relayed_back_into_the_room(self):
         """It came FROM the room. Relaying it would post the agent's own
         question back at it — the loop this bridge exists not to have."""
-        slack = self.Threaded(replies=[])
+        slack = self.threaded(replies=[])
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual(self.said, [])
 
     def test_a_thread_with_NO_replies_is_never_fetched(self):
         """One request per poll on a quiet channel, not one per thread. The
         count on the parent is what makes that possible."""
-        slack = self.Threaded(replies=[], count=0)
+        slack = self.threaded(replies=[], count=0)
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual(slack.asked, [])
 
     def test_an_UNCHANGED_thread_is_not_re_fetched(self):
-        slack = self.Threaded(replies=[self.human("101.0", "answer")])
+        slack = self.threaded(replies=[self.human(1, "answer")])
         self.quiet(self.mod.pump_in, self.config, slack)
         self.quiet(self.mod.pump_in, self.config, slack)
-        self.assertEqual(slack.asked, ["100.0"])
+        self.assertEqual(slack.asked, [self.parent])
 
     def test_a_refused_replies_call_does_not_stop_the_poll(self):
         class Refuses(self.Threaded):
             def replies(self, ts):
                 return {"ok": False, "error": "thread_not_found"}
-        slack = Refuses(replies=[self.human("101.0", "x")])
+        slack = Refuses(replies=[self.human(1, "x")])
         _, text = self.quiet(self.mod.pump_in, self.config, slack)
         self.assertIn("thread_not_found", text)
         self.assertEqual(self.said, [])
+
+    def test_A_REPLY_ARRIVES_AFTER_THE_CURSOR_HAS_PASSED_THE_PARENT(self):
+        """Issue #4: the whole point, and what the first fix got wrong.
+
+        The reporter's reproduction exactly: relay a parent, let a later
+        top-level message advance the cursor past it, THEN reply in the older
+        thread. Driven off the history window, the parent is no longer in it,
+        so its reply_count is never re-read and it goes deaf forever — one
+        unrelated post silently killing every existing thread.
+
+        The old fake could not express this: its history always returned the
+        parent, so the window never moved. A fake that cannot go out of window
+        cannot catch a bug about being out of window."""
+        parent, base = self.parent, self.base
+
+        class Moved:
+            """history has moved past the parent — it returns only newer
+            top-level traffic, which is what a real cursor produces."""
+
+            def __init__(self, replies):
+                self._replies = replies
+                self.asked = []
+
+            def history(self, oldest=None):
+                return {"ok": True, "messages": [
+                    {"ts": "%.6f" % (base + 400), "bot_id": "B1",
+                     "text": "later chatter"}]}
+
+            def replies(self, ts):
+                self.asked.append(ts)
+                return {"ok": True, "messages": [
+                    {"ts": parent, "bot_id": "B1", "text": "*asker*: q"}
+                ] + self._replies}
+
+            def post(self, text):
+                return {"ok": True, "ts": "1.0"}
+
+        slack = Moved([self.human(1, "the answer")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual(slack.asked, [self.parent],
+                         "the parent fell out of the history window and was "
+                         "never asked about")
+        self.assertEqual([t for _, _, t, _ in self.said], ["the answer"])
+
+    def test_watching_is_bounded_by_age_count_and_recheck(self):
+        """An out-of-window parent cannot be skipped for free, so an unbounded
+        watch list is an unbounded per-poll cost against a rate limit."""
+        old = str(self.mod.now() - self.mod.THREAD_WATCH_SEC - 60)
+        recent = {str(self.mod.now() - n): "asker" for n in range(30)}
+        recent[old] = "asker"
+        due = self.mod.watched_parents(recent, {})
+        self.assertLessEqual(len(due), self.mod.MAX_WATCHED_THREADS)
+        self.assertNotIn(old, due, "older than the watch window")
+
+    def test_a_thread_map_key_that_is_not_a_TIMESTAMP_is_skipped(self):
+        """The map is written by this bridge, but it is a file on disk that
+        outlives any one version of it. A key that is not a Slack ts must be
+        ignored rather than crash the poll — a corrupt entry taking the bridge
+        down would silence the escalation path over a parsing detail."""
+        self.assertEqual(
+            self.mod.watched_parents({"not-a-ts": "asker"}, {}), [])
+
+    def test_an_IN_WINDOW_parent_is_asked_immediately_when_it_grows(self):
+        """The rate limit is for blind parents only. history already said the
+        count changed, so waiting RECHECK_SEC would delay a reply the bridge
+        can already see."""
+        ts = "%.6f" % self.mod.now()
+        seen = {ts: {"count": 1, "seen_ts": ts, "checked_at": self.mod.now()}}
+        self.assertEqual(
+            self.mod.watched_parents({ts: "asker"}, seen, {ts: 2}), [ts])
+
+    def test_an_IN_WINDOW_parent_with_no_replies_is_never_asked(self):
+        ts = "%.6f" % self.mod.now()
+        self.assertEqual(
+            self.mod.watched_parents({ts: "asker"}, {}, {ts: 0}), [])
+
+    def test_a_parent_checked_moments_ago_is_not_re_asked(self):
+        ts = str(self.mod.now())
+        seen = {ts: {"count": 0, "seen_ts": ts,
+                     "checked_at": self.mod.now()}}
+        self.assertEqual(self.mod.watched_parents({ts: "asker"}, seen), [])
 
     def test_a_thread_that_cannot_be_FETCHED_does_not_stop_the_poll(self):
         """One unreachable thread must not stop the other messages arriving."""
         class Explodes(self.Threaded):
             def replies(self, ts):
                 raise OSError("network")
-        slack = Explodes(replies=[self.human("101.0", "x")])
+        slack = Explodes(replies=[self.human(1, "x")])
         _, text = self.quiet(self.mod.pump_in, self.config, slack)
         self.assertIn("could not read thread", text)
 
@@ -704,7 +800,7 @@ class ThreadRepliesTest(BridgeTest):
     def test_a_here_in_a_thread_still_wakes_everyone(self):
         """Explicit beats inferred, and that rule has to survive the path it
         could never previously be exercised on."""
-        slack = self.Threaded(replies=[self.human("101.0", "@here look")])
+        slack = self.threaded(replies=[self.human(1, "@here look")])
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual(self.said[0][3], ["--to-all"])
 

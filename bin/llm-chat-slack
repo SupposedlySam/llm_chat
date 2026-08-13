@@ -76,6 +76,21 @@ EVERYONE = re.compile(r"<!(here|channel|everyone)>|(?<!\S)@(here|channel)\b",
                       re.IGNORECASE)
 MAX_THREADS = 500
 
+# How far back a thread stays worth polling, how many are polled at once, and
+# how often any one of them may be re-asked. Together these bound the cost of
+# watching threads whose parents have fallen out of the history window — the
+# case where nothing cheaper than a request can tell us whether it grew.
+# Worst case is MAX_WATCHED_THREADS requests per RECHECK_SEC, deliberately
+# well inside Slack's Tier-3 allowance rather than close to it.
+# A DAY, not an hour. The count and recheck bounds already cap the cost at
+# MAX_WATCHED_THREADS requests per RECHECK_SEC no matter how old the map is,
+# so age buys almost nothing and risks the case this bridge exists for: a
+# human who reads the question in the evening and answers the next morning.
+# Losing that reply would be the original bug wearing a timer.
+THREAD_WATCH_SEC = 86400
+MAX_WATCHED_THREADS = 10
+RECHECK_SEC = 30
+
 # Whether the llm_chat read is currently failing, so the message is printed on
 # the TRANSITION rather than on every poll. One bridge per process, so a module
 # global is the honest scope for it.
@@ -175,6 +190,53 @@ def write_cursor(ts):
     with open(tmp, "w") as f:
         json.dump({"oldest": ts}, f)
     os.replace(tmp, CURSOR)
+
+
+def now():
+    """Seam, so the bounds below are testable without sleeping."""
+    return time.time()
+
+
+def watched_parents(threads, seen, hints=None):
+    """Parents worth asking about this poll, newest first.
+
+    The thread map is bounded at MAX_THREADS, which is right for "whose thread
+    is this" and far too large for "ask Slack about it every ten seconds".
+
+    THE RATE LIMIT APPLIES ONLY TO BLIND PARENTS. When `history` returned the
+    parent it also returned `reply_count`, which answers "did it grow?" for
+    free — so an in-window thread is fetched the moment it changes and skipped
+    entirely when it has not. Rate-limiting those too would delay a reply the
+    bridge could already see, by up to RECHECK_SEC, for nothing. Out-of-window
+    parents have no such signal: the only way to learn is to ask, so those are
+    the ones that need a leash.
+
+      age      bounds how far back the map is worth polling at all
+      count    a burst of relays must not become a burst of polling
+      recheck  blind parents only, so the poll interval stays the human's
+               latency budget rather than Slack's rate limit
+    """
+    hints = hints or {}
+    fresh = now() - THREAD_WATCH_SEC
+    due = []
+    for ts in threads:
+        try:
+            when = float(ts)
+        except (TypeError, ValueError):
+            continue
+        if when < fresh:
+            continue
+        hint = hints.get(ts)
+        if hint is not None:
+            if hint == 0 or (seen.get(ts) or {}).get("count") == hint:
+                continue          # visible, and provably unchanged
+            due.append(ts)        # visible, and provably grown: ask now
+            continue
+        checked = (seen.get(ts) or {}).get("checked_at") or 0
+        if now() - checked < RECHECK_SEC:
+            continue
+        due.append(ts)
+    return sorted(due, key=float, reverse=True)[:MAX_WATCHED_THREADS]
 
 
 def read_reply_state():
@@ -416,25 +478,41 @@ def pump_in(config, slack):
 def pump_threads(config, slack, messages, threads):
     """Relay thread REPLIES, which history never returns. Count relayed.
 
-    Driven off `reply_count` on the parents history DID return, so a thread
-    nobody has replied to costs nothing and a quiet channel costs one request
-    total. Only parents whose count has grown since last time are fetched —
-    without that this would re-request every live thread on every poll forever.
+    ENUMERATED FROM THE THREAD MAP, NOT FROM THE HISTORY WINDOW. The first
+    version of this walked the messages `history` returned, which is the set
+    of parents newer than the cursor — and the cursor advances on every
+    top-level message. So one unrelated post permanently deafened every
+    existing thread: its parent fell out of the window, its `reply_count` was
+    never re-read, and its replies were never fetched again.
+
+    That was worse than no threading, because it worked for the newest thread
+    until the next message arrived, which reads as intermittent rather than
+    absent. Same shape as the bug it was fixing — a correct answer to a
+    narrower question than the one being asked.
+
+    The thread map already holds every parent this bridge has relayed, which
+    is exactly the set whose replies matter. `history` is still the right
+    source for top-level messages, and its `reply_count` is still used as a
+    FREE hint when the parent happens to be in-window — but it cannot be the
+    enumerator.
+
+    BOUNDED THREE WAYS, because the map is not: only parents from the last
+    THREAD_WATCH_SEC, only the newest MAX_WATCHED_THREADS of those, and each
+    re-checked at most every RECHECK_SEC. Without those a long-lived channel
+    would grow an unbounded per-poll cost, and an out-of-window parent cannot
+    be skipped for free — there is no way to learn it grew except by asking.
 
     The parent itself comes back inside its own replies and is skipped by ts;
-    bot messages are skipped by `is_from_a_human`, which is the same loop guard
-    the top-level path relies on.
+    bot messages are skipped by `is_from_a_human`, the same loop guard the
+    top-level path relies on.
     """
     seen = read_reply_state()
+    hints = {m.get("ts"): m.get("reply_count") or 0
+             for m in messages if m.get("ts")}
     relayed = 0
     changed = False
-    for parent in messages:
-        ts = parent.get("ts")
-        count = parent.get("reply_count") or 0
-        if not ts or not count:
-            continue
-        if seen.get(ts, {}).get("count") == count:
-            continue
+    for ts in watched_parents(threads, seen, hints):
+        count = hints.get(ts)
         try:
             payload = slack.replies(ts)
         except Exception as problem:
@@ -461,7 +539,13 @@ def pump_threads(config, slack, messages, threads):
                     relayed += 1
             if float(at) > float(newest):
                 newest = at
-        seen[ts] = {"count": count, "seen_ts": newest}
+        # `count` is None for an out-of-window parent — there was no hint to
+        # read. Record what the fetch itself showed, so the free in-window
+        # skip works again the moment this parent comes back into the window.
+        replied = len([m for m in (payload.get("messages") or [])
+                       if m.get("ts") != ts])
+        seen[ts] = {"count": count if count is not None else replied,
+                    "seen_ts": newest, "checked_at": now()}
         changed = True
     if changed:
         write_reply_state(seen)

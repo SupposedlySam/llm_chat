@@ -333,10 +333,27 @@ MUTATIONS = [
      "so the agent that asked waits forever"),
 
     ("a thread reply is relayed ONCE", "bin/llm-chat-slack",
-     '        if seen.get(ts, {}).get("count") == count:',
-     "        if False:",
-     "every reply in every live thread is re-relayed on every poll, so one "
-     "answer from a human becomes an unbounded stream into the room"),
+     '            if not at or at == ts or float(at) <= float(last):',
+     "            if not at or at == ts or False:",
+     "every reply in a thread is re-relayed on every poll, so one answer from "
+     "a human becomes an unbounded stream into the room"),
+
+    ("a blind parent is rate-limited but a VISIBLE one is not",
+     "bin/llm-chat-slack",
+     "        if hint is not None:\n            if hint == 0 or (seen.get(ts) or {}).get(\"count\") == hint:",
+     "        if False:\n            if hint == 0 or (seen.get(ts) or {}).get(\"count\") == hint:",
+     "an in-window thread whose reply_count history ALREADY reported as grown "
+     "waits out the blind-poll leash before being fetched, delaying a reply "
+     "the bridge can see by up to RECHECK_SEC for no reason"),
+
+    ("threads are enumerated from the MAP, not the history window",
+     "bin/llm-chat-slack",
+     "    for ts in watched_parents(threads, seen, hints):",
+     "    for ts in watched_parents(hints, seen, hints):",
+     "a parent older than the cursor is never asked about again, so ONE "
+     "unrelated top-level message permanently deafens every existing thread — "
+     "worse than no threading, because it works until the next message and "
+     "reads as intermittent rather than absent"),
 
     ("a failed read is not an empty room", "bin/llm-chat-slack",
      "    if done.returncode != 0:\n        return None",
@@ -849,7 +866,10 @@ NOT_SWEPT = {
         "argv produced",
     "bin/llm-chat-mcp:_build_read": "every branch asserted directly for "
         "the exact argv produced",
-    "bin/llm-chat-slack:read_reply_state": "asserted through the relay tests "
+    "bin/llm-chat-slack:now": "a one-line seam over time.time(), swapped in "
+        "tests so the age and recheck bounds are assertable without sleeping; "
+        "mutating it asserts nothing about behaviour",
+    "bin/llm-chat-slack:read_reply_state":"asserted through the relay tests "
         "— a reply arriving once and only once IS this file being read and "
         "written correctly; the bound is asserted directly",
     "bin/llm-chat-slack:write_reply_state": "asserted directly for the bound, "
