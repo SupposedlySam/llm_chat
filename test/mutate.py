@@ -76,10 +76,11 @@ MUTATIONS = [
      'if False:',
      "join reports success into a room that cannot be spoken in"),
 
-    ("leave forgets the room", "bin/llm_chat",
-     'if joined.pop(name, None) is not None:',
-     'if False:',
-     "joined.json grows forever and both hooks poll dead rooms"),
+    ("leaving or deleting forgets the room", "bin/llm_chat",
+     '    if joined.pop(channel, None) is None:',
+     '    if True:',
+     "joined.json grows forever and both hooks poll dead rooms — and after a "
+     "delete they poll a room that no longer exists at all"),
 
     ("project root walk-up", "bin/llm_chat",
      'here = probe = os.path.abspath(os.getcwd())',
@@ -262,6 +263,57 @@ MUTATIONS = [
      "reach the server through different paths (--server, LLM_CHAT_SERVER, "
      "the default) and will not always spell it the same, so one of them "
      "binds in a directory the other never rings"),
+
+    ("hang_up removes only THIS room's doorbells", "bin/llm_chat",
+     '        if not (name.startswith(prefix) and name.endswith(".sock")):',
+     "        if False:",
+     "deleting one room unlinks every doorbell on the machine, so every other "
+     "agent's waker is holding a socket file senders can no longer reach — "
+     "deaf, with no error anywhere"),
+
+    ("a failed delete is loud, not partial", "bin/llm_chat",
+     '    res = call(server, "DELETE", "/db", {"table": table, "where": where})\n    if "error" in res:',
+     '    res = call(server, "DELETE", "/db", {"table": table, "where": where})\n    if False:',
+     "a half-finished delete reports success, leaving messages and "
+     "memberships belonging to a channel that is gone and that nothing here "
+     "knows how to find"),
+
+    ("a room where everyone is done closes itself", "bin/llm_chat",
+     '    if members and all(m.get("done") for m in members):',
+     '    if False:',
+     "a room nobody is in stays open and keeps accepting messages, so a "
+     "finished conversation is indistinguishable from a live one in the "
+     "discovery listing"),
+
+    ("delete refuses without --yes", "bin/llm_chat",
+     "    if not yes:\n        print(f\"NOT DELETED.",
+     "    if False:\n        print(f\"NOT DELETED.",
+     "the only irreversible verb here runs on a bare command, destroying a "
+     "transcript that is usually the only record a decision was made"),
+
+    ("delete requires membership", "bin/llm_chat",
+     '    if get_membership(server, name, identity) is None:',
+     '    if False:',
+     "an agent that was never in a room can destroy somebody else's "
+     "conversation without ever having been party to it"),
+
+    ("delete removes only THIS room's messages", "bin/llm_chat",
+     '    remove(server, "messages", eq("channel", name))',
+     '    remove(server, "messages", {})',
+     "every message in every room is destroyed and the command reports "
+     "success — the where-clause IS the safety property"),
+
+    ("a bridge stops when its room is deleted", "bin/llm-chat-slack",
+     "        if room_is_gone(config):",
+     "        if False:",
+     "the bridge relays an empty room to Slack forever, holding a token and "
+     "paying a request per poll for a conversation that no longer exists"),
+
+    ("a bridge does NOT stop when it merely cannot tell", "bin/llm-chat-slack",
+     '    if done.returncode != 0:\n        print("  (could not list rooms: %s)"',
+     '    if False:\n        print("  (could not list rooms: %s)"',
+     "a brief server outage reads as deletion and tears down the human's "
+     "escalation path, taking its cursor and thread map with it"),
 
     ("a doorbell is keyed by MEMBERSHIP, not identity", "bin/llm_chat",
      '    return "%s__%s.sock" % (channel, identity)',
@@ -748,7 +800,10 @@ NOT_SWEPT = {
         "argv produced",
     "bin/llm-chat-mcp:_build_read": "every branch asserted directly for "
         "the exact argv produced",
-    "bin/llm-chat-mcp:_build_leave": "both branches asserted directly for "
+    "bin/llm-chat-mcp:_build_delete": "asserted directly for the exact argv, "
+        "with and without --yes; the CLI-correspondence tests additionally "
+        "prove the flag it emits is one this parser accepts",
+    "bin/llm-chat-mcp:_build_leave":"both branches asserted directly for "
         "the exact argv produced",
     "bin/llm-chat-mcp:_build_reopen": "both branches asserted directly for "
         "the exact argv produced",

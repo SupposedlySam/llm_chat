@@ -251,6 +251,19 @@ def create(server, table, obj):
     return res.get("data", {})
 
 
+def remove(server, table, where):
+    """DELETE rows. Table in the BODY, never the path — zonai's convention.
+
+    The one write here with no undo. Every other verb in this file is
+    reversible: `leave` sets a flag, `close` sets a flag, `reopen` clears one.
+    This is the exception, which is why the only caller refuses without --yes.
+    """
+    res = call(server, "DELETE", "/db", {"table": table, "where": where})
+    if "error" in res:
+        raise SystemExit(res["error"] + "  " + res.get("body", ""))
+    return res
+
+
 def update(server, table, where, fields):
     res = call(server, "PATCH", "/db", {
         "table": table, "where": where,
@@ -282,6 +295,53 @@ def remember(channel, identity, server, broadcast=False):
     with open(tmp, "w") as f:
         json.dump(joined, f, indent=2)
     os.replace(tmp, path)
+
+
+def forget(channel):
+    """Drop a room from this project's joined.json. True if it was there.
+
+    Extracted from `leave` because `delete` needs exactly the same thing and a
+    second copy would drift: both hooks read this file to decide what to poll,
+    so a room left here after the server forgot it is polled forever against a
+    404.
+    """
+    joined = read_joined()
+    if joined.pop(channel, None) is None:
+        return False
+    path = joined_path()
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(joined, f, indent=2)
+    os.replace(tmp, path)
+    return True
+
+
+def hang_up(channel, server=None):
+    """Remove every doorbell socket belonging to a room. Returns how many.
+
+    A socket outlives the room it was bound for. The waker that holds it will
+    notice the room is gone on its next reconcile and stop listening, but the
+    FILE stays until something removes it — and a leftover socket file is not
+    a listener, so senders in a rebuilt room of the same name would ring a
+    doorbell nobody can hear. Cheaper to clean up at the one moment we know
+    the room is finished.
+    """
+    directory = doorbell_dir(server)
+    prefix = "%s__" % channel
+    gone = 0
+    try:
+        names = os.listdir(directory)
+    except OSError:
+        return 0
+    for name in names:
+        if not (name.startswith(prefix) and name.endswith(".sock")):
+            continue
+        try:
+            os.unlink(os.path.join(directory, name))
+            gone += 1
+        except OSError:
+            pass          # another agent got there first; not our problem
+    return gone
 
 
 def identity_for(channel, explicit):
@@ -1245,13 +1305,7 @@ def do_leave(server, name, identity, ask=False):
     # room on every cycle — so a finished conversation costs a request per poll
     # forever. Rejoining re-remembers, and `read <channel> --all --as <you>`
     # still reaches the transcript afterwards.
-    joined = read_joined()
-    if joined.pop(name, None) is not None:
-        path = joined_path()
-        tmp = path + ".tmp"
-        with open(tmp, "w") as f:
-            json.dump(joined, f, indent=2)
-        os.replace(tmp, path)
+    forget(name)
 
     members = rows(server, "memberships", eq("channel", name))
     # A room where everyone has said they are finished closes itself, so a
@@ -1265,6 +1319,80 @@ def do_leave(server, name, identity, ask=False):
     else:
         waiting = [m["identity"] for m in members if not m.get("done")]
         print(f"{identity} is done with {name} (still talking: {', '.join(waiting)})")
+
+
+def do_delete(server, name, identity, yes=False):
+    """Destroy a room and everything belonging to it. No undo.
+
+    WHY THIS EXISTS AT ALL, given nothing else here deletes: rooms accumulate.
+    A closed room still holds its transcript, its membership rows and a row in
+    every `channels` listing, and after a few weeks of short-lived task rooms
+    the discovery surface is mostly archaeology. `leave` and `close` are for a
+    conversation that ENDED; this is for one that should never have been kept.
+
+    WHY IT REFUSES WITHOUT --yes, and refuses loudly: every other destructive
+    thing here is reversible. `reopen` undoes `close`. Rejoining undoes
+    `leave`. This undoes nothing, and the transcript is usually the only
+    record that a decision was ever made — so the refusal prints what would be
+    destroyed, by count, and makes somebody type the flag having read it.
+
+    MEMBERSHIP IS REQUIRED, not ownership. There is no owner: whoever opened a
+    room may have left it, and rooms outlive the agent that created them. But
+    an agent that was never in a room has no business destroying it, and
+    requiring membership makes a drive-by deletion impossible without first
+    joining — which is itself a recorded act.
+    """
+    chan = get_channel(server, name)
+    if chan is None:
+        raise SystemExit(f"no channel called {name}")
+    if get_membership(server, name, identity) is None:
+        raise SystemExit(
+            f"{identity} has not joined {name}, so cannot delete it.\n"
+            f"  There is no owner — but deleting a room you were never in is\n"
+            f"  somebody else's conversation disappearing. Join it first if\n"
+            f"  that is genuinely what you mean to do."
+        )
+
+    members = rows(server, "memberships", eq("channel", name))
+    waiting = sorted(m["identity"] for m in members if not m.get("done"))
+    count = len(rows(server, "messages", eq("channel", name)))
+
+    if not yes:
+        print(f"NOT DELETED. `llm_chat delete {name} --yes` would destroy:")
+        print(f"  {count} message(s) — the transcript, permanently")
+        print(f"  {len(members)} membership(s)")
+        print(f"  the channel record itself")
+        if chan.get("broadcast"):
+            print("\n  THIS IS A BROADCAST ROOM. Every identified project on "
+                  "this machine is a\n  member, and none of them chose to be — "
+                  "they were auto-joined. Deleting it\n  removes a room other "
+                  "agents are relying on being able to post to.")
+        if waiting:
+            print(f"\n  STILL TALKING: {', '.join(waiting)} — they have not "
+                  f"left.\n  Consider `llm_chat say {name}` first; a room that "
+                  f"vanishes mid-conversation\n  is indistinguishable from the "
+                  f"server being down.")
+        print("\n  Nothing here can be undone. `leave` ends your part without "
+              "destroying the\n  record; `close` ends the room and keeps it.")
+        return
+
+    # Messages first, memberships second, the channel last. If this is
+    # interrupted the room still exists and can be deleted again — the reverse
+    # order would leave orphaned rows belonging to a channel that is gone,
+    # which nothing in this project knows how to find or clean up.
+    remove(server, "messages", eq("channel", name))
+    remove(server, "memberships", eq("channel", name))
+    remove(server, "channels", eq("id", chan["id"]))
+
+    forget(name)
+    rung = hang_up(name, server)
+
+    print(f"deleted #{name} — {count} message(s), {len(members)} membership(s)")
+    if rung:
+        print(f"  removed {rung} doorbell socket(s)")
+    if waiting:
+        print(f"  {', '.join(waiting)} had not left. Their next reconcile "
+              f"drops the room;\n  a bridge on it stops within one poll.")
 
 
 def do_reopen(server, name, max_messages=None):
@@ -2164,6 +2292,15 @@ def build_parser():
                    help="raise the cap at the same time; required if the room "
                         "closed by hitting it")
 
+    p = sub.add_parser("delete", help="destroy a channel and its transcript")
+    p.add_argument("channel")
+    p.add_argument("--as", dest="identity")
+    p.add_argument("--yes", action="store_true",
+                   help="actually do it. Without this it prints what would be "
+                        "destroyed and refuses — there is no undo, and the "
+                        "transcript is usually the only record that a decision "
+                        "was made")
+
     p = sub.add_parser("invite", help="reprint the invite for a channel")
     p.add_argument("channel")
 
@@ -2271,6 +2408,8 @@ def main() -> int:
                 args.as_json)
     elif args.cmd == "leave":
         do_leave(server, args.channel, identity, args.ask)
+    elif args.cmd == "delete":
+        do_delete(server, args.channel, identity, args.yes)
     return 0
 
 

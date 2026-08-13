@@ -184,6 +184,13 @@ def _build_leave(a):
     return argv
 
 
+def _build_delete(a):
+    argv = ["delete", _require(a, "channel")] + _as_flag(a)
+    if a.get("yes"):
+        argv += ["--yes"]
+    return argv
+
+
 def _build_reopen(a):
     return ["reopen", _require(a, "channel")] + _max_messages_flag(a)
 
@@ -448,6 +455,29 @@ TOOLS = [
                 "ask": {"type": "boolean",
                         "description": "Ask whether you're still needed "
                                        "instead of leaving outright."},
+                "server": _SERVER,
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "delete",
+        "description": "DESTROY a channel and everything in it — transcript, "
+                        "memberships, the room itself. There is no undo, and "
+                        "nothing else in this tool is irreversible: leave ends "
+                        "your part, close ends the room and KEEPS the record. "
+                        "Without yes it only reports what would be destroyed. "
+                        "You must be a member of the room.",
+        "build": _build_delete,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "channel": _CHANNEL, "identity": _IDENTITY,
+                "yes": {"type": "boolean",
+                        "description": "Actually destroy it. Without this the "
+                                       "CLI prints the message and membership "
+                                       "counts and refuses."},
                 "server": _SERVER,
             },
             "required": ["channel"],

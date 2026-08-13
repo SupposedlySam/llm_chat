@@ -56,6 +56,16 @@ class BridgeTest(unittest.TestCase):
         self.said = []
         self.mod.say = lambda room, identity, text, addressing=None: (
             self.said.append((room, identity, text, addressing)) or True)
+        # The room-still-exists lookup shells out to the CLI, so without a stub
+        # every loop test queries the LIVE server. It answered — with the real
+        # machine's rooms, none of them named `human` — so the bridge correctly
+        # concluded its room was deleted and stopped, and three unrelated tests
+        # failed with "KeyboardInterrupt not raised". A suite that reaches the
+        # running system is not testing the code, it is testing the machine.
+        self.mod.subprocess = type("S", (), {"run": staticmethod(
+            lambda *a, **k: type("R", (), {
+                "returncode": 0, "stderr": "",
+                "stdout": json.dumps([{"name": self.config["room"]}])})())})
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -472,6 +482,11 @@ class LoopTest(unittest.TestCase):
         self.pumped = []
         self.mod.pump_out = lambda c, s: self.pumped.append("out") or 1
         self.mod.pump_in = lambda c, s: self.pumped.append("in") or 0
+        # These tests are about pump cadence. Left real, the room-exists check
+        # shells out to the live CLI on every cycle, which both slows the suite
+        # and — since the machine's real rooms are not named `human` — stops
+        # the loop before it ever sleeps. Its own behaviour is RoomGoneTest.
+        self.mod.room_is_gone = lambda config: False
 
     def tearDown(self):
         sys.argv = self.argv
@@ -503,3 +518,77 @@ class LoopTest(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 self.mod.main()
         self.assertNotIn("-> Slack", out.getvalue())
+
+
+class RoomGoneTest(BridgeTest):
+    """`llm_chat delete` destroys the room from another process entirely, so
+    the bridge has to notice on its own. Three states, and only one stops it —
+    a bridge torn down by a brief server outage would take the human's
+    escalation path with it."""
+
+    class Ran:
+        def __init__(self, returncode=0, stdout="", stderr=""):
+            self.returncode, self.stdout, self.stderr = returncode, stdout, stderr
+
+    def answer(self, **kw):
+        self.mod.subprocess = type("S", (), {
+            "run": staticmethod(lambda *a, **k: self.Ran(**kw))})
+
+    def test_a_room_that_is_still_listed_keeps_the_bridge_running(self):
+        self.answer(stdout=json.dumps([{"name": self.config["room"]},
+                                       {"name": "other"}]))
+        self.assertFalse(self.mod.room_is_gone(self.config))
+
+    def test_a_room_MISSING_from_the_listing_stops_it(self):
+        self.answer(stdout=json.dumps([{"name": "other"}]))
+        self.assertTrue(self.mod.room_is_gone(self.config))
+
+    def test_A_FAILED_LOOKUP_DOES_NOT_STOP_IT(self):
+        """The one that matters. 'Cannot tell' is not 'deleted': the server
+        being briefly unreachable is the most common thing that happens here,
+        and tearing the bridge down over a restart would also delete its
+        cursor and thread map."""
+        _, text = self.quiet(self.mod.room_is_gone, self.config)
+        self.answer(returncode=1, stderr="no llm_chat server at ...")
+        self.assertFalse(self.quiet(self.mod.room_is_gone, self.config)[0])
+
+    def test_unparseable_output_does_not_stop_it_either(self):
+        self.answer(stdout="not json")
+        self.assertFalse(self.mod.room_is_gone(self.config))
+
+    def test_stopping_CLEARS_the_bridges_own_state(self):
+        """The cursor and thread map are keyed to a room that no longer
+        exists. Left behind, a NEW room of the same name inherits another
+        conversation's read position and thread parents — so the first thing
+        the human says in it lands as a reply to a thread from the old one."""
+        self.mod.THREADS = os.path.join(self.tmp.name, "slack-threads.json")
+        for path in (self.mod.CURSOR, self.mod.THREADS):
+            with open(path, "w") as f:
+                f.write("{}")
+        self.mod.load_config = lambda: self.config
+        self.mod.Slack = lambda *a, **kw: FakeSlack()
+        self.mod.room_is_gone = lambda config: True
+        argv = sys.argv
+        sys.argv = ["llm-chat-slack"]
+        try:
+            _, text = self.quiet(self.mod.main)
+        finally:
+            sys.argv = argv
+        self.assertIn("no longer exists", text)
+        self.assertFalse(os.path.exists(self.mod.CURSOR))
+        self.assertFalse(os.path.exists(self.mod.THREADS))
+
+    def test_stopping_with_no_state_files_is_not_an_error(self):
+        """The common case: a bridge that never saw a message has neither."""
+        self.mod.THREADS = os.path.join(self.tmp.name, "absent-threads.json")
+        self.mod.CURSOR = os.path.join(self.tmp.name, "absent-cursor.json")
+        self.mod.load_config = lambda: self.config
+        self.mod.Slack = lambda *a, **kw: FakeSlack()
+        self.mod.room_is_gone = lambda config: True
+        argv = sys.argv
+        sys.argv = ["llm-chat-slack"]
+        try:
+            code, _ = self.quiet(self.mod.main)
+        finally:
+            sys.argv = argv
+        self.assertEqual(code, 0)

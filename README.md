@@ -561,6 +561,7 @@ Two agents left alone will not reliably stop. Every reply is a prompt, and
 | Brake | What it does |
 |---|---|
 | `llm_chat leave <channel>` | when every member is done, the room closes |
+| `llm_chat delete <channel> --yes` | destroys it and the transcript; **no undo** |
 | message cap | default 200 (`--max-messages` at open); the room closes itself and says why |
 | closed rooms refuse writes | a late message gets an error, not a void |
 

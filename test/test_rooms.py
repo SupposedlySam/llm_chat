@@ -316,3 +316,171 @@ class ProjectIdentityTest(RoomTest):
     def test_a_bad_identity_is_refused(self):
         with self.assertRaises(SystemExit):
             cli.do_identify("http://127.0.0.1:1", "has space")
+
+
+class DeleteTest(RoomTest):
+    """The only irreversible verb, so the refusals matter more than the act."""
+
+    SERVER = "http://127.0.0.1:1"
+
+    def room(self, name="doomed", **overrides):
+        self.fake.channel(name, **overrides)
+        self.fake.tables.setdefault("memberships", []).append(
+            {"id": "m1", "channel": name, "identity": "me", "done": 0})
+        self.fake.tables.setdefault("messages", []).extend(
+            [{"id": "x%d" % i, "channel": name, "from_identity": "me",
+              "body": "hi", "seq": i} for i in range(3)])
+        return name
+
+    def test_WITHOUT_yes_it_destroys_NOTHING(self):
+        """The whole point of the flag. A dry run that deleted anything would
+        be the worst possible reading of 'preview'."""
+        name = self.room()
+        _, text = self.quiet(cli.do_delete, self.SERVER, name, "me")
+        self.assertIn("NOT DELETED", text)
+        self.assertIn("3 message(s)", text)
+        self.assertEqual(len(self.fake.tables["messages"]), 3)
+        self.assertEqual(len(self.fake.tables["channels"]), 1)
+
+    def test_with_yes_the_room_and_everything_in_it_is_gone(self):
+        name = self.room()
+        _, text = self.quiet(cli.do_delete, self.SERVER, name, "me", yes=True)
+        self.assertIn("deleted #doomed", text)
+        self.assertEqual(self.fake.tables["messages"], [])
+        self.assertEqual(self.fake.tables["memberships"], [])
+        self.assertEqual(self.fake.tables["channels"], [])
+
+    def test_ANOTHER_ROOMS_MESSAGES_SURVIVE(self):
+        """The where-clause is the whole safety property. A delete that
+        matched on the wrong column would empty the database and report
+        success, and every other assertion here would still pass."""
+        self.room("doomed")
+        self.fake.channel("keeper")
+        self.fake.tables["messages"].append(
+            {"id": "k1", "channel": "keeper", "from_identity": "you",
+             "body": "still here", "seq": 1})
+        self.quiet(cli.do_delete, self.SERVER, "doomed", "me", yes=True)
+        left = self.fake.tables["messages"]
+        self.assertEqual([m["id"] for m in left], ["k1"])
+        self.assertEqual([c["name"] for c in self.fake.tables["channels"]],
+                         ["keeper"])
+
+    def test_a_NON_MEMBER_cannot_delete(self):
+        """There is no owner, so membership is the only thing standing between
+        a room and somebody who was never in it."""
+        name = self.room()
+        with self.assertRaises(SystemExit) as caught:
+            cli.do_delete(self.SERVER, name, "stranger", yes=True)
+        self.assertIn("has not joined", str(caught.exception))
+        self.assertEqual(len(self.fake.tables["messages"]), 3)
+
+    def test_a_room_that_does_not_exist_is_refused(self):
+        with self.assertRaises(SystemExit):
+            cli.do_delete(self.SERVER, "ghost", "me", yes=True)
+
+    def test_the_preview_WARNS_about_a_broadcast_room(self):
+        """Every identified project is auto-joined to one, so nobody chose to
+        be there and nobody expects it to vanish."""
+        name = self.room("notices", broadcast=1)
+        _, text = self.quiet(cli.do_delete, self.SERVER, name, "me")
+        self.assertIn("BROADCAST ROOM", text)
+
+    def test_the_preview_NAMES_members_who_have_not_left(self):
+        name = self.room()
+        self.fake.tables["memberships"].append(
+            {"id": "m2", "channel": name, "identity": "busy", "done": 0})
+        _, text = self.quiet(cli.do_delete, self.SERVER, name, "me")
+        self.assertIn("STILL TALKING", text)
+        self.assertIn("busy", text)
+
+    def test_deleting_reports_the_doorbells_it_removed(self):
+        """Said out loud because it is the part that touches another agent's
+        machine state: their waker was listening on that socket, and the count
+        is how the deleter learns somebody was."""
+        name = self.room()
+        bells = tempfile.TemporaryDirectory()
+        self.addCleanup(bells.cleanup)
+        real = cli.doorbell_dir
+        cli.doorbell_dir = lambda server=None: bells.name
+        try:
+            open(os.path.join(bells.name, "%s__me.sock" % name), "w").close()
+            _, text = self.quiet(cli.do_delete, self.SERVER, name, "me",
+                                 yes=True)
+        finally:
+            cli.doorbell_dir = real
+        self.assertIn("removed 1 doorbell socket(s)", text)
+
+    def test_it_hangs_up_the_rooms_doorbells(self):
+        """A socket file outlives the room. It is not a listener — binding onto
+        it fails while connecting is refused — so a rebuilt room of the same
+        name would have senders ringing a doorbell nobody can hear."""
+        bells = tempfile.TemporaryDirectory()
+        self.addCleanup(bells.cleanup)
+        real = cli.doorbell_dir
+        cli.doorbell_dir = lambda server=None: bells.name
+        try:
+            for name in ("doomed__me.sock", "doomed__you.sock",
+                         "keeper__me.sock", "notes.txt"):
+                open(os.path.join(bells.name, name), "w").close()
+            self.assertEqual(cli.hang_up("doomed"), 2)
+            self.assertEqual(sorted(os.listdir(bells.name)),
+                             ["keeper__me.sock", "notes.txt"])
+            # A directory that is not there at all is the ordinary case on a
+            # machine where nothing has ever listened.
+            cli.doorbell_dir = lambda server=None: "/no/such/doorbells"
+            self.assertEqual(cli.hang_up("doomed"), 0)
+        finally:
+            cli.doorbell_dir = real
+
+    def test_a_socket_that_vanishes_mid_sweep_is_not_an_error(self):
+        """Another agent deleting the same room at the same moment is a race
+        this cannot win and does not need to."""
+        bells = tempfile.TemporaryDirectory()
+        self.addCleanup(bells.cleanup)
+        real, real_unlink = cli.doorbell_dir, cli.os.unlink
+        cli.doorbell_dir = lambda server=None: bells.name
+        open(os.path.join(bells.name, "doomed__me.sock"), "w").close()
+
+        def vanished(path):
+            raise OSError("gone")
+        cli.os.unlink = vanished
+        try:
+            self.assertEqual(cli.hang_up("doomed"), 0)
+        finally:
+            cli.doorbell_dir, cli.os.unlink = real, real_unlink
+
+    def test_a_wire_error_on_delete_is_loud(self):
+        """A partial delete that reports success would leave rows belonging to
+        a channel that is gone, which nothing here knows how to find."""
+        real = cli.call
+        cli.call = lambda *a, **kw: {"error": "HTTP 500", "body": "nope"}
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                cli.remove("http://127.0.0.1:1", "messages", cli.eq("x", "y"))
+        finally:
+            cli.call = real
+        self.assertIn("HTTP 500", str(caught.exception))
+
+    def test_delete_is_reachable_from_the_command_line(self):
+        name = self.room()
+        cli.remember(name, "me", self.SERVER)
+        argv = sys.argv
+        sys.argv = ["llm_chat", "--server", self.SERVER, "delete", name,
+                    "--as", "me", "--yes"]
+        try:
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(cli.main(), 0)
+        finally:
+            sys.argv = argv
+        self.assertIn("deleted #doomed", out.getvalue())
+        self.assertEqual(self.fake.tables["channels"], [])
+
+    def test_it_is_forgotten_locally_so_the_hooks_stop_polling_it(self):
+        """Both hooks read joined.json to decide what to poll. A deleted room
+        left in it is polled forever against a room that 404s."""
+        name = self.room()
+        cli.remember(name, "me", self.SERVER)
+        self.assertIn(name, cli.read_joined())
+        self.quiet(cli.do_delete, self.SERVER, name, "me", yes=True)
+        self.assertNotIn(name, cli.read_joined())

@@ -119,6 +119,17 @@ class FakeServer:
                     row.update(fields)
                     hit += 1
             return {"data": {"updated": hit}}
+        if method == "DELETE" and path == "/db":
+            table = self.tables.setdefault(body["table"], [])
+            _observe(body["table"], where=body.get("where"))
+            keep = [r for r in table if not self._matches(r, body.get("where"))]
+            gone = len(table) - len(keep)
+            # Mutated in place, not rebound: `tables[name]` is handed out by
+            # the arrange helpers and held by tests, so replacing the list
+            # would leave them pointing at the pre-delete copy and every
+            # assertion about what survived would pass against a stale view.
+            table[:] = keep
+            return {"data": {"deleted": gone}}
         raise AssertionError("fake server got an unexpected request: %s %s"
                              % (method, path))
 

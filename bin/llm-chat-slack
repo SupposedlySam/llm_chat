@@ -358,6 +358,36 @@ def check(config):
     return 0
 
 
+def room_is_gone(config):
+    """True only when the room is provably absent, never when we cannot tell.
+
+    Asks the CLI for the machine-readable room list, which is the same source
+    the waker uses. Three states, and only one of them stops the bridge:
+
+      the room is listed          -> keep going
+      the CLI failed              -> keep going, and say so
+      it answered without the room -> gone
+
+    A failed lookup MUST NOT stop the bridge. The server being briefly
+    unreachable is the most common thing that happens to it, and treating
+    "cannot tell" as "deleted" would tear down the human's escalation path —
+    plus its cursor — over a restart. That is the check-fails-safe trap from
+    #learnings pointed the wrong way: here the safe answer is to keep running.
+    """
+    done = subprocess.run(
+        [sys.executable, CLI, "channels", "--json", "--all"],
+        capture_output=True, text=True)
+    if done.returncode != 0:
+        print("  (could not list rooms: %s)"
+              % (done.stderr or done.stdout).strip()[:120])
+        return False
+    try:
+        listing = json.loads(done.stdout or "[]")
+    except ValueError:
+        return False
+    return not any(room.get("name") == config["room"] for room in listing)
+
+
 def main() -> int:
     config = load_config()
     if "--check" in sys.argv:
@@ -371,6 +401,26 @@ def main() -> int:
     print("bridging #%s as '%s' every %ds — Ctrl-C to stop"
           % (config["room"], config["identity"], poll))
     while True:
+        if room_is_gone(config):
+            # STOP RATHER THAN KEEP POLLING. `llm_chat delete` destroys the
+            # room from another process entirely, and this one would otherwise
+            # go on relaying an empty room to Slack forever — a bridge whose
+            # llm_chat half has no members, posting nothing and reading
+            # nothing, but still holding a token and still costing a Slack
+            # request every poll.
+            #
+            # Its own state goes too. The cursor and thread map are keyed to a
+            # room that no longer exists, so leaving them means a NEW room of
+            # the same name silently inherits another conversation's read
+            # position and thread parents.
+            for path in (CURSOR, THREADS):
+                try:
+                    os.remove(path)
+                except OSError:
+                    pass
+            print("room #%s no longer exists — bridge stopping, state cleared"
+                  % config["room"])
+            return 0
         out = pump_out(config, slack)
         back = pump_in(config, slack)
         if out or back:
