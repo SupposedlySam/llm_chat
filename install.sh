@@ -256,8 +256,23 @@ fi
 # core.excludesFile together — the same resolution git itself uses, so the
 # guard finally matches the question being asked.
 GITIGNORE="$TARGET/.gitignore"
+# THREE OUTCOMES, not two. `git check-ignore` exits 0 for ignored, 1 for not
+# ignored, and 128 when it could not answer at all — no git on PATH, or a
+# target that is not a repository. Folding 128 into "not ignored" is a check
+# failing safe into a real answer: on a machine without git it would silently
+# append the entries on EVERY run, which is precisely the bug this replaced,
+# recreated for the one operator least able to see why.
+#
+# Writing is still the right action when we cannot tell — the identity must
+# not become committable — but it stops being silent.
+CANNOT_TELL=""
 already_ignored() {
   git -C "$TARGET" check-ignore -q "$1" 2>/dev/null
+  case $? in
+    0) return 0 ;;
+    1) return 1 ;;
+    *) CANNOT_TELL="yes"; return 1 ;;
+  esac
 }
 add_ignore() {
   if already_ignored "$1"; then return; fi
@@ -272,6 +287,14 @@ add_ignore() {
 UNIGNORED=""
 add_ignore ".llm_chat/" "llm_chat identity for this project"
 add_ignore ".claude/settings.local.json" "machine-local hook config (absolute paths)"
+
+if [ -n "$CANNOT_TELL" ]; then
+  echo "NOTE: could not ask git whether those paths are already ignored"
+  echo "  (no git on PATH, or $TARGET is not a repository). Acted as though"
+  echo "  they were not, which is the safe direction — but if you keep these"
+  echo "  ignored somewhere this cannot see, every re-install will add them"
+  echo "  again and this line is the only warning you will get."
+fi
 
 # DECLINING MUST NOT BE SILENT. Writing to a shared repo's .gitignore is that
 # repo's decision, not this installer's — but the protection being declined is

@@ -76,6 +76,24 @@ class SettingsArePortableTest(unittest.TestCase):
             found = MACHINE_PATH.findall(f.read())
         self.assertEqual(found, [], "tracked settings.json names %s" % found)
 
+    def test_THE_DETECTOR_ACTUALLY_FIRES(self):
+        """#42 from #learnings, applied to this file an hour after writing it.
+
+        Every assertion above says a machine path is ABSENT. None of them
+        showed the mechanism that would have produced one actually works — so
+        a broken regex makes all of them pass, forever, and passes hardest
+        exactly when it is most broken. Proved in both directions here, since
+        a detector that matches everything is as useless as one that matches
+        nothing."""
+        for leak in ("/Users/someone/dev/tool/bin/hook",
+                     "/home/someone/dev/tool/bin/hook"):
+            with self.subTest(path=leak):
+                self.assertIsNotNone(MACHINE_PATH.search(leak))
+        for portable in ('"$CLAUDE_PROJECT_DIR"/.game_loop/bin/guard.sh',
+                         "python3 test/run.py", "/usr/bin/env python3"):
+            with self.subTest(path=portable):
+                self.assertIsNone(MACHINE_PATH.search(portable))
+
     def test_the_check_examined_something(self):
         """"It passed" must not be reachable by finding no hooks at all —
         which is what a renamed key or a restructured file would produce."""

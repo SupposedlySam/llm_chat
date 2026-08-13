@@ -408,6 +408,24 @@ class GitignoreTest(ShellTestCase):
         done = self.run_script(INSTALL, self.repo, "--no-gitignore")
         self.assertNotIn("NOT IGNORED", done.stdout)
 
+    def test_COULD_NOT_TELL_IS_NOT_NOT_IGNORED(self):
+        """#34 from #learnings: a check that fails safe collides its safe
+        answer with a real one. `git check-ignore` exits 128 when it cannot
+        answer — no git, or not a repository — and folding that into "not
+        ignored" silently re-appends on EVERY run, which is the bug this
+        replaced, recreated for whoever has no git."""
+        plain = os.path.join(self.tmp.name, "not-a-repo")
+        os.makedirs(plain)
+        done = self.run_script(INSTALL, plain)
+        self.assertIn("could not ask git", done.stdout)
+        self.assertIn("safe direction", done.stdout)
+
+    def test_a_real_repo_says_nothing_of_the_sort(self):
+        """Paired. The note must not fire where git answered fine, or it is
+        noise on every install and stops being read."""
+        done = self.run_script(INSTALL, self.repo)
+        self.assertNotIn("could not ask git", done.stdout)
+
     def test_an_unknown_option_is_refused_rather_than_taken_as_the_target(self):
         """Otherwise a typo'd flag installs into a directory named after it."""
         done = self.run_script(INSTALL, self.repo, "--nonsense",
