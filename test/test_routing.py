@@ -96,6 +96,256 @@ class RouteTest(unittest.TestCase):
         self.assertEqual(bridge.route({}, {}), ["--to-none"])
 
 
+class NameTaggingTest(unittest.TestCase):
+    """Reaching ONE agent by name, which a human previously could not do.
+
+    The gesture available on a phone was `@here` — wake everybody — so a human
+    with an instruction for one agent had to interrupt all of them, and the
+    other four each spent a turn working out the message was not theirs.
+    """
+
+    MEMBERS = ("baccompat", "refactor-agent", "build", "supposedlysam")
+
+    def route(self, text, **rest):
+        message = dict(text=text, ts="171.0", **rest)
+        return bridge.route(message, {"170.1": "alice"}, self.MEMBERS)
+
+    def test_AN_AT_NAME_BEATS_AT_HERE(self):
+        """The reported shape, verbatim: "@baccompat do something. @here".
+
+        The @here is a human reaching for the only gesture that reliably wakes
+        anybody and then saying who they actually meant. Honouring it would
+        wake every agent on the machine to deliver one instruction to one of
+        them, which is the thing the human was working around."""
+        self.assertEqual(self.route("@baccompat do something. <!here>"),
+                         ["--to", "baccompat"])
+
+    def test_at_here_alone_still_wakes_everyone(self):
+        """Paired. Names beating @here must not become @here doing nothing."""
+        self.assertEqual(self.route("<!here> anyone about?"), ["--to-all"])
+
+    def test_a_VOCATIVE_name_needs_no_at_sign(self):
+        """The second reported form: "Hey refactor agent, what's the status on
+        X". The identity is a slug and the human is typing English, so the
+        separator cannot be required to match."""
+        self.assertEqual(
+            self.route("Hey refactor agent, what's the status on X"),
+            ["--to", "refactor-agent"])
+
+    def test_a_name_MENTIONED_IN_PASSING_wakes_nobody(self):
+        """The line that keeps this from becoming spam. "the build agent is
+        stuck" is ABOUT build, not TO it, and a rule that cannot tell those
+        apart turns every status report into an interrupt — the same
+        over-delivery that got the audience rules written."""
+        self.assertEqual(
+            self.route("I think the build is stuck on something"),
+            ["--to-none"])
+
+    def test_the_THREE_MARKS_OF_ADDRESS_each_count(self):
+        """Position alone was the first attempt and it caught "I think the
+        build is stuck" on its fourth word. What actually marks address in
+        English is one of these three."""
+        for text in ("build, are you there?",                   # at the start
+                     "Hey build, are you there?",               # after a greeting
+                     "so, build, can you look at this"):        # comma-wrapped
+            with self.subTest(text=text):
+                self.assertEqual(self.route(text), ["--to", "build"])
+
+    def test_A_DETERMINER_MAKES_IT_A_SUBJECT_not_an_addressee(self):
+        """"the build, which is stuck, needs a rerun" is a sentence ABOUT the
+        build. Without this the comma rule would wake it."""
+        self.assertEqual(
+            self.route("the build, which is stuck, needs a rerun"),
+            ["--to-none"])
+
+    def test_an_AT_SIGN_makes_it_explicit_ANYWHERE_in_the_message(self):
+        """Because typing `@` IS the gesture. It is the one unambiguous thing
+        a human has on a phone, so it is honoured wherever it appears."""
+        self.assertEqual(
+            self.route("I think the @build is stuck on something"),
+            ["--to", "build"])
+
+    def test_two_names_wake_exactly_those_two(self):
+        got = self.route("@baccompat and @build, compare notes")
+        self.assertEqual(got, ["--to", "baccompat,build"])
+
+    def test_the_order_is_the_order_they_were_NAMED(self):
+        got = self.route("@build then @baccompat")
+        self.assertEqual(got, ["--to", "build,baccompat"])
+
+    def test_A_NAME_INSIDE_A_LONGER_WORD_IS_NOT_A_NAME(self):
+        """`build` must not match `rebuilding`. Anchored on both sides, and
+        asserted because the obvious substring implementation passes every
+        other test here."""
+        self.assertEqual(self.route("rebuilding the buildings"),
+                         ["--to-none"])
+
+    def test_punctuation_and_underscores_are_the_same_name(self):
+        for spelling in ("refactor agent", "refactor_agent", "refactor-agent",
+                         "REFACTOR AGENT"):
+            with self.subTest(spelling=spelling):
+                self.assertEqual(self.route("Hey %s, status?" % spelling),
+                                 ["--to", "refactor-agent"])
+
+    def test_NO_REPLY_NEEDED_still_beats_a_name(self):
+        """"Everyone see this" and "nobody reply" are not in conflict, and the
+        more explicit statement of intent wins. A human who says nrn has ended
+        the exchange even while naming somebody in it."""
+        self.assertEqual(self.route("@baccompat nice work, nrn"),
+                         ["--to-none"])
+
+    def test_a_name_beats_the_THREAD_it_was_typed_in(self):
+        """Same argument as @here: naming somebody is strictly more
+        information than the thread they happened to type it in."""
+        self.assertEqual(
+            self.route("@build can you check this?", thread_ts="170.1"),
+            ["--to", "build"])
+
+    def test_NO_MEMBERS_falls_back_to_the_rules_that_need_no_names(self):
+        """`members_of` returning nothing means "could not look", and a bridge
+        that refused to relay on a failed lookup would turn it into silence."""
+        self.assertEqual(
+            bridge.route({"text": "@build hello", "ts": "1"}, {}, ()),
+            ["--to-none"])
+
+    def test_SHORT_NAMES_ARE_NOT_MATCHED_AT_ALL(self):
+        """"me", "cc" and "ci" occur in ordinary prose constantly, and a false
+        wake costs an agent its whole context for something never addressed to
+        it."""
+        self.assertEqual(
+            bridge.addressed_names("give me a moment", ("me", "ci")), [])
+
+    def test_a_member_whose_name_is_all_punctuation_does_not_crash(self):
+        self.assertIsNone(bridge.name_pattern("---"))
+        self.assertEqual(bridge.addressed_names("hello", ("---",)), [])
+
+    def test_no_text_and_no_members_are_both_safe(self):
+        self.assertEqual(bridge.addressed_names("", self.MEMBERS), [])
+        self.assertEqual(bridge.addressed_names("hello", ()), [])
+
+
+class MembersOfTest(unittest.TestCase):
+    """Asking llm_chat who is in the room, and every way that can fail.
+
+    All three failures answer the same way — an empty tuple, meaning "no name
+    can be recognised this poll" — and routing falls back to the rules that
+    need no names. A bridge that refused to relay because it could not list
+    members would turn a lookup failure into silence.
+    """
+
+    def fake_run(self, stdout="", boom=False):
+        class Result:
+            pass
+
+        def run(*a, **kw):
+            if boom:
+                raise OSError("no such thing")
+            result = Result()
+            result.stdout = stdout
+            return result
+
+        real = bridge.subprocess.run
+        bridge.subprocess.run = run
+        self.addCleanup(lambda: setattr(bridge.subprocess, "run", real))
+
+    def test_it_returns_the_members_of_the_named_room(self):
+        self.fake_run(json.dumps([{"name": "other", "members": ["x"]},
+                                  {"name": "room", "members": ["a", "b"]}]))
+        self.assertEqual(bridge.members_of("room"), ("a", "b"))
+
+    def test_a_SUBPROCESS_FAILURE_is_not_an_empty_room(self):
+        self.fake_run(boom=True)
+        self.assertEqual(bridge.members_of("room"), ())
+
+    def test_UNPARSEABLE_OUTPUT_is_not_an_empty_room(self):
+        self.fake_run("{not json")
+        self.assertEqual(bridge.members_of("room"), ())
+
+    def test_a_room_that_is_NOT_LISTED_answers_empty(self):
+        self.fake_run(json.dumps([{"name": "elsewhere", "members": ["a"]}]))
+        self.assertEqual(bridge.members_of("room"), ())
+
+    def test_a_room_with_a_null_member_list_does_not_explode(self):
+        self.fake_run(json.dumps([{"name": "room"}]))
+        self.assertEqual(bridge.members_of("room"), ())
+
+
+class BridgeCommandTest(unittest.TestCase):
+    """Asking the bridge a question instead of asking the room.
+
+    A human who has to wake five agents to find out which one to wake has not
+    been helped. `@llm_chat list` is answered in Slack, never relayed, and
+    costs nobody a turn.
+    """
+
+    class FakeSlack:
+        def __init__(self):
+            self.posted = []
+
+        def post(self, text, thread_ts=None):
+            self.posted.append((text, thread_ts))
+            return {"ok": True}
+
+    def setUp(self):
+        self.slack = self.FakeSlack()
+        self.real = bridge.members_of
+        bridge.members_of = lambda room: ("build", "baccompat")
+        self.addCleanup(lambda: setattr(bridge, "members_of", self.real))
+
+    def test_it_recognises_the_command_in_its_spellings(self):
+        for text in ("@llm_chat list", "llm_chat list", "@llmchat list",
+                     "@llm-chat LIST", "  @llm_chat   list  "):
+            with self.subTest(text=text):
+                self.assertEqual(bridge.bridge_command(text), "list")
+
+    def test_a_SENTENCE_containing_the_words_is_not_a_command(self):
+        """Anchored end to end. "ask llm_chat list for me" is a message to the
+        room, and swallowing it would make the bridge eat conversation."""
+        for text in ("ask llm_chat list for me", "llm_chat list the rooms",
+                     "what does llm_chat list do?"):
+            with self.subTest(text=text):
+                self.assertIsNone(bridge.bridge_command(text))
+
+    def test_LIST_ANSWERS_IN_SLACK_AND_NAMES_EVERYBODY(self):
+        taken = bridge.answer_bridge_command("list", "room", self.slack)
+        self.assertTrue(taken)
+        text, _ = self.slack.posted[0]
+        self.assertIn("build", text)
+        self.assertIn("baccompat", text)
+        self.assertIn("2 members", text)
+
+    def test_it_answers_IN_THE_THREAD_it_was_asked_in(self):
+        bridge.answer_bridge_command("list", "room", self.slack, thread="170.1")
+        self.assertEqual(self.slack.posted[0][1], "170.1")
+
+    def test_AN_UNKNOWN_VERB_IS_NOT_SWALLOWED(self):
+        """It goes on to be relayed like any other message. A typo must reach
+        the room rather than vanish into a bridge that thought it was for
+        itself."""
+        self.assertFalse(bridge.answer_bridge_command("lsit", "room",
+                                                      self.slack))
+        self.assertEqual(self.slack.posted, [])
+
+    def test_A_FAILED_LOOKUP_IS_NOT_REPORTED_AS_AN_EMPTY_ROOM(self):
+        """"Could not look" is not "nobody is there" — the distinction this
+        project has now made four times, in four different files. Saying the
+        room is empty would send a human off to debug a room that is full."""
+        bridge.members_of = lambda room: ()
+        bridge.answer_bridge_command("list", "room", self.slack)
+        text, _ = self.slack.posted[0]
+        self.assertIn("could not look", text.lower())
+        self.assertNotIn("0 members", text)
+
+    def test_the_answer_TEACHES_THE_GESTURE(self):
+        """The reason somebody asks who is in the room is that they want to
+        reach one of them. An answer that stops at the names makes them ask
+        again."""
+        bridge.answer_bridge_command("list", "room", self.slack)
+        text, _ = self.slack.posted[0]
+        self.assertIn("@here", text)
+        self.assertIn("Tag one by name", text)
+
+
 class ThreadMapTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

@@ -372,12 +372,38 @@ message, so the bridge does nothing about that direction. Coming back:
 | Reply **in a thread** | only the agent whose message started that thread |
 | Post at **top level** | nobody — passive; they see it when next working |
 | Say `@here` or `@channel` | everyone in the room |
+| **Name an agent** — `@build fix this` | only that agent |
+| Ask `@llm_chat list` | nobody — the bridge answers in Slack |
 
 `@here` and `@channel` mean the same thing here: an agent in the room is always "here", so the
 human distinction between present and merely-a-member does not exist on this side. `@here` also
 beats the thread rule — explicit beats inferred. Slack sends those as `<!here>` and `<!channel>`
 in the raw text rather than as literal `@here`, so both forms are matched; matching only the
 literal would be a feature that never once fires while looking implemented.
+
+**A name beats `@here`**, and that ordering is the point of it. `@baccompat do something. @here`
+is somebody reaching for the only gesture that reliably wakes anybody and then saying who they
+actually meant — honouring the `@here` would wake every agent on the machine to deliver one
+instruction to one of them.
+
+You do not have to type the identity exactly. `refactor-agent` is matched by "refactor agent"
+and "refactor_agent", because the identity is a slug and you are typing English on a phone. Two
+forms count as addressing:
+
+- **`@name`, anywhere in the message.** Typing `@` *is* the gesture, so it is honoured wherever
+  it appears.
+- **A name in the vocative** — at the start (`build, are you there?`), after a greeting
+  (`Hey refactor agent, what's the status?`), or wrapped in commas.
+
+A name **mentioned in passing does not wake it**. "I think the build is stuck" is *about* build,
+not *to* it, and "the build, which is stuck, needs a rerun" is a sentence, not an instruction.
+Without that line every status report becomes an interrupt, which is the over-delivery the
+audience rules exist to prevent. If you meant to reach it, put an `@` on it.
+
+**`@llm_chat list`** answers in Slack with the room's members and never relays anything, so
+finding out who is in there costs nobody a turn — a human who has to wake five agents to learn
+which one to wake has not been helped. An unrecognised verb (`@llm_chat lsit`) is relayed
+normally rather than swallowed, so a typo reaches the room instead of vanishing.
 
 Threading works because the bridge records the Slack `ts` of each relay against the agent that
 wrote it, so a reply in that thread knows whose answer it is. Relays are prefixed with the

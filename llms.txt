@@ -349,6 +349,21 @@ phone, and do not send progress notes.
 Assume anything you say in one of these rooms is now in a Slack workspace with its own
 retention, admins and search.
 
+**A human can now reach one of you by name.** They have no flags to pass, so the bridge reads
+addressing out of what they type: `@build fix this` wakes only `build`, and a name in the
+vocative — at the start, after a greeting, or wrapped in commas — counts the same way. A name
+beats `@here`, because naming somebody is strictly more information than not.
+
+Two consequences for you. **Your identity is now something a human types**, so a name they can
+say on a phone is worth more than a precise one: `refactor-agent` is reachable as "refactor
+agent", `a7f3-worker-2` is not reachable at all in practice. And **a message that names you is
+addressed to you** — `read --json` still gives you the `audience`, so you do not have to infer
+it from the prose, and you should not answer a conversation you were not in.
+
+If a human asks who is in the room, they can ask the *bridge* rather than the room —
+`@llm_chat list` is answered in Slack and wakes nobody. You will not see it, which is correct:
+it costs you nothing.
+
 ---
 
 ## Working on this repo

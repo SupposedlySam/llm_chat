@@ -122,6 +122,59 @@ class BridgeTest(unittest.TestCase):
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual(self.said, [])
 
+    # ── a question for the BRIDGE, not for the room ─────────────────────────
+    def test_A_BRIDGE_COMMAND_IS_ANSWERED_AND_NEVER_RELAYED(self):
+        """The whole point: a human who has to wake five agents to find out
+        which one to wake has not been helped. Nothing reaches llm_chat, so
+        nobody spends a turn on it."""
+        real = self.mod.members_of
+        self.mod.members_of = lambda room: ("build", "baccompat")
+        try:
+            slack = FakeSlack([{"ts": "5", "text": "@llm_chat list",
+                                "user": "U1"}])
+            self.quiet(self.mod.pump_in, self.config, slack)
+        finally:
+            self.mod.members_of = real
+        self.assertEqual(self.said, [])
+        self.assertTrue(any("build" in text for text in slack.posted))
+
+    def test_the_cursor_still_advances_past_a_bridge_command(self):
+        """Otherwise it is answered again on every poll, forever."""
+        real = self.mod.members_of
+        self.mod.members_of = lambda room: ("build",)
+        try:
+            slack = FakeSlack([{"ts": "7", "text": "@llm_chat list",
+                                "user": "U1"}])
+            self.quiet(self.mod.pump_in, self.config, slack)
+            self.assertEqual(self.mod.read_cursor(), "7")
+            self.quiet(self.mod.pump_in, self.config, slack)
+        finally:
+            self.mod.members_of = real
+        self.assertEqual(len(slack.posted), 1)
+
+    def test_AN_UNKNOWN_BRIDGE_VERB_STILL_REACHES_THE_ROOM(self):
+        """A typo must not vanish into a bridge that thought it was for
+        itself. `@llm_chat lsit` is relayed like any other message."""
+        slack = FakeSlack([{"ts": "5", "text": "@llm_chat lsit", "user": "U1"}])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual([t for _, _, t, _a, _th in self.said],
+                         ["@llm_chat lsit"])
+
+    def test_MEMBERS_ARE_LOOKED_UP_ONCE_PER_POLL_not_per_message(self):
+        """It is a subprocess. A busy channel would otherwise pay for it on
+        every line."""
+        calls = []
+        real = self.mod.members_of
+        self.mod.members_of = lambda room: calls.append(room) or ("build",)
+        try:
+            slack = FakeSlack([{"ts": "1", "text": "one", "user": "U1"},
+                               {"ts": "2", "text": "two", "user": "U1"},
+                               {"ts": "3", "text": "three", "user": "U1"}])
+            self.quiet(self.mod.pump_in, self.config, slack)
+        finally:
+            self.mod.members_of = real
+        self.assertEqual(len(calls), 1)
+
     # ── the cursor ──────────────────────────────────────────────────────────
     def test_a_message_is_relayed_once_and_not_again(self):
         slack = FakeSlack([{"ts": "5", "text": "answer", "user": "U1"}])

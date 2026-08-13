@@ -446,7 +446,174 @@ def waiting_for_human(room, identity):
             for r in records if isinstance(r, dict) and (r.get("text") or "").strip()]
 
 
-def route(message, threads):
+# A question for the BRIDGE, not for the room. `@llm_chat list` is answered in
+# Slack and never relayed, so asking who is in the room does not cost every
+# agent in it a turn. The whole point is that finding out the names is free —
+# a human who has to wake five agents to learn which one to wake has not been
+# helped.
+BRIDGE_COMMAND = re.compile(r"^\s*@?llm[_-]?chat\s+(\w+)\s*$", re.IGNORECASE)
+
+
+def bridge_command(text):
+    """The verb of a message addressed to the bridge itself, or None."""
+    found = BRIDGE_COMMAND.match(text or "")
+    return found.group(1).lower() if found else None
+
+
+def answer_bridge_command(verb, room, slack, thread=None):
+    """Answer in Slack. Returns True if this message was the bridge's to take.
+
+    Returning False means "not mine" and the message goes on to be relayed
+    normally, which is what keeps an unknown verb from being swallowed — a
+    typo must not silently vanish instead of reaching the room.
+    """
+    if verb != "list":
+        return False
+    members = members_of(room)
+    if members:
+        body = ("*%s* has %d member%s:\n%s\n\n_Tag one by name to wake only "
+                "them — `@%s ...` — or `@here` for everybody._"
+                % (room, len(members), "" if len(members) == 1 else "s",
+                   "\n".join("• `%s`" % m for m in members), members[0]))
+    else:
+        # NOT "the room is empty". The lookup can fail, and saying nobody is
+        # there would send a human off to debug an empty room that is full.
+        body = ("Could not read the members of *%s* just now — that is "
+                "'could not look', not 'nobody is there'." % room)
+    slack.post(body, thread_ts=thread)
+    return True
+
+
+def members_of(room):
+    """Who is in the room, by identity. () when it cannot be asked.
+
+    Through `channels --json` rather than the store, because the bridge is a
+    CLIENT of llm_chat like anything else — and that surface exists precisely
+    so a tool does not have to parse a rendering.
+
+    An empty answer is not an error: it means no name can be recognised this
+    poll, and routing falls back to the rules that need no names. A bridge
+    that refused to relay because it could not list members would turn a
+    lookup failure into silence, which is the failure mode this project keeps
+    finding.
+    """
+    try:
+        out = subprocess.run(
+            [sys.executable, CLI, "channels", "--json"],
+            capture_output=True, text=True, timeout=8)
+    except Exception:
+        return ()
+    try:
+        rooms = json.loads(out.stdout or "[]")
+    except ValueError:
+        return ()
+    for entry in rooms:
+        if entry.get("name") == room:
+            return tuple(entry.get("members") or ())
+    return ()
+
+
+# Names shorter than this are not matched at all. "me", "cc" and "ci" occur in
+# ordinary prose constantly, and a false wake costs an agent its context for
+# something that was never addressed to it.
+MIN_NAME = 3
+
+# What marks a name as VOCATIVE — "I am talking TO you" rather than "I am
+# talking ABOUT you". "Hey refactor agent, what's the status" addresses it;
+# "I think the build is stuck" does not, and waking on the second would make
+# every status report an interrupt.
+#
+# POSITION ALONE IS NOT ENOUGH, and that was the first attempt: a name in the
+# opening few words counted, which caught "I think the build is stuck" on its
+# fourth word. What actually marks address in English is one of three things,
+# so those are what this asks for.
+GREETING = re.compile(r"^\s*(hey|hi|hello|yo|ok|okay|so|um|er)\b[\s,]*$",
+                      re.IGNORECASE)
+
+
+def name_pattern(name):
+    """A regex matching `name` however a human spaced or punctuated it.
+
+    `refactor-agent` has to match "refactor agent" and "refactor_agent",
+    because the identity is a slug and the human is typing English at a phone.
+    Anchored on word boundaries so `build` does not match `rebuilding`.
+    """
+    parts = [re.escape(p) for p in re.split(r"[^A-Za-z0-9]+", name) if p]
+    if not parts:
+        return None
+    return re.compile(r"(?<![A-Za-z0-9])@?" + r"[\s._-]*".join(parts)
+                      + r"(?![A-Za-z0-9])", re.IGNORECASE)
+
+
+def addressed_names(text, members):
+    """Members this message is TALKING TO, in the order they appear.
+
+    Two forms, and both were asked for:
+
+      @baccompat do something        an explicit tag, anywhere in the message
+      Hey refactor agent, what's...  a vocative, in the opening words
+
+    WHAT THIS DELIBERATELY DOES NOT DO is wake on a name mentioned in passing.
+    "the build agent is stuck" is ABOUT build, not TO it, and a rule that
+    cannot tell those apart turns every status report into an interrupt — the
+    same over-delivery that cost this project 8.6x context amplification and
+    got the audience rules written in the first place.
+
+    The `@` form is exempt from that because typing `@` IS the gesture. It is
+    the one unambiguous thing a human has on a phone.
+    """
+    if not text or not members:
+        return []
+    found = []
+    for name in members:
+        if len(name) < MIN_NAME:
+            continue
+        pattern = name_pattern(name)
+        if not pattern:
+            continue
+        hit = pattern.search(text)
+        if not hit:
+            continue
+        if hit.group(0).lstrip().startswith("@") or is_vocative(text, hit):
+            found.append((hit.start(), name))
+    return [name for _, name in sorted(found)]
+
+
+def is_vocative(text, hit):
+    """Is this occurrence of a name ADDRESSING it?
+
+    Three marks, and a name needs one of them:
+
+      at the very start        "build, are you there?"
+      after a greeting only    "Hey refactor agent, what's the status"
+      followed by a comma      "so, build, can you look"
+
+    and in the third case it must not be preceded by a determiner, because
+    "the build, which is stuck, needs a rerun" is a sentence about the build.
+
+    Everything else is a mention. "I think the build is stuck" tells four
+    agents nothing and pulls one off its work, and there is no reading of it
+    that wants that.
+    """
+    before = text[:hit.start()]
+    if not before.strip():
+        return True
+    if GREETING.match(before):
+        return True
+    after = text[hit.end():].lstrip()
+    if after.startswith(","):
+        return not before.rstrip().rsplit(" ", 1)[-1].lower() in DETERMINERS
+    return False
+
+
+# A name after one of these is the SUBJECT of a sentence, not its addressee.
+DETERMINERS = frozenset((
+    "the", "a", "an", "our", "my", "your", "their", "its", "this", "that",
+    "about", "with", "from", "for", "to", "and", "or", "is", "was",
+))
+
+
+def route(message, threads, members=()):
     """Who a human's Slack message should WAKE.
 
     Three cases, and they exist because a phone gives a human exactly one
@@ -485,6 +652,14 @@ def route(message, threads):
     # and "nobody reply" are not in conflict.
     if NO_REPLY_NEEDED.search(text):
         return ["--to-none"]
+    # A NAME BEATS @here, and that ordering is the point of it. "@baccompat do
+    # something. @here" is a human reaching for the only gesture that reliably
+    # wakes anybody and then saying who they actually meant — so honouring the
+    # @here would wake every agent on the machine to deliver one instruction to
+    # one of them. Naming somebody is strictly more information than not.
+    named = addressed_names(text, members)
+    if named:
+        return ["--to", ",".join(named)]
     if EVERYONE.search(text):
         return ["--to-all"]
     parent = message.get("thread_ts")
@@ -620,10 +795,25 @@ def pump_in(config, slack):
                       key=lambda m: float(m.get("ts", 0)))
     threads = read_threads()
     relayed = 0
+    # Asked for ONCE per poll, not once per message. It is a subprocess, and a
+    # busy channel would otherwise pay for it on every line.
+    members = None
     for message in messages:
         ts = message.get("ts")
         if is_from_a_human(message):
-            addressing = route(message, threads)
+            verb = bridge_command(message.get("text"))
+            if verb and answer_bridge_command(
+                    verb, config["room"], slack,
+                    message.get("thread_ts") or message.get("ts")):
+                # Answered in Slack. NOT relayed, so nothing reaches llm_chat
+                # and no agent is woken to tell a human something the bridge
+                # already knows.
+                if ts:
+                    write_cursor(ts)
+                continue
+            if members is None:
+                members = members_of(config["room"])
+            addressing = route(message, threads, members)
             # A top-level message stamps its OWN ts, so an agent answering it
             # opens a thread ON it rather than replying beside it in the
             # channel. That is the second thing a human wants and there was no

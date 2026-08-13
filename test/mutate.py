@@ -611,6 +611,51 @@ MUTATIONS = [
      "alarm that gets a guard switched off within the hour, and the same "
      "mistake this repo already corrected once in the remedy counter"),
 
+    ("a name beats @here", "bin/llm-chat-slack",
+     "    named = addressed_names(text, members)\n"
+     "    if named:\n"
+     '        return ["--to", ",".join(named)]',
+     "    named = []",
+     "'@baccompat do something. @here' wakes every agent on the machine to "
+     "deliver one instruction to one of them — the human named somebody "
+     "precisely to avoid that, and reached for @here only because it was the "
+     "one gesture that reliably woke anybody"),
+
+    ("a name MENTIONED is not a name ADDRESSED", "bin/llm-chat-slack",
+     "        if hit.group(0).lstrip().startswith(\"@\") or "
+     "is_vocative(text, hit):",
+     "        if True:",
+     "'I think the build is stuck' wakes build, so every status report "
+     "becomes an interrupt — the over-delivery the audience rules exist to "
+     "stop, arriving through the feature meant to narrow them"),
+
+    ("a name inside a longer word is not a name", "bin/llm-chat-slack",
+     '    return re.compile(r"(?<![A-Za-z0-9])@?" + r"[\\s._-]*".join(parts)\n'
+     '                      + r"(?![A-Za-z0-9])", re.IGNORECASE)',
+     '    return re.compile(r"[\\s._-]*".join(parts), re.IGNORECASE)',
+     "'rebuilding the buildings' wakes the agent called build — the "
+     "substring implementation that passes every other test in the file"),
+
+    ("a bridge command is answered, not relayed", "bin/llm-chat-slack",
+     "            if verb and answer_bridge_command(",
+     "            if False and answer_bridge_command(",
+     "'@llm_chat list' is posted into the room, so asking who is in it wakes "
+     "everybody in it — the exact cost the command exists to avoid"),
+
+    ("an unknown bridge verb is not swallowed", "bin/llm-chat-slack",
+     '    if verb != "list":\n        return False',
+     '    if verb != "list":\n        return True',
+     "'@llm_chat lsit' vanishes into the bridge instead of reaching the room "
+     "— a typo becomes silence, which is indistinguishable from the bridge "
+     "being down"),
+
+    ("a failed member lookup is not an empty room", "bin/llm-chat-slack",
+     "    if members:",
+     "    if True:",
+     "'could not look' is reported as 'nobody is there', sending a human off "
+     "to debug an empty room that is full — the distinction this project has "
+     "now made in four separate files"),
+
     ("the text is out before the cursor moves", "bin/llm_chat",
      "        return _render(server, name, identity, fetched, all_messages, "
      "as_json,\n                       commit_cursor)",
@@ -887,6 +932,20 @@ NOT_SWEPT = {
         "is a wall rather than a redirection",
     "triggers/piped-verdict:main": "every branch asserted directly, including "
         "the visible escape hatch and the non-Bash tool",
+    "bin/llm-chat-slack:bridge_command": "the recogniser is asserted in five "
+        "spellings a human might type and refused in three sentences that "
+        "merely CONTAIN the words — anchored end to end, because a bridge "
+        "that eats 'ask llm_chat list for me' is eating conversation",
+    "bin/llm-chat-slack:is_vocative": "all three marks of address asserted "
+        "directly — at the start, after a greeting, wrapped in commas — plus "
+        "the determiner rule that keeps 'the build, which is stuck' a "
+        "sentence ABOUT the build. The mention-versus-address distinction it "
+        "exists for is swept",
+    "bin/llm-chat-slack:members_of": "every way it can fail is asserted "
+        "directly and they all answer the same way: a dead subprocess, "
+        "unparseable output, a room that is not listed, and a room with no "
+        "member list. All four are 'could not look', and the paired sweep "
+        "checks that is never reported as 'nobody is there'",
     "bin/llm_chat:commit_cursor": "its two properties are swept as ORDER "
         "rather than as body — that the text is out before it runs, and that "
         "it still runs on success. Both are asserted directly as well: a read "
