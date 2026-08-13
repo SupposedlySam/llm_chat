@@ -289,8 +289,17 @@ class ProjectIdentityTest(RoomTest):
         self.assertEqual(cli.resolve_identity(None, "room"), "other-name")
 
     def test_with_no_identity_at_all_it_names_both_ways_out(self):
-        with self.assertRaises(SystemExit) as caught:
-            cli.resolve_identity(None, "room")
+        """A HUMAN at a terminal, stated explicitly rather than inherited from
+        whoever happens to run the suite. A session gets a generated name
+        instead (see test_identity), so leaving the ambient session id in
+        place would make this assert the opposite of what it says."""
+        saved = os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                cli.resolve_identity(None, "room")
+        finally:
+            if saved is not None:
+                os.environ["CLAUDE_CODE_SESSION_ID"] = saved
         message = str(caught.exception)
         self.assertIn("--as", message)
         self.assertIn("identify", message)

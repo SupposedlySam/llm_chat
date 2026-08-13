@@ -87,8 +87,44 @@ def project_dir() -> str:
         probe = parent
 
 
-def identity_path() -> str:
-    return os.path.join(project_dir(), ".llm_chat", "identity.json")
+def identity_path(shared=False) -> str:
+    """Session-scoped, unless deliberately shared.
+
+    `identify` in one session used to rename every other session in the same
+    checkout, because this file was the project's. It is the session's now;
+    `identify --project` opts back into the shared name for the cases that
+    genuinely want one, which is a human's own repo rather than a monorepo.
+    """
+    if shared:
+        return os.path.join(project_state_dir(), "identity.json")
+    return os.path.join(state_dir(), "identity.json")
+
+
+def project_identity_file():
+    """The shared name, read only when this session has none of its own."""
+    try:
+        with open(identity_path(shared=True)) as f:
+            return (json.load(f) or {}).get("identity")
+    except (OSError, ValueError):
+        return None
+
+
+def default_identity():
+    """A name that cannot collide, for a session that never chose one.
+
+    THE NAMING MATTERS MORE THAN IT LOOKS. If every session must invent a
+    name, they collide by CONVENTION instead of by file — three agents in one
+    repo all choosing `backcompat` is worse than sharing a file, because it
+    looks deliberate and the transcript gives no way to tell them apart.
+    `<project>-<short-sid>` is unique by construction, and `identify` renames
+    it to something meaningful the moment anybody cares.
+    """
+    sid = session_id()
+    if not sid:
+        return None
+    stem = re.sub(r"[^a-z0-9]+", "-",
+                  os.path.basename(project_dir()).lower()).strip("-")
+    return ("%s-%s" % (stem or "agent", sid.replace("-", "")[:8]))[:64]
 
 
 def project_identity():
@@ -103,7 +139,7 @@ def project_identity():
         with open(identity_path()) as f:
             return (json.load(f) or {}).get("identity")
     except (OSError, ValueError):
-        return None
+        return project_identity_file()
 
 
 def resolve_identity(explicit, channel=None):
@@ -117,23 +153,35 @@ def resolve_identity(explicit, channel=None):
     known = project_identity()
     if known:
         return known
+    # A SESSION ALWAYS HAS A NAME rather than an error. Requiring --as here is
+    # what pushed sessions into picking the same word; a unique default is
+    # renameable and a collision is not. A human at a terminal still gets the
+    # refusal below, because there is no session to name them after.
+    fallback = default_identity()
+    if fallback:
+        return fallback
     raise SystemExit(
         "no identity — either pass --as <name>, or set one once for this "
         "project:\n  llm_chat identify <name>"
     )
 
 
-def do_identify(server, identity):
-    """Record who this project is, and pull in the rooms everyone is in."""
+def do_identify(server, identity, shared=False):
+    """Record who this SESSION is, and pull in the rooms everyone is in."""
     if not valid(identity):
         raise SystemExit("identity must be 1-64 chars of [a-z0-9._-]")
-    path = identity_path()
+    path = identity_path(shared=shared)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
     with open(tmp, "w") as f:
         json.dump({"identity": identity}, f, indent=2)
     os.replace(tmp, path)
-    print(f"this project is '{identity}'")
+    if shared or not session_id():
+        print(f"this project is '{identity}'")
+    else:
+        print(f"this session is '{identity}'")
+        print("  other sessions in this checkout are unaffected — "
+              "`identify --project` if you meant all of them")
     print("  join rooms without --as; say/read/leave already did not need it")
     joined = reconcile_broadcasts(server, identity)
     if joined:
@@ -165,19 +213,61 @@ def reconcile_broadcasts(server, identity):
     return added
 
 
+def session_id() -> str:
+    """This session, or None for a human at a terminal or a script.
+
+    Exported into every agent-run shell by Claude Code, and handed to the
+    delivery hook in its payload as well, so both halves can agree on who is
+    asking without any new plumbing.
+    """
+    return (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip() or None
+
+
+def state_dir(project=None, sid=None) -> str:
+    """Where THIS ACTOR's state lives — and the actor is a SESSION.
+
+    A PROJECT IS NOT AN ACTOR. Keying by project made N sessions in one
+    checkout indistinguishable, and in a monorepo that is the normal operating
+    condition rather than misuse: several agents work different tickets in one
+    tree all day. Everything identity is used for is session-scoped in
+    practice — who wrote a message, whose turn it is to wake, whose cursor
+    advances on read, who owes an answer.
+
+    MEASURED, on this machine, in one hour: two sessions shared one checkout.
+    One ran `identify`, which renamed the other. A human's question was
+    delivered to the wrong session, which answered under the wrong name about
+    unrelated work; the session actually asked never woke, because the message
+    had already been consumed from the shared cursor. Then the first session,
+    trying to explain, posted under the second's name — because implicit
+    resolution read the same shared file.
+
+    Falls back to the project directory when there is no session, which is a
+    human at a terminal — and a human at a terminal IS the project.
+    """
+    base = os.path.join(project or project_dir(), ".llm_chat")
+    sid = sid or session_id()
+    return os.path.join(base, "sessions", sid) if sid else base
+
+
+def project_state_dir(project=None) -> str:
+    """The pre-session location. Read as a fallback, never written to by a
+    session, so an agent already in rooms does not have to re-join."""
+    return os.path.join(project or project_dir(), ".llm_chat")
+
+
 def joined_path() -> str:
     """Where THIS agent remembers who it is in each room.
 
-    Per calling project, not per llm_chat checkout. Two agents on one machine
+    Per calling project, not per llm_chat checkout — two agents on one machine
     share this repo, so keeping the record here would mean they shared
-    identities — and the delivery hook would hand agent A's messages to agent
-    B. Found exactly that way.
+    identities. And now per SESSION within that project, for the same reason
+    one level in: two sessions in one checkout were sharing them.
 
     Inside the calling repo is also the only place that is writable without
     ceremony: the write guard blocks writes outside the project, which is the
     whole reason the transport is HTTP. `.llm_chat/` should be gitignored.
     """
-    return os.path.join(project_dir(), ".llm_chat", "joined.json")
+    return os.path.join(state_dir(), "joined.json")
 
 DEFAULT_MAX_MESSAGES = 200
 NAME_OK = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.IGNORECASE)
@@ -276,11 +366,28 @@ def update(server, table, where, fields):
 
 # ── local identity memory ────────────────────────────────────────────────────
 def read_joined() -> dict:
-    try:
-        with open(joined_path()) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+    """This session's rooms, falling back to the project's.
+
+    MIGRATION, not merely a default. An agent already in rooms before session
+    scoping existed has its memberships in the project file, and being told to
+    re-join every room would be a worse failure than the one being fixed. So a
+    session with no file of its own reads the project's — and the first write
+    copies what it read into the session, after which the two diverge.
+
+    The fallback is by EXISTENCE, not by emptiness: a session that has
+    deliberately left every room has an empty file, and falling back then
+    would silently re-inherit rooms it just left.
+    """
+    for path in (joined_path(), os.path.join(project_state_dir(),
+                                             "joined.json")):
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+    return {}
 
 
 def remember(channel, identity, server, broadcast=False):
@@ -2429,8 +2536,13 @@ def build_parser():
     p.add_argument("--file", help="read the rules from a file, or - for stdin")
     p.add_argument("--as", dest="identity")
 
-    p = sub.add_parser("identify", help="set this project's identity, once")
+    p = sub.add_parser("identify", help="set this session's identity, once")
     p.add_argument("identity")
+    p.add_argument("--project", action="store_true",
+                   help="name the whole PROJECT rather than this session. "
+                        "Every session in this checkout that has not named "
+                        "itself then answers to it — which is what you want "
+                        "in your own repo and not in a monorepo")
 
     sub.add_parser("doctor", help="why is nothing arriving?")
     p = sub.add_parser("fingerprint",
@@ -2454,7 +2566,7 @@ def main() -> int:
     server = args.server
 
     if args.cmd == "identify":
-        do_identify(server, args.identity)
+        do_identify(server, args.identity, args.project)
         return 0
     if args.cmd == "setup":
         do_setup(server, args.channel, resolve_identity(args.identity,

@@ -70,7 +70,17 @@ def _project_dir():
 
 PROJECT = _project_dir()
 STATE = os.path.join(PROJECT, ".llm_chat")
-JOINED = os.path.join(STATE, "joined.json")
+
+# SESSION-SCOPED, mirroring bin/llm_chat. The waker is spawned by this
+# session's own hook, so it inherits the id — and it must resolve to the same
+# rooms the CLI writes, or it would bind doorbells for a set of rooms nobody
+# is joining and stay silent while messages arrive.
+_SID = (os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+SESSION_STATE = os.path.join(STATE, "sessions", _SID) if _SID else STATE
+JOINED = (os.path.join(SESSION_STATE, "joined.json")
+          if _SID and os.path.isfile(os.path.join(SESSION_STATE,
+                                                  "joined.json"))
+          else os.path.join(STATE, "joined.json"))
 PID_PATH = os.path.join(STATE, "wake.pid")
 EXIT_PATH = os.path.join(STATE, "wake.exit")
 

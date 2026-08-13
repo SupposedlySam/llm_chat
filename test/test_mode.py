@@ -315,8 +315,10 @@ class SyncTest(unittest.TestCase):
         self.identify_as("me")
         self.server.channel("notices", broadcast=1)
         self.sync()
-        with open(os.path.join(self.tmp.name, ".llm_chat", "joined.json")) as f:
-            self.assertIn("notices", json.load(f))
+        # Asked through the API rather than at a hardcoded path: state is
+        # session-scoped now, so where it lands is an implementation detail
+        # and the claim being made is "the hooks can see it".
+        self.assertIn("notices", cli.read_joined())
 
     def test_it_is_quiet_when_there_is_nothing_to_do(self):
         """The waker runs this every turn boundary."""

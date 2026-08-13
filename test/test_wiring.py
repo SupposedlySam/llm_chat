@@ -66,9 +66,25 @@ class ProjectDirTest(unittest.TestCase):
                          os.path.realpath(deep))
 
     def test_joined_path_hangs_off_the_resolved_root(self):
+        """Both scopes hang off the same resolved root — that is the claim.
+        Stated for each explicitly, because the answer now depends on whether
+        a session is present and inheriting that from the ambient environment
+        would make this test mean different things to different runners."""
         os.environ["CLAUDE_PROJECT_DIR"] = self.root
-        self.assertEqual(cli.joined_path(),
-                         os.path.join(self.root, ".llm_chat", "joined.json"))
+        saved = os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        try:
+            self.assertEqual(
+                cli.joined_path(),
+                os.path.join(self.root, ".llm_chat", "joined.json"))
+            os.environ["CLAUDE_CODE_SESSION_ID"] = "sid-1"
+            self.assertEqual(
+                cli.joined_path(),
+                os.path.join(self.root, ".llm_chat", "sessions", "sid-1",
+                             "joined.json"))
+        finally:
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+            if saved is not None:
+                os.environ["CLAUDE_CODE_SESSION_ID"] = saved
 
 
 class HostTest(unittest.TestCase):

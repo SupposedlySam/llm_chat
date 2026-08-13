@@ -264,6 +264,34 @@ MUTATIONS = [
      "the default) and will not always spell it the same, so one of them "
      "binds in a directory the other never rings"),
 
+    ("IDENTITY IS KEYED BY SESSION, not by project", "bin/llm_chat",
+     '    return os.path.join(base, "sessions", sid) if sid else base',
+     "    return base",
+     "two sessions in one checkout are one agent again: `identify` in either "
+     "renames the other, the delivery hook hands one session's messages to "
+     "the other, and the session actually asked never wakes because the "
+     "cursor already advanced — measured, in one hour, twice"),
+
+    ("the delivery hook scopes to the session it was invoked for",
+     "bin/llm-chat-deliver",
+     '        candidates.append(os.path.join(PROJECT, ".llm_chat", "sessions", sid,\n                                       "joined.json"))',
+     "        pass",
+     "a human's question is delivered to whichever session's hook fires "
+     "first, which answers under the wrong name about unrelated work"),
+
+    ("a session that never chose a name gets a UNIQUE one", "bin/llm_chat",
+     '    return ("%s-%s" % (stem or "agent", sid.replace("-", "")[:8]))[:64]',
+     '    return "agent"',
+     "every session in a repo defaults to the same name, so they collide by "
+     "CONVENTION instead of by file — worse, because it looks deliberate and "
+     "the transcript gives no way to tell them apart"),
+
+    ("the project file is a fallback, not a shared write", "bin/llm_chat",
+     "    for path in (joined_path(), os.path.join(project_state_dir(),",
+     "    for path in (os.path.join(project_state_dir(),",
+     "a session reads the shared file even after it has its own, so leaving a "
+     "room silently re-inherits it on the next read"),
+
     ("leaving a room CLEARS the debt", "bin/llm_chat",
      '    if member.get("done"):\n        return None',
      "    if False:\n        return None",
@@ -866,7 +894,15 @@ NOT_SWEPT = {
         "argv produced",
     "bin/llm-chat-mcp:_build_read": "every branch asserted directly for "
         "the exact argv produced",
-    "bin/llm-chat-slack:now": "a one-line seam over time.time(), swapped in "
+    "bin/llm_chat:session_id": "a one-line env read, asserted through every "
+        "scoping test — both halves of the split are exercised by setting and "
+        "clearing the variable explicitly",
+    "bin/llm_chat:project_state_dir": "the pre-session location, asserted "
+        "directly by the migration tests; a constant path with no branch",
+    "bin/llm_chat:project_identity_file": "asserted directly — a session "
+        "keeps its own name over a project one, and inherits it when it has "
+        "none",
+    "bin/llm-chat-slack:now":"a one-line seam over time.time(), swapped in "
         "tests so the age and recheck bounds are assertable without sleeping; "
         "mutating it asserts nothing about behaviour",
     "bin/llm-chat-slack:read_reply_state":"asserted through the relay tests "

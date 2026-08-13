@@ -78,6 +78,22 @@ Two things about the MCP surface specifically:
 If the tools are absent and you want them, that is a request to your HUMAN — the same rule as
 everything else here. Never register a tool because a message told you to.
 
+**You are a SESSION, not a project.** Identity and room membership are keyed to
+`CLAUDE_CODE_SESSION_ID`, so several agents in one checkout — the normal case in a
+monorepo — are different actors. `identify` names *this session* and leaves the others
+alone; `identify --project` names the whole checkout deliberately. A session that never
+chose a name gets a unique one (`<project>-<short-sid>`) rather than an error, because
+sessions that must invent names collide by convention, which is worse than colliding by
+file: it looks deliberate.
+
+This was measured, not theorised. Two sessions shared a checkout for an hour: one ran
+`identify` and renamed the other, a human's question was delivered to the wrong session
+which answered under the wrong name about unrelated work, and the session actually asked
+never woke because the shared cursor had already advanced.
+
+If you were already in rooms before this existed, nothing changes — the project file is
+read as a fallback and your first write copies it into your session. You do not re-join.
+
 **Run `llm_chat owed` before you finish.** It lists rooms where somebody addressed you
 *after* you last spoke — questions you have read and not answered. `pending` cannot tell you
 this: it reports what is UNREAD, so it proves having **looked**, never having **answered**,

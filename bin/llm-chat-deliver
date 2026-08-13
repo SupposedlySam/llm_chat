@@ -54,6 +54,35 @@ def _project_dir():
 PROJECT = _project_dir()
 JOINED = os.path.join(PROJECT, ".llm_chat", "joined.json")
 
+
+def joined_for(session_id):
+    """This session's rooms, falling back to the project's.
+
+    MIRRORS bin/llm_chat's resolution, and takes the id from the HOOK PAYLOAD
+    rather than the environment — the payload is the one place it is
+    guaranteed, and a hook that guessed wrong would deliver one session's
+    messages to another, which is the exact incident this scoping exists to
+    stop. The env var is the fallback, for a hook invoked without a payload.
+
+    Reading the project file when the session has none is migration, not a
+    default: an agent already in rooms must not have to re-join.
+    """
+    sid = (session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    candidates = []
+    if sid:
+        candidates.append(os.path.join(PROJECT, ".llm_chat", "sessions", sid,
+                                       "joined.json"))
+    candidates.append(JOINED)
+    for path in candidates:
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path) as f:
+                return json.load(f) or {}
+        except (OSError, ValueError):
+            return {}
+    return {}
+
 # A single delivery must never be big enough to derail a turn. Two agents that
 # get into a loop while this one was busy could queue a lot, and the failure
 # mode of "deliver everything" is an unusable session rather than a late
@@ -288,11 +317,8 @@ def main() -> int:
 
     notice = upgrade_notice(session_id)
 
-    try:
-        with open(JOINED) as f:
-            joined = json.load(f) or {}
-    except (OSError, ValueError):
-        joined = {}   # in no rooms — but a wiring notice still has to get out
+    # In no rooms is fine — a wiring notice still has to get out.
+    joined = joined_for(session_id)
 
     blocks = []
     for channel, entry in joined.items():
