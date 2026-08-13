@@ -138,6 +138,18 @@
 "zonai":
   - "python3 test/test_pins.py"
 
+# The ONE tracked file whose contents execute in a stranger's checkout. It is
+# deliberately not gitignored — game_loop's hooks are written as
+# "$CLAUDE_PROJECT_DIR"/... and are portable — which makes an absolute path in
+# it a command firing on a cloner's every tool call against a directory only
+# this machine has. That has happened here, reported by an agent who had to
+# lift one out by hand before pushing.
+#
+# It matched no rule until the upgraded verify said so, which is a better
+# failure than the silence it replaced.
+".claude/settings.json":
+  - "python3 test/test_settings.py"
+
 "unchecked-ok":
   - "*.md"
   - "llms.txt"

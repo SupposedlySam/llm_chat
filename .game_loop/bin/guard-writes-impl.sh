@@ -77,9 +77,66 @@ payload=$(cat)
 #     from the tree the commit targets; see the commit scan below.
 CODE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"        # the .game_loop/ this CODE is in
 
+# ORIENTATION ON A SESSION'S FIRST REFUSAL (#60). A POINTER, NOT AN EXPLANATION.
+#
+# Reported from a checkout where work starts as user-level slash commands, so a session that never
+# loaded the project's CLAUDE.md is the NORMAL case and a guard refusal is the first contact anyone
+# has with this harness. The reporter hit a refusal, probed five global bin directories for a
+# `game_loop` on PATH, found none -- because nothing looks up-tree for a project-local binary --
+# concluded "not installed", and escalated. Naming an absolute path (#52) fixes the dead end and
+# would not have fixed the run: they went on to never run `status`, to not know `--uses N` existed
+# and so spend a fresh interruption per call on a decision their human had already made, and to
+# read the refusal as "the tool is absent" rather than "there is something here I have not read".
+# Same text, opposite conclusions.
+#
+# BOUNDED BY SESSION, NOT BY REFUSAL, which is what keeps it from being noise: each session hits its
+# first refusal exactly once, so the ceiling is one line per session lifetime -- not one per event.
+# `status` counts as orientation too and suppresses it, so a session that arrived the documented way
+# never sees this at all. It is shown only to sessions that arrived blind, which is exactly the
+# population that needs it.
+orient() {
+  [ -n "${STATE_F:-}" ] || return 0
+  GL_STATE_F="$STATE_F" GL_DIR="$GAMELOOP_DIR" GL_REPO="${REPO:-}" python3 <<'PY' 2>/dev/null || true
+import json, os
+
+f = os.environ["GL_STATE_F"]
+try:
+    with open(f) as fh:
+        st = json.load(fh)
+    if not isinstance(st, dict):
+        st = {}
+except (OSError, ValueError):
+    st = {}
+if st.get("oriented"):
+    raise SystemExit(0)
+st["oriented"] = True
+try:
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    with open(f, "w") as fh:
+        json.dump(st, fh, indent=2)
+except OSError:
+    # Unwritable state cannot remember, so this would repeat. Shown anyway: a blind agent costs a
+    # whole run, a repeated line costs a line, and an install whose session dir is unwritable is
+    # already broken in ways that outrank this.
+    pass
+d = os.environ.get("GL_DIR", "")
+gl = os.path.join(d, "bin", "game_loop")
+# NAME ONLY WHAT IS THERE. This repo's keystone is that prose cannot satisfy "point at a real file",
+# and the first version of this line pointed at the repo root's brief -- which install.sh did not
+# ship, so it named an absent file in every consumer. That is #52 exactly, committed by the fix for
+# it. The brief now ships beside the payload; an install predating that gets the verb alone rather
+# than a path that is not there.
+brief = os.path.join(d, "llms.txt")
+where = gl + " status" + (("  |  " + brief + " (the agent brief)") if os.path.exists(brief) else "")
+print("\n\n-- first refusal in this session: this repo is guarded by game_loop, and most refusals "
+      "have\n   a documented way through. " + where + ".")
+PY
+}
+
 deny() {
+  _reason="$1$(orient)"
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"deny","permissionDecisionReason":%s}}\n' \
-    "$(printf '%s' "$1" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
+    "$(printf '%s' "$_reason" | python3 -c 'import json,sys; print(json.dumps(sys.stdin.read()))')"
   exit 0
 }
 
@@ -127,6 +184,48 @@ then reload the window. \`game_loop self\` prints the whole block."
 fi
 REPO="${CLAUDE_PROJECT_DIR:-$(dirname "$GAMELOOP_DIR")}"
 CONFIG_F="$GAMELOOP_DIR/config.json"
+# ~/.game_loop/config.json (machine-wide) + config.json + config.local.json, computed ONCE and handed
+# to every embedded reader below. A gitignored local override that only SOME components honour is
+# worse than none at all: it works where you test it and not where it matters. (Shipped exactly that
+# way once -- the waiting probe lived in the local file and the watchdog, which is the component that
+# needed it, could not see it.) Merging here rather than in each block keeps one place to get it wrong
+# instead of five.
+#
+# TRUST-LIST keys UNION across all three sources instead of replacing: a machine-wide grant
+# (~/.game_loop/config.json -> mcp_trusted_servers, say) must never be silently erased by a project
+# that happens to set its OWN, different list for the same key, and a project's own grant must never
+# be shadowed by the machine-wide file either. Everything else keeps normal later-wins replace, so a
+# project can still override a machine-wide scalar default (e.g. mcp_writes).
+CONFIG_MERGED='{}'   # set BEFORE the computation: the line below exports the whole env
+                     # into its own subshell, and under `set -u` that read itself.
+CONFIG_MERGED=$(CONFIG_F="$CONFIG_F" python3 -c '
+import io, json, os
+UNION_KEYS = {"read_roots", "allow_write_roots", "deploy_verbs", "generated_globs",
+              "mcp_read_only_tools", "mcp_standing_writes", "mcp_trusted_servers"}
+cfg, union = {}, {}
+paths = [os.path.join(os.path.expanduser("~"), ".game_loop", "config.json"),
+         os.environ["CONFIG_F"],
+         os.path.join(os.path.dirname(os.environ["CONFIG_F"]), "config.local.json")]
+for p in paths:
+    try:
+        with open(p) as f:
+            d = json.load(f)
+    except (OSError, ValueError):
+        continue
+    if not isinstance(d, dict):
+        continue
+    for k, v in d.items():
+        if k in UNION_KEYS and isinstance(v, list):
+            bucket = union.setdefault(k, [])
+            for item in v:
+                if item not in bucket:
+                    bucket.append(item)
+        else:
+            cfg[k] = v
+cfg.update(union)
+print(json.dumps(cfg))
+' 2>/dev/null)
+[ -n "$CONFIG_MERGED" ] || CONFIG_MERGED='{}'
 
 # Running `verify` is two independent questions: WHICH CODE runs it, and WHICH TREE's record it
 # answers from. They were the same directory until pinning split them, and the commit gate needs
@@ -305,14 +404,15 @@ case "$tool" in
     [ -z "$fp" ] && exit 0
     # Prints "yes" when the target is inside an allow root, else the resolved realpath — which is
     # what an authorization is matched against (authorize records real prefixes, not raw tool input).
-    verdict=$(REPO_REAL="$REPO_REAL" SLUG="$SLUG" CONFIG_F="$CONFIG_F" FP="$fp" python3 <<'PY'
-import json, os, subprocess
+    verdict=$(REPO_REAL="$REPO_REAL" SLUG="$SLUG" CONFIG_F="$CONFIG_F" CONFIG_MERGED="$CONFIG_MERGED" FP="$fp" python3 <<'PY'
+import io, json, os, subprocess
 repo = os.environ["REPO_REAL"]
 home = os.path.expanduser("~")
 allow = [repo, "/tmp", "/private/tmp", "/var/folders",
-         os.path.join(home, ".claude", "projects", os.environ["SLUG"])]
+         os.path.join(home, ".claude", "projects", os.environ["SLUG"]),
+         os.path.join(home, ".claude", "plans")]          # built-in Plan Mode save location
 try:
-    with open(os.environ["CONFIG_F"]) as f:
+    with io.StringIO(os.environ.get("CONFIG_MERGED", "{}")) as f:
         allow += [os.path.expanduser(p) for p in (json.load(f).get("allow_write_roots") or [])]
 except (OSError, ValueError):
     pass
@@ -381,7 +481,8 @@ PY
 
 Everything outside this project is READ-ONLY by default (this is the guardrail that makes unattended
 runs safe). If the repo genuinely needs that content, COPY it in and edit the copy. If the human has
-explicitly authorized this path:  game_loop authorize --path <prefix> --reason \"<their words>\""
+explicitly authorized this path:
+  $GAMELOOP_DIR/bin/game_loop authorize --path <prefix> --reason \"<their words>\" [--uses N]"
     ;;
 
   Bash)
@@ -479,7 +580,7 @@ PY
     #    lives inside a larger checkout, and a target git can name no tree for all keep this script's
     #    own .game_loop — so a repo without worktrees behaves exactly as it always did.
     commit_scan=$(REPO_REAL="$REPO_REAL" GAMELOOP_DIR="$GAMELOOP_DIR" SCAN_CMD="$scan_cmd" python3 - "$payload" <<'PY'
-import json, os, re, shlex, subprocess, sys
+import io, json, os, re, shlex, subprocess, sys
 payload = json.loads(sys.argv[1])
 cmd = os.environ.get("SCAN_CMD", "")
 repo = os.environ["REPO_REAL"]
@@ -488,6 +589,14 @@ home = os.path.expanduser("~")
 found = False
 target = None
 others = []
+cwd_dynamic = False        # a `cd` into a variable — every later commit lands somewhere unnameable
+unresolved = ""            # the raw fragment that made a COMMIT's target unreadable, if any
+
+# A path we cannot resolve without EXECUTING it, which this guard must never do. $HOME is substituted
+# before this runs, so an ordinary ~ or $HOME path stays resolvable and is not caught here.
+# The class is built rather than written: a literal backtick inside python inside a $( ) breaks
+# the SHELL parse, which bricks the guard before any of its logic runs. Learned the hard way.
+_DYNAMIC = re.compile("[$" + chr(96) + "]")
 
 
 def tree_of(path):
@@ -515,14 +624,36 @@ for seg in re.split(r"&&|\|\||;|\||\n", cmd):
     verb = os.path.basename(argv[0])
     args = argv[1:]
     if verb == "cd" and args:
+        if _DYNAMIC.search(args[0].replace("$HOME", "")):
+            cwd_dynamic, cwd_raw = True, args[0]
         nxt = os.path.expanduser(args[0].replace("$HOME", home))
         cwd = nxt if os.path.isabs(nxt) else os.path.join(cwd, nxt)
         continue   # a bare cd is navigation, not lost work — track it, don't report it
     if verb == "git" and "commit" in args and "--no-verify" not in args:
-        tgt = cwd
+        # #40: FAIL CLOSED when the target cannot be READ, not merely when it is elsewhere.
+        # A variable resolves to nothing this scan can match against the repo, so the commit used to
+        # read as "targets some other project" and pass unexamined — and an orchestrator reaches
+        # every worktree through a variable, which makes the gate escaped BY DEFAULT under fan-out
+        # rather than occasionally. The guard cannot expand it and must not try; it does not need
+        # the value, only the knowledge that the target is UNKNOWN.
+        #
+        # DELIBERATELY NARROW: this fires only where a commit IS present and ITS OWN target is
+        # unreadable. Failing closed on any unparseable fragment was tried in the field and refused
+        # two legitimate messages in one afternoon — prose ABOUT a commit is not a commit, and the
+        # agents most likely to write such prose are the ones reporting guard defects. A guard that
+        # refuses too much is the one that gets switched off (INV5).
+        tgt, dyn, raw = cwd, cwd_dynamic, (cwd_raw if cwd_dynamic else "")
         if "-C" in args and args.index("-C") + 1 < len(args):
-            c = os.path.expanduser(args[args.index("-C") + 1].replace("$HOME", home))
+            raw_c = args[args.index("-C") + 1]
+            if _DYNAMIC.search(raw_c.replace("$HOME", "")):
+                dyn, raw = True, raw_c
+            c = os.path.expanduser(raw_c.replace("$HOME", home))
             tgt = c if os.path.isabs(c) else os.path.join(cwd, c)
+        if dyn:
+            found = True
+            if not unresolved:
+                unresolved = raw
+            continue
         if os.path.realpath(tgt).startswith(os.path.realpath(repo).rstrip(os.sep) + os.sep) \
                 or os.path.realpath(tgt) == os.path.realpath(repo):
             found = True
@@ -532,7 +663,9 @@ for seg in re.split(r"&&|\|\||;|\||\n", cmd):
     others.append(seg if len(seg) <= 70 else seg[:67] + "...")
 
 answerable = ""
-if found:
+if unresolved:
+    answerable = "unresolvable:" + unresolved
+elif found:
     own = "root:" + os.environ["GAMELOOP_DIR"]
     root = os.path.realpath(repo).rstrip(os.sep)
     top = tree_of(target)
@@ -555,6 +688,20 @@ PY
     chained_segs=$(printf '%s\n' "$commit_scan" | tail -n +3 | grep -v '^$' || true)
     if [ "$commit_here" = "yes" ]; then
       case "$commit_root" in
+        unresolvable:*)
+          deny "BLOCKED: this commit's target tree is built from a variable, so the gate cannot tell
+which tree it lands in — and therefore cannot read the owed checks that describe it.
+
+    the unreadable target:  ${commit_root#unresolvable:}
+
+Resolving it would mean EXECUTING it, which this guard must never do. So it fails CLOSED here rather
+than reading an unresolvable target as 'some other project, not my business' — which is how it used to
+pass, silently, with no output distinguishing 'checked and fine' from 'never looked'. An orchestrator
+reaches every worktree through a variable, so that silence was the DEFAULT under fan-out, not an edge.
+
+Commit from the tree you are already in, or name the path literally. Either is one line, and both
+leave a gate that actually ran."
+          ;;
         undetermined:*)
           deny "BLOCKED: this commit lands in a tree that carries no game_loop, so its owed checks cannot be read.
 
@@ -633,10 +780,10 @@ Or commit with --no-verify to skip it on the record.$tree_hint$chained_hint"
       # Silent by design wherever it cannot reason: no recorded edits, no readable index, no git.
       # A commit's PROVENANCE is the third thing this needs to know and could not be told (issue
       # #29). See the attribution block inside the Python below.
-      blast_note=$(REPO_REAL="$REPO_REAL" EDITED_F="$EDITED_F" CONFIG_F="$CONFIG_F" \
+      blast_note=$(REPO_REAL="$REPO_REAL" EDITED_F="$EDITED_F" CONFIG_F="$CONFIG_F" CONFIG_MERGED="$CONFIG_MERGED" \
                    GAMELOOP_DIR="$GAMELOOP_DIR" TARGET_TREE="$TARGET_TREE" SID="$SID" \
                    STATE_F="$STATE_F" python3 <<'PY'
-import datetime, json, os, subprocess, sys
+import datetime, io, json, os, subprocess, sys
 from fnmatch import fnmatch
 
 repo = os.environ["REPO_REAL"]
@@ -728,7 +875,7 @@ EXEMPT = [".game_loop/sessions/*", ".game_loop/edited.txt", ".game_loop/log.json
           "*.lock", "*-lock.json", "*-lock.yaml", "*.g.dart", "*.freezed.dart", "*.pb.go",
           "*_pb2.py", "*.generated.*", "*.min.js", "*.min.css", "*.snap"]
 try:
-    with open(os.environ["CONFIG_F"]) as f:
+    with io.StringIO(os.environ.get("CONFIG_MERGED", "{}")) as f:
         EXEMPT += (json.load(f).get("generated_globs") or [])
 except (OSError, ValueError):
     pass
@@ -826,7 +973,7 @@ PY
       # writing the rules — sitting behind the gate (INV5).
       cov_json=$(run_verify "$GAMELOOP_DIR" --coverage --staged --porcelain 2>/dev/null || true)
       cov_note=$(COV="$cov_json" python3 <<'PY'
-import json, os
+import io, json, os
 try:
     cov = json.loads(os.environ.get("COV") or "")
 except ValueError:
@@ -866,13 +1013,13 @@ PY
     fi
 
     # 1. Configured deploy/publish verbs — denied anywhere, no path needed.
-    deploy_hit=$(CONFIG_F="$CONFIG_F" CMD="$scan_cmd" python3 <<'PY'
-import json, os, re
+    deploy_hit=$(CONFIG_F="$CONFIG_F" CONFIG_MERGED="$CONFIG_MERGED" CMD="$scan_cmd" python3 <<'PY'
+import io, json, os, re
 defaults = ["npm publish", "yarn publish", "pnpm publish", "twine upload",
             "gh release create", "docker push"]
 verbs = list(defaults)
 try:
-    with open(os.environ["CONFIG_F"]) as f:
+    with io.StringIO(os.environ.get("CONFIG_MERGED", "{}")) as f:
         verbs += (json.load(f).get("deploy_verbs") or [])
 except (OSError, ValueError):
     pass
@@ -880,7 +1027,19 @@ cmd = os.environ["CMD"]
 for v in verbs:
     # The boundary class includes quote chars: a deploy verb at the start of an interpreter arg
     # (a -c script) executes just the same, and message-flag strings were already blanked upstream.
-    pat = r"(^|[\s;&|'\"])" + r"\s+".join(re.escape(w) for w in v.split())
+    #
+    # BOTH SIDES (#51). There was a boundary before the verb and none after, so the verb matched as
+    # a SUBSTRING and ordinary English refused the call: "file surgery" contains " surge", "docker
+    # pushed" contains "docker push". The refusal is loud and correct-sounding and names a verb the
+    # user never typed, so the natural response is to rephrase and move on -- never learning the
+    # guard was wrong. That is how a guard trains people to work around it.
+    #
+    # WHAT THIS STILL MATCHES, stated rather than implied (INV6): the bare verb as a WHOLE WORD in
+    # prose -- "we used docker push last year" -- still trips it. Narrowing further would mean
+    # matching only at command position, which loses a real deploy nested inside an interpreter
+    # argument, and missing a real publish is the expensive direction.
+    pat = (r"(^|[\s;&|'\"])" + r"\s+".join(re.escape(w) for w in v.split())
+           + r"($|[\s;&|'\"])")
     if re.search(pat, cmd):
         print(v)
         break
@@ -891,12 +1050,20 @@ PY
 
 This is an irreversible, outward-facing action (a real publish/release/deploy). An unattended agent
 does not fire these. If it is genuinely needed, escalate to the human — that is the only escape
-hatch, by design. (Configured in .game_loop/config.json -> deploy_verbs.)"
+hatch, by design. (Configured in .game_loop/config.json -> deploy_verbs.)
+
+WRITING ABOUT THE VERB RATHER THAN RUNNING IT? A commit message, an issue body, a doc quoting a
+command — then your PROSE tripped this, not a deploy. Put the text in a file and pass the path:
+  git commit -F <file>   ·   gh issue comment --body-file <file>   ·   <verb> --<option>-file <file>
+The whole word in prose is matched deliberately: narrowing to command position would miss a real
+deploy nested in an interpreter argument, and missing a real publish is the expensive direction.
+That trade is worth stating here rather than only in the source, because this message is where
+somebody meets it."
     fi
 
     # 2. Mutation aimed OUTSIDE the allow roots, decided by RESOLVING PATHS — not matching names.
-    offender=$(REPO_REAL="$REPO_REAL" SLUG="$SLUG" CONFIG_F="$CONFIG_F" SCAN_CMD="$scan_cmd" python3 - "$payload" <<'PY'
-import json, os, re, shlex, subprocess, sys
+    offender=$(REPO_REAL="$REPO_REAL" SLUG="$SLUG" CONFIG_F="$CONFIG_F" CONFIG_MERGED="$CONFIG_MERGED" SCAN_CMD="$scan_cmd" python3 - "$payload" <<'PY'
+import io, json, os, re, shlex, subprocess, sys
 
 payload = json.loads(sys.argv[1])
 cmd = os.environ.get("SCAN_CMD", "")          # here-doc DATA bodies already stripped (see scan_cmd)
@@ -905,9 +1072,10 @@ home = os.path.expanduser("~")
 repo = os.path.realpath(os.environ["REPO_REAL"])
 
 allow = [os.environ["REPO_REAL"], "/tmp", "/private/tmp", "/var/folders",
-         os.path.join(home, ".claude", "projects", os.environ["SLUG"])]
+         os.path.join(home, ".claude", "projects", os.environ["SLUG"]),
+         os.path.join(home, ".claude", "plans")]          # built-in Plan Mode save location
 try:
-    with open(os.environ["CONFIG_F"]) as f:
+    with io.StringIO(os.environ.get("CONFIG_MERGED", "{}")) as f:
         allow += [os.path.expanduser(p) for p in (json.load(f).get("allow_write_roots") or [])]
 except (OSError, ValueError):
     pass
@@ -1096,7 +1264,7 @@ Everything outside this project is READ-ONLY by default. READING elsewhere is fi
 OUT of it: \`cp <their path> <repo path>\` is allowed. Copy what you need in and work on the copy.
 
 If the human has explicitly authorized this specific path, record their words and try again:
-  game_loop authorize --path <prefix> --reason \"<their exact words>\"
+  $GAMELOOP_DIR/bin/game_loop authorize --path <prefix> --reason \"<their exact words>\" [--uses N]
 One authorization, one mutation, logged permanently. That is the only escape hatch, by design."
     fi
 

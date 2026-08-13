@@ -53,6 +53,30 @@
           }
         ]
       }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.game_loop/bin/game_loop sessionstart",
+            "timeout": 20,
+            "statusMessage": "game_loop: rehydrating the loop"
+          }
+        ]
+      }
+    ],
+    "PostCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.game_loop/bin/game_loop sessionstart",
+            "timeout": 20,
+            "statusMessage": "game_loop: rehydrating the loop"
+          }
+        ]
+      }
     ]
   },
   "statusLine": {

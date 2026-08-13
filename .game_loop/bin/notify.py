@@ -91,24 +91,79 @@ def _log(rec):
         pass
 
 
+def user_notify_path():
+    """The one-per-machine config: $XDG_CONFIG_HOME/game_loop/notify.json, else ~/.config/…"""
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
+    return os.path.join(base, "game_loop", "notify.json")
+
+
 def _cfg():
-    try:
-        with open(NOTIFY_F) as f:
-            return json.load(f)
-    except (OSError, ValueError):
-        return {}
+    """The project's notify.json, else the user's one-per-machine file (#54).
+
+    Anyone running game_loop across several checkouts -- worktrees of one project, or unrelated
+    projects -- had to hand-copy the same bot token and channel into a gitignored notify.json in
+    every .game_loop/. One Slack app, N copies of a credential, and N places to rotate it.
+
+    THE PROJECT'S FILE STILL WINS, whole. Not merged key-by-key: a half-inherited credential is the
+    worst outcome available here -- a project that deliberately points at its own channel would
+    silently borrow the user's token, and a paging path that works for the wrong reason is harder to
+    notice than one that does not work at all.
+
+    WHAT THIS WIDENS, stated rather than left to be discovered (INV6): a user-level file applies to
+    EVERY project on this machine, including ones installed later that never asked for it. That is
+    the point, and it is also the whole of the risk -- `game_loop status` names which file is in
+    use, so "where is this paging" is answerable without guessing.
+    """
+    for p in (NOTIFY_F, user_notify_path()):
+        try:
+            with open(p) as f:
+                d = json.load(f)
+            if isinstance(d, dict) and d:
+                return d
+        except (OSError, ValueError):
+            continue
+    return {}
+
+
+def cfg_source():
+    """Which file _cfg() would use, or None. For reporting -- never a decision."""
+    for p in (NOTIFY_F, user_notify_path()):
+        try:
+            with open(p) as f:
+                d = json.load(f)
+            if isinstance(d, dict) and d:
+                return p
+        except (OSError, ValueError):
+            continue
+    return None
 
 
 def _slack():
     return (_cfg().get("slack") or {})
 
 
+def _merged_config(config_f):
+    """config.json, then config.local.json on top. The local file is GITIGNORED site wiring, and it
+    has to reach every component that reads config -- a setting only some of them honour is worse
+    than one nobody has, because it works in the place you test it and not in the place it matters.
+    (Shipped that way once: the waiting probe lived here and the watchdog could not see it.)"""
+    import json as _json
+    import os as _os
+    cfg = {}
+    for _p in (config_f, _os.path.join(_os.path.dirname(config_f), "config.local.json")):
+        try:
+            with open(_p) as _f:
+                _d = _json.load(_f)
+            if isinstance(_d, dict):
+                cfg.update(_d)
+        except (OSError, ValueError):
+            continue
+    return cfg
+
+
 def _project():
-    try:
-        with open(CONFIG_F) as f:
-            return json.load(f).get("project_name") or os.path.basename(os.path.dirname(ROOT))
-    except (OSError, ValueError):
-        return os.path.basename(os.path.dirname(ROOT))
+    return (_merged_config(CONFIG_F).get("project_name")
+            or os.path.basename(os.path.dirname(ROOT)))
 
 
 def configured():

@@ -1,0 +1,299 @@
+# game_loop
+
+> Guardrails that let a Claude Code session run unattended, safely. Enforced entirely through Claude
+> Code hooks — never through instructions to the model. If you are an AI agent working in a repo that
+> has a `.game_loop/` directory, this file tells you how to operate. Everything below is a command you
+> run, not a rule you remember.
+
+**This file is for you; [README.md](README.md) is for the human.** The README explains what problems
+game_loop solves and why somebody would put an agent on it — read it if you have been asked to
+evaluate or describe game_loop to a person. For operating inside a guarded repo, stay here: this is
+the complete set of commands and the gates you will hit.
+
+The design rule everything follows from: **enforcement lives in tools and artifacts, never in
+instructions.** Test any guard by asking — *if I ignored every instruction, would it still hold?* The
+keystone check is always the same shape: **name a real file that exists.** You cannot satisfy it by
+writing a plausible string, which is the one thing you are too good at.
+
+## First thing, every session
+
+```
+./.game_loop/bin/game_loop status
+```
+
+Run it at the start of every session and after any context compaction. It rehydrates the cost ladder,
+the invariants, your claim/harden counters, the current phase, and whether a mandate is bound — all
+from disk. Surviving compaction is the whole point.
+
+`game_loop` is **not a global command** — it is the project-local binary shown above,
+`./.game_loop/bin/game_loop`. Call it by that path every time (this file already does). If you ever see
+`game_loop: command not found`, you dropped the path and reached for a global that does not exist — add
+`./.game_loop/bin/` back. This matters most when you arrive through a global slash command that did not
+load the project's `CLAUDE.md`: there is no `game_loop` on your PATH, only the one in this repo.
+
+## The one hard rule: cite the file you read
+
+Before you assert anything about external reality — a dependency's behavior, a harness detail, another
+repo — record it with the source that backs it:
+
+```
+./.game_loop/bin/game_loop claim --assert "<what you're about to say>" --read <path> --confidence "<what would refute it>"
+./.game_loop/bin/game_loop claim --assert "<what turned out to be wrong>" --outcome refuted --evidence <the control that killed it>
+```
+
+Record how it landed: `--outcome resolved` (default) / `refuted` / `inconclusive`. A refutation is the
+result most worth keeping — it must name the control that disproved it, and `game_loop status` then
+carries a standing RULED-OUT list so a later run inherits the dead path instead of re-walking it.
+Retracting costs exactly one real path, the same as claiming: being wrong should be cheap and visible.
+
+It refuses unless `--read` names a real, non-empty file — an absolute path to any real file, or a path
+relative to the repo or a configured `read_root`. The keystone is that the file *exists* and you read
+it, not that it lives in this repo: cite the sibling repo you actually opened. A research subagent's
+citation is not a source: it *found* the file, you must *read* it.
+
+## Working unattended (this is the whole point)
+
+When a human binds a mandate (`game_loop mandate --set "..."`), two hooks keep you moving:
+
+- The **Stop gate** blocks a turn-end that (a) asks the human a question, or (b) says you're
+  "continuing now" and then stops. When you hit it, its stderr tells you exactly what to do.
+- The **watchdog** rings you back to work (via an `asyncRewake` Stop hook) if you go idle with work
+  still outstanding.
+
+A project can also attach **its own check** to turn-end (a `stop` trigger — see the Triggers section
+of the README). That one runs with or without a mandate: if it exits non-zero the turn is refused and
+*its* stderr is the reason, naming what it wants. Do what it asks and end the turn again; if it is
+wrong, it is a line in `.game_loop/triggers.json` and you may fix or remove it. It stands down after
+3 consecutive blocks, so it can never trap you.
+
+So under a mandate, do NOT end your turn by asking a question or by announcing work and stopping.
+Instead, keep working — and when you genuinely need to end a turn, pick one:
+
+```
+./.game_loop/bin/game_loop checkpoint --notes ".."                  # report progress and hand back, NO question
+./.game_loop/bin/game_loop arm --question ".." --read <path> --predict ".."   # ask something you truly can't derive
+./.game_loop/bin/game_loop mandate --clear --notes ".."             # the work is actually done
+./.game_loop/bin/game_loop mandate --park --reason "<their words>"  # ONLY when a HUMAN calls a break
+```
+
+`mandate --park` is the one non-closure exit: the human said stop, so the mandate stays OPEN (status
+keeps showing it, with their verbatim words and the next step) instead of being fabricated into a
+closure. It buys ONE turn-end, it cannot launder a question, and only `mandate --resume` ends it. It
+is for THEIR break, never your judgement — that is what the log records.
+
+`arm` requires the path to a file you ALREADY read that did NOT answer the question — if the answer was
+on disk, you don't need the human. `checkpoint` and `arm` are each single-use (consumed on the next
+turn-end). If you can predict the human's answer, don't ask; make the call and carry on.
+
+## Usage limits: the handoff gate and the park
+
+If a tool call is refused with **LIMIT GATE CLOSED**, a Claude Code usage window is nearly exhausted
+and the session will soon die mid-action. Do not argue with it and do not route around it — write the
+handoff file at the exact path the gate names (YOUR session's own, under `.game_loop/sessions/<id>/`):
+the mandate, where you are, what is DONE and VERIFIED (with proving paths), what you were mid-flight
+on, exact next actions, how to resume. The gate opens the moment that file exists, and you keep
+working until the window actually runs dry.
+
+If you are woken with **"the exhausted usage window has reset"**, you are the resumed run: run
+`game_loop status`, read the handoff if it exists, re-absorb it, delete it (a stale handoff misleads
+the next reader), and carry on with the mandate.
+
+If you are woken with **"the human answered your T3 question on Slack"**, the arm was already
+cleared — act on the answer and continue; do not re-ask or wait further.
+
+## Paging the human's phone
+
+`./.game_loop/bin/game_loop notify --text ".."` pages the configured Slack channel (no-op when
+unconfigured; `--test` verifies the wiring). The tools already page automatically on `arm`,
+`mandate --clear`, watchdog stand-down, and limit events — reach for `notify` only when the human
+must see something none of those cover (e.g. "the deploy needs your physical presence at the TV").
+It does not license a turn-end: the Stop gate rules still apply.
+
+## When you learn something, encode it — don't write it down
+
+A learning kept in prose is a promise you will break under compaction. Convert it into an artifact the
+harness enforces, and name the real file that now enforces it:
+
+```
+./.game_loop/bin/game_loop harden --learning ".." --artifact <real path> --mechanism ".." --rung N
+#   add --general ".." — the TRANSFERABLE form, for any `harden` trigger to share with other agents
+```
+
+Rungs, highest first: 1 IMPOSSIBLE · 2 LOUD · 3 CHECKED · 4 AUTOMATED · 5 VISIBLE · 6 doc/memory (last
+resort — say why 1–5 don't apply).
+
+## Prose that contains code goes through a FILE, not a shell argument
+
+Any option carrying free prose has a `--<name>-file PATH` twin, and **an inline value over 400
+characters is refused** in favour of it:
+
+```
+./.game_loop/bin/game_loop harden --learning-file notes.txt --general-file general.txt ...
+./.game_loop/bin/game_loop checkpoint --notes-file handoff.txt
+./.game_loop/bin/game_loop claim --assert-file claim.txt --read <path>
+```
+
+This is not a style rule. A quoted shell argument is **code to the shell before it is text to the
+tool**: backticks run as command substitution, `$NAME` expands to nothing, a lone quote truncates.
+The shell hands over the *result*, so a sentence with three words eaten out of it arrives as a
+shorter sentence and nothing downstream can tell the difference — it lands in a permanent record
+silently. It cost this repo a corrupted public comment and a corrupted broadcast to five other
+agents before it was bounded.
+
+The same applies to every other CLI you drive: `git commit -F <file>`, `gh --body-file <file>`. If
+you are writing a commit message, an issue body, or a review comment that quotes code, write it to a
+file first. A short value with a backtick in it is still mangled and still accepted — the bound
+reduces the damage, it does not remove the class.
+
+## What the guards will stop you doing (and the escape hatch)
+
+- **MCP tool calls are classified before they run.** A connected server can delete, merge or
+  force-push with no shell command at all, and the write guard never sees it. Read-verb names pass;
+  a mutating or irreversible verb, or arguments carrying a mutation (a destructive SQL statement, a
+  truthy `force:`), are refused. **The argument always wins** — a read-named `query` tool carrying
+  `DELETE FROM` is still blocked — and anything it cannot classify fails **closed**. Same hatch,
+  spelled with the tool name: `authorize --path mcp__<server>__<tool> --reason "<their words>"`.
+  A project may pre-authorise a narrow set in `config.json` (`mcp_standing_writes`), declare whole
+  servers it OWNS (`mcp_trusted_servers` — every call allowed, destructive included), or shut the
+  plane off entirely (`mcp_writes: "disabled"`) — see Configure in `README.md`. You cannot set any
+  of them; they are the project's policy, not yours. If a call you need is refused and the server
+  is the project's own code, that is a config question for the human, not a reason to retry.
+- **Writes outside this repo are denied.** Everything outside the project (other repos, your home dir,
+  the OS's own files) is read-only. Reading elsewhere is fine; copying *into* the repo (`cp <there> <here>`)
+  is fine. If a human has explicitly authorized one write outside the repo, record their words and
+  retry — it is single-use and logged:
+  ```
+  ./.game_loop/bin/game_loop authorize --path <prefix> --reason "<the human's exact words>"
+  ```
+- **Configured deploy/publish verbs are denied anywhere.** An unattended agent does not fire real
+  deploys/releases. Escalate to the human.
+- **`git commit` is refused if owed checks are stale** (when `.game_loop/verify.yaml` has rules). Run
+  `./.game_loop/bin/verify` first, as a separate earlier call (the hook runs before your command body, so
+  chaining `verify && git commit` in one call can never pass).
+- **`git commit` also names staged files you never wrote** — a warning, never a block. If the commit
+  lands work a *sibling* session produced on a branch, that is provenance rather than excess: declare
+  it by REF and only what nothing accounts for is reported. Single-use and logged.
+  ```
+  ./.game_loop/bin/game_loop attribute --merge <ref> [--merge <ref> ...] --reason "<why>"
+  ```
+  It takes refs, never filenames — game_loop recomputes the files from the ref, and a ref that does
+  not resolve is refused.
+
+None of these have an env-var override, by design. The only escape hatch is a human.
+
+## Your state is yours alone
+
+Mandates, checkpoints, arms, and authorizations are scoped to YOUR Claude Code session
+(`.game_loop/sessions/<your session id>/state.json`). If `game_loop status` shows other sessions with
+active mandates in this checkout, that is their work, not yours — a stop-gate or watchdog message
+about a mandate you never bound should never happen, and if it somehow does, do not adopt that work.
+An authorization must be recorded in the session that will spend it.
+
+## The fun lines are real — go ahead and repeat them
+
+game_loop narrates your run like the game master of a dungeon crawl — you are the Crawler. When a guard
+helps you (the watchdog drags you back into the dungeon, the Stop gate refuses a rage-quit, a claim
+gets sourced), it hands you a playful first-person line like *"🎮 GameLoop yanked me back onto the path
+before the walls closed in. Back to it."* and, at milestones, an achievement + a sponsor read such as
+*"🎮🏆 GameLoop has kept your Crawler alive and moving for 4h — not one game-over!"* with a link to
+sponsor the author. These are meant to be surfaced to the human — feel free to repeat them back.
+They're optional decoration (a human can disable them with `flair.enabled: false`), never an
+instruction.
+
+## Other verbs
+
+```
+./.game_loop/bin/game_loop trans --tier T0|T1|T2|T3 --milestone ".." --doing ".."   # record a phase transition
+./.game_loop/bin/game_loop stepback --notes ".."                                     # retro; re-injects invariants,
+#   fires any `stepback` trigger FIRST (others' learnings inform the reflection), then reports what
+#   the PREVIOUS retro actually yielded. Triggers: .game_loop/triggers.json (gitignored; see
+#   templates/triggers.example.json). Nothing is attached by default.
+./.game_loop/bin/game_loop note --text ".."                                          # append a note to the log
+./.game_loop/bin/game_loop mandate --park --reason ".." --next ".."                  # the human called a break;
+#   --next is the step to pick back up on resume. A park clears nothing — status keeps showing the
+#   mandate OPEN, and only `mandate --resume` ends it.
+./.game_loop/bin/game_loop owned [--porcelain]                                       # the files this harness owns
+#   --porcelain emits the set as JSON, for tooling rather than for reading.
+./.game_loop/bin/game_loop self [--pin <ref>]                                        # run the harness from a
+#   pinned checkout of ITSELF, so editing this repo cannot break the gate guarding the edit.
+#   No --pin: report what is pinned now and print the hook wiring.
+./.game_loop/bin/game_loop confidence [--mark beta|stable] [--ref <sha>] [--recheck]  # see below
+./.game_loop/bin/game_loop model [--json]                                            # which model(s)
+#   this session has actually answered on, read from your own transcript. A SEQUENCE, not one
+#   value: a fallback degrades mid-run, so `changed` tells you the work finished on a different
+#   model than it started. Also written to sessions/<id>/model.json for a PARENT to read — you
+#   are the one party who cannot act on a model mismatch, so the file is the point, not the line.
+./.game_loop/bin/game_loop limitprobe [--force] [--interval-only]                    # read the usage
+#   windows by SPAWNING a short session, on a host that renders no statusline (so limits.json never
+#   arrives on its own). Off unless the project enabled it — it costs ~24k input tokens per run —
+#   and the watchdog fires it automatically on an interval the reading implies. You do not normally
+#   run this: if `status` says usage protection is INERT, that is a config question for the human.
+```
+
+**The evidence family.** `claim`'s keystone — name a real file — only reaches evidence that is a
+*document*. These add the same kind of keystone for evidence that is a *measurement* or an *action*,
+and each is refused unless the receipt exists. Full contracts are printed by `status`:
+
+```
+claim --assert ".." --read <path> --scope "<category>" --probe <a> --probe <b>
+#   an "only X" / "X is restricted" claim is about a SET — a second member is the price
+#   --metric <name>    the claim rests on an admitted instrument's READING, not on a document
+#   --effector <name>  it depends on a verb having ACTED; refused unless proved this session
+#   --recheck ".."     for a metric that MOVED: what a user would notice now
+#   --aggregate sum|mean|pct   this effect was DERIVED by collapsing events (needs --events)
+#   --exclude <EVENT#> --because ".."   drop the dominating event the refusal NAMED, with the
+#                                        reason recorded so the artifact is not rediscovered
+pin --fact ".." --reason ".." --path <path> [--expect ..] [--restore ..]
+pin --list | pin --release <id> --notes ".."
+#   a local fact that has become load-bearing (a dep's sha, a toolchain, an SDK path).
+#   Releasing one is a DECISION, so it takes notes.
+effector --prove <name> --known-state ".." --before <capture> --observed <capture>
+#   before a finding leans on a verb having ACTED — a click, a scroll, a keystroke.
+#   --scale <factor> with --aim <effector> --at X,Y converts a point into the effector's own
+#   coordinate space, so you never multiply by hand and never get it backwards.
+instrument --register <name> --measures ".." --connects ".." --null <b,a> --positive <b,a>
+measure --instrument <name> --before <n> --after <n> --events <per-event values>
+#   a delta, never a total — and a SUM IS NOT A DISTRIBUTION, so the per-event values are the
+#   price of an aggregate claim: one dominating event and the mean is telling you nothing.
+#   A number is a test whose subject is reality; both controls are the price of admission.
+fix --prove <name> --promises ".." --produces <the fix's own output> \
+    --diagnosis <the repro> --before <verdict> --observed <verdict>
+#   a verified diagnosis is NOT a verified fix — exercise what the fix PRODUCES
+```
+
+**`confidence` — how much this project stands behind a commit.** Three levels, each meaning only
+what was *checked*, never that the code is correct: **alpha** (the absence of a mark), **beta**
+(clean tree, and every check the change owed has run since the change), **stable** (beta, plus the
+owning agent's own harness pinned to that commit — it was dogfooded). Marking rides an annotated git
+tag and `.game_loop/CONFIDENCE`, and `--recheck` re-runs the gate rather than trusting the tag.
+`--mark` is also the moment any `confidence` trigger fires, which is where publishing to a package
+manager or a mirror belongs.
+
+Cost ladder (spend cheap rungs before expensive ones): **T0** read source · **T1** research subagents
+(free, no human) · **T2** build & verify (analyze / test / actually run it) · **T3** the human's
+attention. T3 is the only hard-gated rung — it is the one genuinely scarce resource in an unattended
+run.
+
+## Setting up game_loop in a fresh repo (if `.game_loop/` is not here yet)
+
+From a clone of game_loop:
+
+```
+./install.sh /path/to/this/project
+```
+
+That copies `.game_loop/` in and merges the hooks into `.claude/settings.json`. Then edit
+`.game_loop/INVARIANTS.md` (the project's north star) and `.game_loop/config.json` (read roots, allowed
+write roots, deploy verbs, watchdog timing), and run `./.game_loop/bin/game_loop status`.
+
+Migrating from an older `.loop/`-style harness: run the installer, move any project-specific
+invariants into `.game_loop/INVARIANTS.md`, then delete the old `.loop/` directory AND its hook entries
+from `.claude/settings.json` (the installer *adds* game_loop's hooks; it does not remove yours).
+
+## Deeper docs
+
+- `README.md` — the human-facing overview and quickstart.
+- `docs/how-it-works.md` — the full design: the autonomy engine and every guardrail.
+- `.game_loop/INVARIANTS.md` — the project's non-negotiables.
+- `.game_loop/LEDGER.md` — VERIFIED / RULED-OUT / OPEN findings (reference, not a gate).
+- `test/run.py` — the guarantees, as runnable checks.

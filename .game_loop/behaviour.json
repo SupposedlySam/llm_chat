@@ -1,0 +1,116 @@
+{
+  "//": [
+    "BEHAVIOUR CHANGES \u2014 what an existing verb now COSTS or REFUSES differently.",
+    "",
+    "Not a changelog. A new verb costs nothing until you reach for it and can be discovered",
+    "whenever; an existing verb that starts costing minutes, or refusing where it used to warn,",
+    "changes behaviour for people who never asked for anything, in the middle of whatever they were",
+    "doing. Only the second kind earns an interruption. If everything lands here the notice becomes",
+    "noise and gets ignored exactly when it matters.",
+    "",
+    "This file SHIPS with the payload and is refreshed on every install, so the installed copy is",
+    "the record as of your install. `status` compares it against the one on main and names only the",
+    "entries you have not seen. No extra stamping, and nothing to keep in sync by hand.",
+    "",
+    "seq is monotonic and never reused \u2014 it is the ordering, since commit shas have none.",
+    "",
+    "The test for whether an entry belongs here: would somebody who changed nothing about how they",
+    "use game_loop notice this? If no, leave it out.",
+    "",
+    "AN ENTRY SHOULD NAME THE CONSEQUENCE, not only the change. A consumer of this file demonstrated",
+    "why: it checked four entries in ten minutes instead of reading 1255 lines of guard, and the one",
+    "that mattered most to it was the one whose consequence it had to work out for itself. `change`",
+    "says what moved; `consequence` says what somebody might now do WRONG. The second is the reason",
+    "anyone reads this file, and it is the half an author is worst placed to notice, because the",
+    "author already knows not to make the mistake.",
+    "",
+    "EVERY ENTRY CARRIES EVERY FIELD, and the suite refuses one that does not. Adding `consequence` to",
+    "seq 1 alone reproduced the exact defect the field was added to fix: for the other four a consumer",
+    "reading `consequence` got nothing, and nothing distinguished 'predates the field' from 'the",
+    "author judged there is no consequence'. Two causes, one indistinguishable result, and only the",
+    "author holds the difference. If an entry genuinely has no consequence, say so IN the field with a",
+    "reason -- an absence must be a decision, not a gap.",
+    "",
+    "`schema` is an integer and consumers should pin to it. This file announces changes to game_loop's",
+    "verbs and nothing announced changes to THIS FILE: adding a field is safe, but renaming `change`",
+    "or dropping `why_it_qualifies` would break a programmatic reader silently. Bump it when a field",
+    "is renamed or removed; adding one does not require a bump.",
+    "",
+    "seq 2 was CORRECTED after a consumer read the entry against the source and found the record",
+    "less precise than the code. The entry said English false-positives now run; the source comment",
+    "three lines below the fix says the bare verb as a whole word still trips it. Both were written",
+    "by the same author in the same commit and both were accurate \u2014 the limit was simply written",
+    "where a reader of the record never looks. An entry must carry its own caveats, because the",
+    "person acting on it is not reading the guard."
+  ],
+  "changes": [
+    {
+      "seq": 1,
+      "sha": "61afb2c",
+      "verb": "verify",
+      "change": "now re-runs the suite once per stale pattern. Making install.sh, test/run.py and verify.yaml gated files was correct, but a change touching several of them went from roughly one suite run to five \u2014 seconds to 2-4 minutes. Run `verify` as its own earlier step; under an autonomy mandate a verb that quietly became slow reads as an idle session.",
+      "consequence": "an agent that reads a slow verify as HUNG will interrupt it or route around it, and then commits into a tree whose owed checks never recorded a pass \u2014 the exact failure the instruction exists to prevent. If you brief agents to run verify, tell them to expect minutes and that it has not hung. Reported by a consumer who found this entry mattered more to it than the one written for it.",
+      "why_it_qualifies": "the first entry, written before the field existed"
+    },
+    {
+      "seq": 2,
+      "sha": "6acd0c1",
+      "verb": "commit / bash",
+      "change": "a configured deploy verb now requires a word boundary on BOTH sides, where it previously had one only before the verb. Calls refused because the verb appeared as a SUBSTRING of ordinary English \u2014 'file surgery' contains 'surge' \u2014 now run. NARROWED, NOT REMOVED: the bare verb as a WHOLE WORD in prose still trips it, deliberately. A sentence merely mentioning 'docker push' is still refused, because narrowing to command position would miss a real deploy nested in an interpreter argument, and missing a real publish is the expensive direction.",
+      "why_it_qualifies": "an existing verb stopped refusing calls it used to refuse",
+      "consequence": "if you worked around a SUBSTRING false block by rewording, the reword is now unnecessary \u2014 but if you reworded prose containing the bare verb as a whole word, YOU STILL NEED IT. Check which kind you had. And if you deleted a verb from deploy_verbs to get past a false block, it is no longer blocked at all: confirm deploy_verbs still lists what you meant."
+    },
+    {
+      "seq": 3,
+      "sha": "55c9761",
+      "verb": "commit",
+      "change": "a commit whose TARGET TREE is built from a variable (git -C \"$TREE\" commit, or a cd through a variable) is now DENIED. It previously passed SILENTLY, because the gate could not read the path and treated unreadable as fine. Nothing about how you commit has to change for this to start blocking you.",
+      "why_it_qualifies": "silent pass became a denial \u2014 the sharpest kind of entry this file is for, and it went unrecorded for weeks while a consumer taught its agents the old behaviour as a measured finding",
+      "consequence": "an orchestrator committing through `git -C \"$TREE\"` for weeks, changing nothing, is now BLOCKED. And any brief that told agents a variable-built target passes silently is now false \u2014 which is how this was found: a consumer had read the old behaviour correctly, written it down, and could not tell a stale reading from an absent record."
+    },
+    {
+      "seq": 4,
+      "sha": "5f8f2db",
+      "verb": "every verb taking prose",
+      "change": "an INLINE value over 400 characters is now REFUSED, and must come from the option's --<name>-file twin. A long --notes, --learning or --assert that worked yesterday stops working today. The bound exists because a quoted shell argument is code to the shell first and mangled prose is indistinguishable from short prose.",
+      "why_it_qualifies": "an existing verb refuses input it used to accept",
+      "consequence": "a script or an agent that composes a long --notes/--learning/--assert inline fails at the point of the call. In an unattended run that costs the turn, so move composed prose to the --<name>-file twin BEFORE you rely on it rather than after it refuses."
+    },
+    {
+      "seq": 5,
+      "sha": "523de54",
+      "verb": "MCP calls",
+      "change": "a state-changing verb that nobody enumerated now reaches the standing-writes / authorize POLICY instead of failing closed before it. Calls that were refused as unclassifiable \u2014 resolve, merge-adjacent review verbs on first-party servers \u2014 are now governed by your mcp_writes and mcp_standing_writes settings rather than blocked outright. It does not make them free; it makes them decidable.",
+      "why_it_qualifies": "an existing verb stopped refusing outright and started deferring to policy, which changes what an unattended run can complete",
+      "consequence": "if you were relying on unclassifiable-verbs-fail-closed as your safety margin, that margin is now your mcp_writes and mcp_standing_writes settings instead. Read them and confirm they say what you meant; the default is still `gated`, so an unconfigured project is unchanged."
+    },
+    {
+      "seq": 6,
+      "sha": "789333a",
+      "verb": "MCP calls",
+      "notice": false,
+      "change": "a new OPT-IN key, mcp_trusted_servers, permits every call to a named server \u2014 irreversible verbs, landing verbs and mutating arguments included. Refusal lines moved in the guard, which is why this entry exists.",
+      "consequence": "none for anyone who does not set the key. A project with no mcp_trusted_servers is refused exactly what it was refused before, asserted in the suite as its own arm. If you DO set it, read the Configure section: this is the widest door in the tool and status reports it in capitals.",
+      "why_it_qualifies": "IT DOES NOT \u2014 recorded with notice:false because the behaviour gate fired and an omission would be indistinguishable from nobody having decided. The test is whether somebody who changed NOTHING would notice; an opt-in key they have not opted into changes nothing for them."
+    },
+    {
+      "seq": 7,
+      "sha": "7209686",
+      "verb": "confidence --mark",
+      "notice": true,
+      "change": "marking a commit that is ALREADY marked at that level no longer dies on `tag already exists`. It reports RE-MARKED, leaves the immutable tag untouched, and re-fires the confidence triggers. The same name over a DIFFERENT commit still refuses, and now names the commit it already records instead of passing through a bare git error.",
+      "consequence": "a mark whose trigger declined for a TRANSIENT reason can be retried. Observed here: the mark landed, its publish trigger correctly declined because HEAD was not pushed yet, and after pushing there was no way back \u2014 the record existed and the publication it exists to cause did not. Recovery meant running the trigger script by hand from a path only its author knows, so consumers stayed on the previous stable in the meantime. If you script `--mark` and relied on a non-zero exit to mean 'already marked', that exit is now 0.",
+      "why_it_qualifies": "a consumer who changed nothing gets a different exit code and a different action from the same command on the same commit. The triggers firing again is the deliberate part, not a side effect."
+    },
+    {
+      "seq": 8,
+      "sha": "4f203f5",
+      "verb": "stopgate (turn-end)",
+      "notice": true,
+      "change": "turn-end can now be REFUSED by something other than the mandate gate. A `stop` key in .game_loop/triggers.json attaches a command to turn-end: a NON-ZERO exit blocks the turn and its stderr goes back to the model. Previously `stop` was not a moment at all, so such a key ran nothing and status called it THERE IS NO SUCH MOMENT. It is bounded in three ways that are part of the contract, not implementation detail: a timeout, an unrunnable command or a crash FAILS OPEN loudly (the turn ends UNCHECKED, which is not a pass); after 3 CONSECUTIVE blocks the attachment STANDS DOWN with a notice and the turn ends, resetting the moment it passes once; and it runs only where turn-end would otherwise be allowed, before any checkpoint/arm/park is consumed. Its default timeout is 10s, not the usual 20, because it runs on every turn-end.",
+      "consequence": "if you already had a `stop` key in triggers.json it was INERT and is now LIVE — a command that used to run never now runs on every turn-end and can block it. That is the silent-pass-became-a-denial shape, and it is the one group here who changed nothing. For everyone else the moment is opt-in and nothing changes. If you attach one: do not design around the stand-down bound (it is there for the case where your check is RIGHT and the thing it wants is impossible), exit 0 when you cannot tell rather than blocking on an unanswered question, and expect its timeout on every turn you take.",
+      "why_it_qualifies": "a new way for an existing verb to refuse. An install with no `stop` attachment is byte-identical, but an install that already carried the key gets a live gate it never enabled, and every attachment inherits a bound and a fail-open that decide what happens when its condition cannot be cleared."
+    }
+  ],
+  "schema": 1
+}
