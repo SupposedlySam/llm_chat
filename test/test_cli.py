@@ -680,9 +680,26 @@ class DoctorTest(unittest.TestCase):
         self.mark("post-tool-use")
         self.mark("stop")
 
-    def test_a_live_waker_is_reported_as_listening(self):
+    def test_a_live_waker_is_reported_as_POLLING(self):
+        """Renamed with the claim it makes. Polling and waking are two facts,
+        and this line used to assert the second on the strength of the first —
+        which is how a host that ignores asyncRewake read as healthy."""
         self.joined_with_waker(os.getpid())
-        self.assertIn("listening now: yes", self.report())
+        self.assertIn("polling now: yes", self.report())
+
+    def test_POLLING_IS_NOT_WAKING_until_one_has_landed(self):
+        """Issue #6. The poll runs, the pid rotates, and if the host drops
+        exit 2 the messages arrive only when the agent next runs a tool."""
+        self.joined_with_waker(os.getpid())
+        text = self.report()
+        self.assertIn("NO WAKE HAS EVER BEEN OBSERVED LANDING", text)
+
+    def test_a_landing_is_reported_when_there_is_one(self):
+        self.joined_with_waker(os.getpid())
+        with open(os.path.join(self.project, ".llm_chat", "wake.landed"),
+                  "w") as f:
+            json.dump({"at": 1, "host": "cli"}, f)
+        self.assertIn("a wake has LANDED here", self.report())
 
     def test_a_dead_waker_is_reported_however_green_everything_else_is(self):
         """The failure this exists for: every other check said 'wiring looks

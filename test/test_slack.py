@@ -24,15 +24,17 @@ class FakeSlack:
 
     def __init__(self, messages=None, ok=True, error=None, explode=False):
         self.posted = []
+        self.threaded = []
         self.messages = messages or []
         self.ok = ok
         self.error = error
         self.explode = explode
 
-    def post(self, text):
+    def post(self, text, thread_ts=None):
         if self.explode:
             raise OSError("slack is down")
         self.posted.append(text)
+        self.threaded.append(thread_ts)
         return {"ok": True}
 
     def history(self, oldest=None):
@@ -51,7 +53,16 @@ class BridgeTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.mod = load("llm-chat-slack")
         self.mod.STATE = self.tmp.name
+        # EVERY state path, not just the ones a given test reads. `pump_in`
+        # now records who was asked in which thread, so a test that only meant
+        # to exercise routing began writing into the REAL repo's .llm_chat/ —
+        # caught by the suite's own repo-damage guard rather than by review,
+        # which is precisely what that guard is for. A module-level path left
+        # unpatched is not inert; it is the live one.
         self.mod.CURSOR = os.path.join(self.tmp.name, "slack-cursor.json")
+        self.mod.THREADS = os.path.join(self.tmp.name, "slack-threads.json")
+        self.mod.REPLIES = os.path.join(self.tmp.name, "slack-replies.json")
+        self.mod.ASKED = os.path.join(self.tmp.name, "slack-asked.json")
         self.config = {"room": "human", "identity": "me",
                        "slack": {"bot_token": "x", "channel": "C1"}}
         self.said = []
@@ -343,6 +354,20 @@ class SlackClientTest(unittest.TestCase):
         self.assertEqual(json.loads(self.seen["data"])["text"], "hello")
         self.assertEqual(self.seen["headers"]["Authorization"],
                          "Bearer xoxb-secret")
+
+    def test_posting_into_a_thread_sends_thread_ts(self):
+        """The wire form of an answer landing where it was asked."""
+        self.respond({"ok": True})
+        client = self.mod.Slack("t", "C1")
+        client.post("the answer", thread_ts="100.5")
+        self.assertEqual(json.loads(self.seen["data"])["thread_ts"], "100.5")
+
+    def test_a_root_post_carries_NO_thread_ts(self):
+        """Sending a null would make Slack reject it, and sending the
+        channel's own ts would bury every new topic in one thread."""
+        self.respond({"ok": True})
+        self.mod.Slack("t", "C1").post("new topic")
+        self.assertNotIn("thread_ts", json.loads(self.seen["data"]))
 
     def test_replies_asks_the_ONLY_endpoint_that_returns_thread_messages(self):
         """conversations.history does not return thread replies. Not an error
@@ -803,6 +828,111 @@ class ThreadRepliesTest(BridgeTest):
         slack = self.threaded(replies=[self.human(1, "@here look")])
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual(self.said[0][3], ["--to-all"])
+
+
+class OutboundThreadingTest(BridgeTest):
+    """Issue #7: an answer must land in the thread that asked.
+
+    With inbound threading working, the asymmetry is what the human actually
+    experiences — they ask in a thread, and the reply appears somewhere else
+    in the channel while the thread they are watching stays silent. From a
+    phone that is indistinguishable from not being answered.
+    """
+
+    class Recorder:
+        def __init__(self):
+            self.posted = []
+
+        def post(self, text, thread_ts=None):
+            self.posted.append((text, thread_ts))
+            return {"ok": True, "ts": "%.6f" % (time.time() + len(self.posted))}
+
+        def history(self, oldest=None):
+            return {"ok": True, "messages": []}
+
+        def replies(self, ts):
+            return {"ok": True, "messages": []}
+
+    def setUp(self):
+        super().setUp()
+        for name in ("ASKED", "THREADS", "REPLIES"):
+            setattr(self.mod, name,
+                    os.path.join(self.tmp.name, "slack-%s.json" % name.lower()))
+        self.parent = "%.6f" % time.time()
+
+    def ask(self, sender="alice"):
+        """A human asks `sender`, in a thread."""
+        self.mod.note_question({"thread_ts": self.parent, "ts": self.parent},
+                               ["--to", sender])
+
+    def answer(self, sender="alice", text="the answer"):
+        self.mod.waiting_for_human = lambda room, identity: [(sender, text)]
+        slack = self.Recorder()
+        self.quiet(self.mod.pump_out, self.config, slack)
+        return slack
+
+    def test_AN_ANSWER_LANDS_IN_THE_THREAD_THAT_ASKED(self):
+        self.ask()
+        slack = self.answer()
+        self.assertEqual(slack.posted[0][1], self.parent)
+
+    def test_an_UNPROMPTED_message_is_still_a_new_root(self):
+        """An agent raising something on its own has no thread to land in,
+        and forcing one would bury it under an unrelated conversation."""
+        slack = self.answer(sender="bob", text="something new")
+        self.assertIsNone(slack.posted[0][1])
+
+    def test_the_debt_is_cleared_so_the_NEXT_message_is_a_root(self):
+        """Otherwise every later message from that agent is buried in one
+        thread forever, which is the mirror of the bug."""
+        self.ask()
+        self.answer()
+        slack = self.answer(text="a later, unrelated thought")
+        self.assertIsNone(slack.posted[0][1])
+
+    def test_a_threaded_answer_is_NOT_recorded_as_a_new_root(self):
+        """Recording every relay as a parent grew the map by one per message
+        and made the thread the human was replying in stop being the newest,
+        so their next reply competed with a pile of roots."""
+        self.ask()
+        before = dict(self.mod.read_threads())
+        self.answer()
+        self.assertEqual(self.mod.read_threads(), before)
+
+    def test_a_root_message_IS_recorded_so_replies_to_it_route(self):
+        self.answer(sender="bob", text="new topic")
+        self.assertIn("bob", self.mod.read_threads().values())
+
+    def test_only_the_ADDRESSED_agent_owes_an_answer_there(self):
+        self.ask(sender="alice")
+        slack = self.answer(sender="carol", text="unrelated")
+        self.assertIsNone(slack.posted[0][1])
+
+    def test_a_message_with_no_timestamp_at_all_creates_no_debt(self):
+        """Slack always sends one, but the map is keyed on it — a missing ts
+        would write `None` as a parent and post every later answer into a
+        thread that does not exist."""
+        self.mod.note_question({}, ["--to", "alice"])
+        self.assertEqual(self.mod.read_asked(), {})
+
+    def test_the_asked_map_is_BOUNDED(self):
+        """One entry per agent asked, forever, otherwise."""
+        many = {"agent%d" % n: "%d.0" % n
+                for n in range(self.mod.MAX_THREADS + 20)}
+        self.mod.write_asked(many)
+        self.assertEqual(len(self.mod.read_asked()), self.mod.MAX_THREADS)
+
+    def test_an_at_here_creates_no_debt(self):
+        """It reaches everyone and belongs to no single answer."""
+        self.mod.note_question({"thread_ts": self.parent}, ["--to-all"])
+        slack = self.answer()
+        self.assertIsNone(slack.posted[0][1])
+
+    def test_a_TOP_LEVEL_question_creates_no_thread_debt(self):
+        """route() gives it --to-none, so nobody owes an answer in it."""
+        self.mod.note_question({"ts": self.parent}, ["--to-none"])
+        slack = self.answer()
+        self.assertIsNone(slack.posted[0][1])
 
 
 class DeadReadIsLoudTest(BridgeTest):

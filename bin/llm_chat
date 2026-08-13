@@ -1951,6 +1951,26 @@ def hook_report(project):
     return registered, fired, events
 
 
+def wake_landing(project):
+    """(landed_at, host) if a rewake has ever been observed landing here.
+
+    Written by bin/llm-chat-wake when a waker starts moments after a previous
+    one asked the harness for a wake — the closest thing to a receipt the
+    harness gives, since a hook that exits 2 cannot observe what happens next.
+
+    The ABSENCE is the useful half. It cannot distinguish "no wake has been
+    needed yet" from "this host ignores asyncRewake", and it does not pretend
+    to: `doctor` says both are possible and gives the symptom that tells them
+    apart. Silence claiming to be listening is the failure being removed.
+    """
+    try:
+        with open(os.path.join(project, ".llm_chat", "wake.landed")) as f:
+            record = json.load(f) or {}
+    except (OSError, ValueError):
+        return None, os.environ.get("CLAUDE_CODE_ENTRYPOINT")
+    return record.get("at"), record.get("host")
+
+
 def waker_exit(project):
     """Why the last waker stopped, if it said. None when there is no record.
 
@@ -2128,7 +2148,32 @@ def do_doctor(server):
         pid, alive = waker_alive(project)
         last = waker_exit(project)
         if alive:
-            print(f"\nlistening now: yes (waker pid {pid})")
+            print(f"\npolling now: yes (waker pid {pid})")
+            # POLLING AND WAKING ARE TWO CLAIMS, and this line used to make
+            # the second on the strength of the first. `asyncRewake` is the
+            # one hook whose success is invisible: if the host ignores exit 2
+            # the poll still runs, the pid still rotates, and the messages
+            # just arrive later — when the agent next runs a tool. Reported
+            # from a VSCode extension host, three times out of three, while
+            # this said "listening now: yes".
+            # NOT `host` — that is a module-level function used earlier in
+            # this same body, and binding the name locally made it unbound
+            # for every line above. Caught by the suite, which is the only
+            # reason `doctor` did not start crashing for everyone.
+            landed, wake_host = wake_landing(project)
+            if landed:
+                print("  a wake has LANDED here, so replies arrive on their "
+                      "own")
+            else:
+                print("  BUT NO WAKE HAS EVER BEEN OBSERVED LANDING in this "
+                      "checkout.")
+                if wake_host:
+                    print(f"  host: {wake_host}")
+                print("  Either none has been needed yet, or this host does "
+                      "not honour\n  `asyncRewake` — the two look identical "
+                      "from here. If replies only\n  show up when you next "
+                      "run a tool, it is the second: the poll is\n  working "
+                      "and the wake is not landing.")
         else:
             gone = f"pid {pid} is gone" if pid else "no waker has been armed"
             print(f"\nLISTENING NOW: NO — {gone}.")

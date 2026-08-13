@@ -83,6 +83,15 @@ JOINED = (os.path.join(SESSION_STATE, "joined.json")
           else os.path.join(STATE, "joined.json"))
 PID_PATH = os.path.join(STATE, "wake.pid")
 EXIT_PATH = os.path.join(STATE, "wake.exit")
+REWAKE_PATH = os.path.join(STATE, "wake.rewake")
+LANDED_PATH = os.path.join(STATE, "wake.landed")
+
+# How soon after an exit-2 a new waker must appear for the turn to be
+# attributable to it. Generous enough to survive a slow host, short enough
+# that unrelated human activity is unlikely to be mistaken for a landing —
+# and the cost of guessing wrong in that direction is the false green this
+# whole marker exists to remove, so it errs short.
+REWAKE_GRACE = 90
 
 # No longer a poll interval — nothing is polled. This is how long the waker
 # blocks before waking to recheck whether it has been superseded or orphaned,
@@ -477,7 +486,64 @@ def wake(blocks):
         f"  {CLI} leave <channel>",
         file=sys.stderr,
     )
+    # CLAIM THE REWAKE BEFORE MAKING IT. Exiting 2 is a REQUEST that the
+    # harness wake the model; whether it lands is invisible from here, because
+    # this process is about to end either way. If the harness honours it a new
+    # turn begins, which ends, which arms the next waker — and that waker
+    # finding this note fresh is the only evidence available that anything
+    # happened. See wake_landing() for why it is evidence rather than proof.
+    note_rewake()
     sys.exit(2)
+
+
+def note_rewake():
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        tmp = REWAKE_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"at": time.time(), "pid": os.getpid()}, f)
+        os.replace(tmp, REWAKE_PATH)
+    except OSError:
+        pass
+
+
+def wake_landing():
+    """Turn a pending rewake into recorded evidence that it landed.
+
+    THE PROBLEM THIS SOLVES IS THAT SUCCESS IS INVISIBLE. `asyncRewake` is the
+    one hook whose working looks exactly like its failing: the poll runs, the
+    pid rotates, `doctor` says "listening", and if the host quietly ignores
+    exit 2 the messages simply arrive later, when the agent next runs a tool.
+    Reported from a VSCode extension host where that is what happens, three
+    times out of three.
+
+    EVIDENCE, NOT PROOF, and the difference is deliberate. A waker starting
+    within REWAKE_GRACE of a rewake request is consistent with the harness
+    having honoured it — and also with the human having typed something at
+    that moment. So the positive claim is written only when the timing agrees,
+    and the ABSENCE of the claim is what `doctor` reports. A false negative
+    says "cannot confirm", which is honest; a false positive would say
+    "listening" to somebody whose replies never arrive, which is the bug.
+    """
+    try:
+        with open(REWAKE_PATH) as f:
+            pending = json.load(f) or {}
+    except (OSError, ValueError):
+        return
+    try:
+        os.remove(REWAKE_PATH)
+    except OSError:
+        pass
+    if time.time() - float(pending.get("at") or 0) > REWAKE_GRACE:
+        return                      # too late to attribute this turn to it
+    try:
+        tmp = LANDED_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump({"at": time.time(),
+                       "host": os.environ.get("CLAUDE_CODE_ENTRYPOINT")}, f)
+        os.replace(tmp, LANDED_PATH)
+    except OSError:
+        pass
 
 
 def main() -> int:
@@ -506,6 +572,11 @@ def main() -> int:
             f.write(stamp)
     except OSError:
         pass
+
+    # We are running because a turn just ended. If the previous waker asked
+    # for that turn moments ago, this is the closest thing to a receipt the
+    # harness ever gives.
+    wake_landing()
 
     rooms = joined_rooms()
     if not rooms:

@@ -67,6 +67,7 @@ FALLBACK = os.path.join(ROOT, ".game_loop", "notify.json")
 CURSOR = os.path.join(STATE, "slack-cursor.json")
 THREADS = os.path.join(STATE, "slack-threads.json")
 REPLIES = os.path.join(STATE, "slack-replies.json")
+ASKED = os.path.join(STATE, "slack-asked.json")
 
 # Slack does NOT send "@here" in the text. It sends <!here> and <!channel>,
 # already parsed, and matching only the literal would be a feature that never
@@ -143,9 +144,20 @@ class Slack:
         with urllib.request.urlopen(request, timeout=15) as response:
             return json.loads(response.read().decode())
 
-    def post(self, text):
-        return self._call("chat.postMessage", body={"channel": self.channel,
-                                                    "text": text})
+    def post(self, text, thread_ts=None):
+        """Post, into a thread when this is an ANSWER to one.
+
+        Without `thread_ts` every relay is a new root, so a human who asked in
+        a thread — the documented way to reach one agent — watches that thread
+        stay silent while the answer appears somewhere else in the channel. On
+        a phone that is indistinguishable from not being answered at all,
+        which is the failure this room exists to prevent, arriving by a
+        different route.
+        """
+        body = {"channel": self.channel, "text": text}
+        if thread_ts:
+            body["thread_ts"] = thread_ts
+        return self._call("chat.postMessage", body=body)
 
     def history(self, oldest=None):
         params = {"channel": self.channel, "limit": 50}
@@ -237,6 +249,51 @@ def watched_parents(threads, seen, hints=None):
             continue
         due.append(ts)
     return sorted(due, key=float, reverse=True)[:MAX_WATCHED_THREADS]
+
+
+def read_asked():
+    """{sender: parent_ts} — the thread each agent was most recently asked in.
+
+    The INVERSE of the thread map, and the piece that was missing. That map
+    answers "whose thread is this"; this one answers "which thread does this
+    agent owe an answer in", which is what the outbound half needs and could
+    not derive: by the time an agent replies, the only record was a mapping
+    from parents to senders, and searching it backwards would pick the oldest
+    thread rather than the one just asked.
+    """
+    try:
+        with open(ASKED) as f:
+            return json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_asked(asked):
+    if len(asked) > MAX_THREADS:
+        for old in list(asked)[:len(asked) - MAX_THREADS]:
+            del asked[old]
+    os.makedirs(os.path.dirname(ASKED), exist_ok=True)
+    tmp = ASKED + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(asked, f)
+    os.replace(tmp, ASKED)
+
+
+def note_question(message, addressing):
+    """Record that a human asked THIS agent in THIS thread.
+
+    Only for a message that both names one agent and sits in a thread. An
+    `@here` reaches everyone and belongs to no single answer, and a top-level
+    message has no thread for a reply to land in.
+    """
+    if not addressing or addressing[0] != "--to" or len(addressing) < 2:
+        return
+    parent = message.get("thread_ts") or message.get("ts")
+    if not parent:
+        return
+    asked = read_asked()
+    asked[addressing[1]] = parent
+    write_asked(asked)
 
 
 def read_reply_state():
@@ -432,13 +489,19 @@ def pump_out(config, slack):
     if _READ_STATE["broken"]:
         _READ_STATE["broken"] = False
         print("reading #%s again" % config["room"], file=sys.stderr)
+    asked = read_asked()
     for sender, line in lines:
+        # ANSWER IN THE THREAD THAT ASKED, when there is one. The human is
+        # watching that thread; a reply anywhere else reads as no reply.
+        parent = asked.pop(sender, None) if sender else None
         try:
             posted = slack.post(("*%s*: %s" % (sender, line)) if sender
-                                else line)
-            # The ts of what we just posted IS the thread root. Recording it is
-            # what lets a reply in that thread wake only this sender.
-            if isinstance(posted, dict) and posted.get("ok"):
+                                else line, thread_ts=parent)
+            # A NEW ROOT ONLY WHEN THIS ACTUALLY STARTED ONE. Recording every
+            # relay as a parent grew the map by one entry per message and made
+            # the thread a human was replying in stop being the newest, so
+            # their next reply competed with a pile of roots.
+            if isinstance(posted, dict) and posted.get("ok") and not parent:
                 remember_thread(posted.get("ts"), sender)
         except Exception as problem:
             # The message is already consumed from llm_chat's cursor at this
@@ -447,6 +510,10 @@ def pump_out(config, slack):
             # from nobody having said anything.
             print("LOST relaying to Slack: %s\n  %s" % (problem, line),
                   file=sys.stderr)
+    # Persisted once per pump rather than per message: the debts are only
+    # cleared above, so a crash mid-loop re-answers into the same thread,
+    # which is the harmless direction.
+    write_asked(asked)
     return len(lines)
 
 
@@ -467,8 +534,10 @@ def pump_in(config, slack):
     for message in messages:
         ts = message.get("ts")
         if is_from_a_human(message):
+            addressing = route(message, threads)
             if say(config["room"], config["identity"], message["text"],
-                   route(message, threads)):
+                   addressing):
+                note_question(message, addressing)
                 relayed += 1
         if ts:
             write_cursor(ts)
@@ -534,8 +603,10 @@ def pump_threads(config, slack, messages, threads):
                 # `thread_ts` is what `route` keys on, and a reply carries it —
                 # but only messages the human ALSO chose to broadcast appear in
                 # history, so this is where the routing finally gets its input.
+                addressing = route(reply, threads)
                 if say(config["room"], config["identity"], reply["text"],
-                       route(reply, threads)):
+                       addressing):
+                    note_question(reply, addressing)
                     relayed += 1
             if float(at) > float(newest):
                 newest = at

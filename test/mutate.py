@@ -352,6 +352,26 @@ MUTATIONS = [
      "every message in every room is destroyed and the command reports "
      "success — the where-clause IS the safety property"),
 
+    ("an answer lands in the thread that ASKED", "bin/llm-chat-slack",
+     '        if thread_ts:\n            body["thread_ts"] = thread_ts',
+     "        if False:\n            pass",
+     "every agent reply is a new top-level message, so a human watching the "
+     "thread they asked in sees silence while the answer appears elsewhere in "
+     "the channel — on a phone that is indistinguishable from no answer"),
+
+    ("only an ADDRESSED question creates a thread debt", "bin/llm-chat-slack",
+     '    if not addressing or addressing[0] != "--to" or len(addressing) < 2:',
+     "    if False:",
+     "an @here or a top-level message makes every later reply from every "
+     "agent land in one arbitrary thread"),
+
+    ("a STALE rewake is not evidence it landed", "bin/llm-chat-wake",
+     "    if time.time() - float(pending.get(\"at\") or 0) > REWAKE_GRACE:\n        return",
+     "    if False:\n        return",
+     "a turn beginning an hour after the rewake was requested is recorded as "
+     "proof the host wakes, restoring the false green this marker exists to "
+     "remove — doctor would say 'listening' on a host that never wakes"),
+
     ("THREAD REPLIES REACH THE ROOM", "bin/llm-chat-slack",
      "    return relayed + pump_threads(config, slack, messages, threads)",
      "    return relayed",
@@ -905,6 +925,19 @@ NOT_SWEPT = {
     "bin/llm-chat-slack:now":"a one-line seam over time.time(), swapped in "
         "tests so the age and recheck bounds are assertable without sleeping; "
         "mutating it asserts nothing about behaviour",
+    "bin/llm-chat-slack:read_asked": "asserted through the outbound threading "
+        "tests — an answer landing in the right thread IS this file being "
+        "read; the bound is asserted directly",
+    "bin/llm-chat-slack:write_asked": "asserted directly for the bound, and "
+        "through every outbound test for the round trip",
+    "bin/llm-chat-wake:note_rewake": "asserted directly — the note exists "
+        "after a rewake is requested, and its absence is what makes the "
+        "landing check say nothing",
+    "bin/llm-chat-wake:wake_landing": "every branch asserted directly — "
+        "fresh, stale, absent, corrupt and unwritable; the stale case is "
+        "additionally swept, being the one that could restore the false green",
+    "bin/llm_chat:wake_landing": "asserted directly — present, absent and "
+        "corrupt, plus that it names the host when it cannot confirm",
     "bin/llm-chat-slack:read_reply_state":"asserted through the relay tests "
         "— a reply arriving once and only once IS this file being read and "
         "written correctly; the bound is asserted directly",
