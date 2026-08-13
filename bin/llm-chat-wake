@@ -525,6 +525,17 @@ def poll(channel, entry):
     except Exception:
         # A chat outage must never break the session. The message stays queued
         # and the next poll picks it up.
+        #
+        # THAT SENTENCE WAS FALSE FOR AS LONG AS IT HAS BEEN HERE, and it is
+        # true now only because of where `do_read` commits its cursor. `read`
+        # advanced `seen_seq` before printing, so a read that reached the
+        # server and then blew this 8-second timeout marked the message read
+        # and returned None — delivered to nobody, unreachable forever,
+        # reported as `pending: 0` beside `owed: [{"seq": 41}]`.
+        #
+        # The cursor is committed last now, after the flush, so a timeout
+        # leaves it where it was. This comment depends on that and is wrong
+        # the moment it changes.
         return None
     if not out or out.startswith("nothing new"):
         return None

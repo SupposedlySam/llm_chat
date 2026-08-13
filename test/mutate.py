@@ -611,6 +611,25 @@ MUTATIONS = [
      "alarm that gets a guard switched off within the hour, and the same "
      "mistake this repo already corrected once in the remedy counter"),
 
+    ("the text is out before the cursor moves", "bin/llm_chat",
+     "        return _render(server, name, identity, fetched, all_messages, "
+     "as_json,\n                       commit_cursor)",
+     "        commit_cursor()\n"
+     "        return _render(server, name, identity, fetched, all_messages, "
+     "as_json,\n                       lambda: None)",
+     "the cursor advances before the message is printed, so a read that "
+     "reached the server and then lost its output — an 8-second subprocess "
+     "timeout, a killed child — marks the message read and delivers it to "
+     "nobody; reported as pending 0 beside owed seq 41, two facts that cannot "
+     "both be true"),
+
+    ("a successful read STILL advances the cursor", "bin/llm_chat",
+     "    commit_cursor()\n    return waiting",
+     "    return waiting",
+     "leaving the cursor alone on failure becomes leaving it alone at all — "
+     "every message is redelivered on every read, forever, which is the "
+     "opposite failure and just as useless"),
+
     ("a new waker does not bury why the last one stopped",
      "bin/llm-chat-wake",
      "        history = read_exits() + [record]",
@@ -868,6 +887,17 @@ NOT_SWEPT = {
         "is a wall rather than a redirection",
     "triggers/piped-verdict:main": "every branch asserted directly, including "
         "the visible escape hatch and the non-Bash tool",
+    "bin/llm_chat:commit_cursor": "its two properties are swept as ORDER "
+        "rather than as body — that the text is out before it runs, and that "
+        "it still runs on success. Both are asserted directly as well: a read "
+        "that dies mid-render leaves seen_seq at 0 and the message readable by "
+        "the next reader, a successful one advances and then says 'nothing "
+        "new', --json commits on its own exit path, and --peek commits nothing",
+    "bin/llm_chat:_render": "every branch through it is asserted directly — "
+        "the rendered path, the --json path, the nothing-new path with and "
+        "without earlier messages, the own-post filter and the closed-room "
+        "note. It is do_read's body, moved so that committing the cursor is "
+        "the LAST act of every exit rather than the first act of the function",
     "bin/llm_chat:last_server": "both directions asserted directly — the "
         "recorded server is printed, and an UNRECORDED one is not filled in "
         "with the default, which would be a definite claim about an unknown "

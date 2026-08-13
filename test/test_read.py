@@ -42,6 +42,146 @@ class ReadTest(unittest.TestCase):
             got = cli.do_read("http://127.0.0.1:1", channel, identity, **kwargs)
         return got, out.getvalue()
 
+    # ── the cursor moves LAST ───────────────────────────────────────────────
+    # Reported as `pending: 0` beside `owed: [{"seq": 41}]` — two facts that
+    # cannot both be true. Something read the message, advancing the shared
+    # cursor, and the wake it should have caused never landed. `owed` is the
+    # only reason it was noticed rather than simply lost.
+
+    def cursor_writes(self):
+        """Every seen_seq write this read performs, in order."""
+        writes = []
+        real = cli.update
+
+        def watched(server, table, where, values):
+            if table == "memberships" and "seen_seq" in values:
+                writes.append(values["seen_seq"])
+            return real(server, table, where, values)
+
+        cli.update = watched
+        self.addCleanup(lambda: setattr(cli, "update", real))
+        return writes
+
+    def test_THE_TEXT_IS_OUT_BEFORE_THE_CURSOR_MOVES(self):
+        """The order, asserted as an order rather than as an outcome.
+
+        Both deliverers run this CLI as a subprocess with an 8-second timeout
+        and read only its stdout. Advancing first meant a read that reached the
+        server and then lost its output — a timeout, a killed child — left the
+        cursor advanced and the text delivered to nobody. Both call sites say
+        "the message is still queued and arrives on the next poll", which was
+        true only if the read never reached the server at all.
+        """
+        self.fake.channel("room")
+        self.fake.membership("room", "me", seen_seq=0)
+        self.fake.message("room", 1, "other", "hello")
+
+        events = []
+        real = cli.update
+
+        def watched(server, table, where, values):
+            if table == "memberships" and "seen_seq" in values:
+                events.append("cursor")
+            return real(server, table, where, values)
+
+        cli.update = watched
+        self.addCleanup(lambda: setattr(cli, "update", real))
+
+        class Watched(io.StringIO):
+            def write(self, text):
+                if text.strip():
+                    events.append("text")
+                return io.StringIO.write(self, text)
+
+        with redirect_stdout(Watched()):
+            cli.do_read("http://127.0.0.1:1", "room", "me")
+
+        self.assertIn("text", events)
+        self.assertIn("cursor", events)
+        self.assertLess(events.index("text"), events.index("cursor"),
+                        "the cursor advanced before the message was printed — "
+                        "a caller that loses stdout loses the message")
+
+    def test_A_READ_THAT_DIES_MID_RENDER_LEAVES_THE_CURSOR_ALONE(self):
+        """The failure that loses a message, run as a failure.
+
+        With the cursor advanced first this passes silently and the message is
+        gone: `read` reports nothing new, `read --all` still shows it, and
+        `owed` says an answer is due to something never seen.
+        """
+        self.fake.channel("room")
+        self.fake.membership("room", "me", seen_seq=0)
+        self.fake.message("room", 1, "other", "hello")
+        writes = self.cursor_writes()
+
+        real = cli.describe_audience
+
+        def boom(*a, **kw):
+            raise RuntimeError("the render died")
+
+        cli.describe_audience = boom
+        self.addCleanup(lambda: setattr(cli, "describe_audience", real))
+
+        with self.assertRaises(RuntimeError):
+            with redirect_stdout(io.StringIO()):
+                cli.do_read("http://127.0.0.1:1", "room", "me")
+
+        self.assertEqual(writes, [],
+                         "the cursor moved for a message that was never "
+                         "delivered — it is now unreachable forever")
+        self.assertEqual(
+            self.fake.get_membership("room", "me").get("seen_seq", 0), 0)
+
+    def test_the_message_is_STILL_THERE_for_the_next_reader(self):
+        """The point of leaving the cursor alone, stated as the outcome that
+        matters: at-least-once instead of at-most-once."""
+        self.fake.channel("room")
+        self.fake.membership("room", "me", seen_seq=0)
+        self.fake.message("room", 1, "other", "hello")
+
+        real = cli.describe_audience
+        cli.describe_audience = lambda *a, **kw: (_ for _ in ()).throw(
+            RuntimeError("died"))
+        with self.assertRaises(RuntimeError):
+            with redirect_stdout(io.StringIO()):
+                cli.do_read("http://127.0.0.1:1", "room", "me")
+        cli.describe_audience = real
+
+        _, text = self.read()
+        self.assertIn("hello", text)
+
+    def test_A_SUCCESSFUL_READ_STILL_ADVANCES(self):
+        """Paired, and the one that matters most: leaving the cursor alone on
+        failure must not become leaving it alone at all, which would redeliver
+        every message forever."""
+        self.fake.channel("room")
+        self.fake.membership("room", "me", seen_seq=0)
+        self.fake.message("room", 1, "other", "hello")
+        writes = self.cursor_writes()
+        self.read()
+        self.assertEqual(writes, [1])
+        _, again = self.read()
+        self.assertIn("nothing new", again)
+
+    def test_JSON_output_commits_the_cursor_too(self):
+        """The other exit from the render. A branch that returns early without
+        committing would never advance for the delivery hook, which is the
+        only caller that uses --json."""
+        self.fake.channel("room")
+        self.fake.membership("room", "me", seen_seq=0)
+        self.fake.message("room", 1, "other", "hello")
+        writes = self.cursor_writes()
+        self.read(as_json=True)
+        self.assertEqual(writes, [1])
+
+    def test_PEEK_still_commits_nothing(self):
+        self.fake.channel("room")
+        self.fake.membership("room", "me", seen_seq=0)
+        self.fake.message("room", 1, "other", "hello")
+        writes = self.cursor_writes()
+        self.read(peek=True)
+        self.assertEqual(writes, [])
+
     # ── the cursor ──────────────────────────────────────────────────────────
     def test_cursor_advances_only_to_what_was_actually_read(self):
         """A message arriving mid-read must not be stepped over.

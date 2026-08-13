@@ -1418,8 +1418,9 @@ def do_say(server, name, identity, text, audience=None, thread=None):
 def do_read(server, name, identity, peek=False, all_messages=False,
             as_json=False):
     # Claiming the messages and advancing the cursor is ONE decision and has to
-    # be atomic against the other deliverer; rendering them is not, and happens
-    # after the lock is dropped.
+    # be atomic against the other deliverer. Rendering is not, but it now
+    # happens inside the lock anyway — see `commit_cursor` below for why the
+    # ORDER matters more than the scope.
     with read_lock():
         member = get_membership(server, name, identity)
         if member is None:
@@ -1436,10 +1437,46 @@ def do_read(server, name, identity, peek=False, all_messages=False,
         # Reproduced by widening that window and watching a message vanish from
         # delivery while staying visible in `read --all`.
         high_water = max((m["seq"] for m in fetched), default=since)
-        if not peek and high_water > since:
-            update(server, "memberships", eq("id", member["id"]),
-                   {"seen_seq": high_water})
 
+        def commit_cursor():
+            """Advance the cursor, AFTER the words have left this process.
+
+            The order was the other way round and it lost messages. Both
+            deliverers run this CLI as a subprocess with an 8-second timeout
+            and read only its stdout, so a read that reached the server and
+            then lost its output — a slow render, a timeout, a killed child —
+            left the cursor advanced and the text delivered to nobody. Both
+            call sites say "the message is still queued and arrives on the
+            next poll", which was true only if the read never reached the
+            server at all.
+
+            Reported as `pending: 0` beside `owed: [{"seq": 41}]` — two facts
+            that cannot both be true. `owed` is the only reason it was noticed
+            rather than simply lost.
+
+            Advancing last turns at-most-once into at-least-once: if this
+            process dies between the flush and the write, the next reader sees
+            the message again. That is the correct direction for this system
+            and the one the reporter asked for. This repo already made the
+            same trade in `read_lock`, which fails open because "a wedged
+            delivery is worse than a rare duplicate".
+            """
+            if not peek and high_water > since:
+                sys.stdout.flush()
+                update(server, "memberships", eq("id", member["id"]),
+                       {"seen_seq": high_water})
+
+        return _render(server, name, identity, fetched, all_messages, as_json,
+                       commit_cursor)
+
+
+def _render(server, name, identity, fetched, all_messages, as_json,
+            commit_cursor):
+    """Print what was claimed, then commit the claim.
+
+    Split out so that every exit from the rendering runs `commit_cursor` as
+    its LAST act, and so that a raise on the way through cannot commit one.
+    """
     waiting = fetched
     # Never hand an agent its own words back *as new input*. Without this it
     # reads its last message as something to answer and replies to itself — a
@@ -1470,6 +1507,7 @@ def do_read(server, name, identity, peek=False, all_messages=False,
                            "thread": m.get("thread"),
                            "mine": m["from_identity"] == identity}
                           for m in waiting]))
+        commit_cursor()
         return waiting
 
     chan_for_mark = get_channel(server, name) or {}
@@ -1502,6 +1540,7 @@ def do_read(server, name, identity, peek=False, all_messages=False,
     if chan and chan.get("closed"):
         print(f"({name} is closed — {chan.get('closed_reason') or 'no reason given'})")
 
+    commit_cursor()
     return waiting
 
 

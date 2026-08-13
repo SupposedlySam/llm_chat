@@ -336,6 +336,13 @@ def main() -> int:
             # A chat outage must never break the session that is trying to
             # work. Staying quiet is the right failure: the message is still
             # queued and arrives on the next tool call.
+            #
+            # TRUE ONLY BECAUSE `do_read` COMMITS ITS CURSOR LAST. It used to
+            # advance `seen_seq` before printing, so a read that reached the
+            # server and then blew this 8-second timeout marked the message
+            # read and dropped it — the same loss the waker had, through the
+            # same sentence claiming it could not happen. Wrong again the
+            # moment that order changes.
             continue
 
         try:
