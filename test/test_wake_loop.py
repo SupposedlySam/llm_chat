@@ -159,8 +159,19 @@ class WakeLoopTest(unittest.TestCase):
         self.assertNotIn("#notices", err.getvalue())
 
     def exit_record(self):
+        """The NEWEST exit record. The file holds a history now — see #11: one
+        slot meant a new waker starting destroyed the evidence about why the
+        old one stopped, which is the only question the file exists for."""
+        return self.exit_records()[-1]
+
+    def exit_records(self):
         import json as _json
         with open(os.path.join(self.project, ".llm_chat", "wake.exit")) as f:
+            return _json.load(f)
+
+    def alive_record(self):
+        import json as _json
+        with open(os.path.join(self.project, ".llm_chat", "wake.alive")) as f:
             return _json.load(f)
 
     def test_it_records_WHY_it_stopped(self):
@@ -200,10 +211,20 @@ class WakeLoopTest(unittest.TestCase):
         self.run_main()
         self.assertIn("pidfile", self.exit_record()["reason"])
 
-    def test_a_running_waker_records_running_and_not_a_reason(self):
-        """The discriminating value. If a waker is gone but the record still
-        says 'running', it never chose to stop — something outside killed it,
-        which is a different diagnosis from every other value here."""
+    def test_a_LIVE_waker_is_recorded_somewhere_that_destroys_nothing(self):
+        """This test used to assert that `running` was written into wake.exit,
+        and that assertion was the bug — issue #11.
+
+        The value it was protecting is real and is kept: a waker that is gone
+        while the record says it was running never CHOSE to stop, so something
+        outside killed it, which is a different diagnosis from every other
+        reason. But writing it to wake.exit meant a starting waker overwrote
+        the record of the one it replaced, and on this host a window reload
+        starts one. The file then described the healthy waker and never the
+        failed one — in exactly the case somebody was reading it for.
+
+        So `running` moved to wake.alive, where it answers only that question
+        and cannot displace an answer to another."""
         self.mod.addressed = lambda channel, entry: {"wakes_me": True,
                                                      "messages": []}
         self.mod.poll = lambda channel, entry: "[other] hi"
@@ -215,8 +236,123 @@ class WakeLoopTest(unittest.TestCase):
             with self.assertRaises(SystemExit):
                 self.run_main()
         self.mod.record_exit = real
-        self.assertEqual(recorded[0], "running")
+        self.assertNotIn("running", recorded)
         self.assertIn("woke", recorded[-1])
+        self.assertEqual(self.alive_record()["pid"], os.getpid())
+
+    def test_A_NEW_WAKER_DOES_NOT_BURY_WHY_THE_LAST_ONE_STOPPED(self):
+        """The whole of #11 in one assertion.
+
+        Reported with the file reading {"reason": "running", "pid": 503} — pid
+        503 being the waker that started AFTER the failure under investigation.
+        The record of the one alive when the message arrived was gone. That is
+        structural, not unlucky: a new waker starting is the event that
+        destroys the evidence about why the old one stopped."""
+        self.mod.claim_pidfile = lambda: False
+        self.run_main()                       # the waker that failed
+        first = self.exit_records()
+        self.assertEqual(len(first), 1)
+
+        self.mod.addressed = lambda channel, entry: None
+        self.mod.claim_pidfile = lambda: True
+        self.mod.superseded = lambda: True
+        self.mod.time = NoSleep()
+        self.run_main()                       # its healthy replacement
+
+        reasons = [r["reason"] for r in self.exit_records()]
+        self.assertIn("pidfile", reasons[-2])
+        self.assertIn("superseded", reasons[-1])
+
+    def test_the_history_is_CAPPED_so_the_file_stays_readable(self):
+        """Kept small on purpose. The point is the pair — the waker that
+        stopped and the one that replaced it — not a log nobody reads."""
+        self.mod.claim_pidfile = lambda: False
+        for _ in range(self.mod.KEEP_EXITS + 3):
+            self.run_main()
+        self.assertEqual(len(self.exit_records()), self.mod.KEEP_EXITS)
+
+    def test_the_ONE_RECORD_format_is_still_readable(self):
+        """An installed waker is mid-flight when this ships, and the record it
+        already wrote is the one somebody will be interrogating. Discarding it
+        would repeat this bug once at upgrade time, which is a poor way to fix
+        it."""
+        path = os.path.join(self.project, ".llm_chat", "wake.exit")
+        with open(path, "w") as f:
+            json.dump({"reason": "in no rooms", "pid": 41, "at": 1}, f)
+        self.assertEqual(self.mod.read_exits()[0]["pid"], 41)
+        self.mod.claim_pidfile = lambda: False
+        self.run_main()
+        self.assertEqual(len(self.exit_records()), 2)
+        self.assertIn("no rooms", self.exit_records()[0]["reason"])
+
+    def test_a_corrupt_history_does_not_break_the_exit_being_recorded(self):
+        """Bookkeeping must never break the thing it describes, and a file
+        that is a list of the wrong things is as likely as one that is not
+        JSON."""
+        path = os.path.join(self.project, ".llm_chat", "wake.exit")
+        for junk in ("{not json", "[1, 2, 3]", '"a string"', "[]"):
+            with self.subTest(junk=junk):
+                with open(path, "w") as f:
+                    f.write(junk)
+                self.assertEqual(self.mod.read_exits(), [])
+                self.mod.record_exit("whatever")
+                # The junk is dropped and the new record is the only one —
+                # asserted by LENGTH, because `[-1]` alone would pass on a
+                # history that kept three integers in front of it.
+                self.assertEqual(len(self.exit_records()), 1)
+                self.assertIn("whatever", self.exit_records()[-1]["reason"])
+
+    def test_an_exit_records_the_SERVER_it_was_polling(self):
+        """"The waker died" and "the waker was fine and its backend went away"
+        have opposite remedies and were indistinguishable after the fact. The
+        reporter's own incident was the second — they restarted the zonai
+        server five minutes before the message that never arrived."""
+        self.mod.claim_pidfile = lambda: False
+        self.run_main()
+        self.assertEqual(self.exit_record()["server"], "http://127.0.0.1:1")
+
+    def test_A_STUB_SESSION_SAYS_SO_rather_than_standing_down_silently(self):
+        """Issue #12. A window reload mints a new session id; the waker armed
+        under it is in no rooms because the rooms stayed with the id that
+        joined them. "Nothing to listen for" is true and useless — it reads as
+        an empty project, and the agent goes permanently deaf with every other
+        check green."""
+        base = os.path.join(self.project, ".llm_chat", "sessions", "5930ff25")
+        os.makedirs(base, exist_ok=True)
+        with open(os.path.join(base, "joined.json"), "w") as f:
+            json.dump({"room": {"identity": "someone"}}, f)
+        with open(os.path.join(self.project, ".llm_chat", "joined.json"),
+                  "w") as f:
+            json.dump({}, f)
+        self.assertEqual(self.run_main(), 0)
+        reason = self.exit_record()["reason"]
+        self.assertIn("identity split", reason)
+        self.assertIn("5930ff25", reason)
+
+    def test_A_WAKER_DOES_NOT_REPORT_A_SPLIT_WITH_ITSELF(self):
+        """The false alarm this is one line away from. A waker reaches the
+        stand-down only when it is in no rooms, and its own session directory
+        can hold an EMPTY joined.json — a file, present, holding nothing. Count
+        that and every ordinary empty session accuses itself of an identity
+        split, which is the kind of noise that gets a diagnostic ignored."""
+        self.mod._SID = "eaf6e8d1"
+        mine = os.path.join(self.project, ".llm_chat", "sessions", "eaf6e8d1")
+        os.makedirs(mine, exist_ok=True)
+        with open(os.path.join(mine, "joined.json"), "w") as f:
+            json.dump({}, f)
+        self.assertEqual(self.mod.sessions_holding_rooms(), [])
+
+    def test_an_EMPTY_PROJECT_is_still_reported_as_simply_empty(self):
+        """Paired. Being in no rooms while nobody else holds any is the
+        ordinary case and must not be dressed up as a split — a check that
+        cries wolf on the healthy path is worse than no check."""
+        with open(os.path.join(self.project, ".llm_chat", "joined.json"),
+                  "w") as f:
+            json.dump({}, f)
+        self.assertEqual(self.run_main(), 0)
+        reason = self.exit_record()["reason"]
+        self.assertIn("nothing to listen for", reason)
+        self.assertNotIn("identity split", reason)
 
     def test_sigterm_is_recorded_rather_than_looking_like_a_crash(self):
         handled = []
@@ -229,6 +365,43 @@ class WakeLoopTest(unittest.TestCase):
         """Bookkeeping must never break the thing it describes."""
         self.mod.EXIT_PATH = "/proc/nope/wake.exit"
         self.mod.record_exit("whatever")     # must not raise
+
+    def test_an_unwritable_state_dir_does_not_break_the_LIVE_record_either(self):
+        """Paired with it, and the newer of the two files — a rule that holds
+        for one bookkeeping write and not the other is not a rule."""
+        self.mod.ALIVE_PATH = "/proc/nope/wake.alive"
+        self.mod.record_alive("http://x")    # must not raise
+
+    def test_A_BROKEN_ROOM_FILE_does_not_break_the_exit_it_describes(self):
+        """`_polling_server` reads rooms while an exit is being recorded, and
+        an exception there would destroy the record explaining the exit — the
+        bookkeeping killing the thing it exists to describe."""
+        def boom():
+            raise RuntimeError("unreadable")
+        self.mod.joined_rooms = boom
+        self.assertIsNone(self.mod._polling_server())
+        self.mod.record_exit("still recorded")
+        self.assertIn("still recorded", self.exit_record()["reason"])
+
+    def test_BOTH_RECORDS_NAME_THE_SESSION_that_wrote_them(self):
+        """wake.exit and wake.alive are PROJECT-level while a waker is
+        session-scoped, so without this two wakers' records are
+        indistinguishable in the one file they share — which is issue #12
+        arriving inside the fix for issue #11."""
+        self.mod._SID = "5930ff25"
+        self.mod.claim_pidfile = lambda: False
+        self.run_main()
+        self.assertEqual(self.exit_record()["session"], "5930ff25")
+        self.mod.record_alive("http://127.0.0.1:1")
+        self.assertEqual(self.alive_record()["session"], "5930ff25")
+
+    def test_no_session_id_leaves_the_field_OUT_rather_than_empty(self):
+        """Paired. A human at a terminal has no session, and an empty string
+        there would read as a session whose id is blank."""
+        self.mod._SID = ""
+        self.mod.claim_pidfile = lambda: False
+        self.run_main()
+        self.assertNotIn("session", self.exit_record())
 
     def test_it_stands_down_once_every_room_has_closed(self):
         """Nothing can arrive any more, so polling forever would be waste."""

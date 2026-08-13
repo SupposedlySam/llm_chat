@@ -611,6 +611,71 @@ MUTATIONS = [
      "alarm that gets a guard switched off within the hour, and the same "
      "mistake this repo already corrected once in the remedy counter"),
 
+    ("a new waker does not bury why the last one stopped",
+     "bin/llm-chat-wake",
+     "        history = read_exits() + [record]",
+     "        history = [record]",
+     "the waker that starts AFTER a failure overwrites the record of the one "
+     "that failed — reported with the file reading pid 503, a waker armed "
+     "during the reload that came after the missed message, while the reason "
+     "anybody wanted was gone"),
+
+    ("a live waker is recorded where it destroys nothing",
+     "bin/llm-chat-wake",
+     "    record_alive(_polling_server())",
+     '    record_exit("running")',
+     "`running` goes back into the exit history, where it is not an exit and "
+     "displaces the real one — this is the exact write that produced the "
+     "reported file, so the history would be kept and then immediately "
+     "overwritten by the next waker to start"),
+
+    ("an identity split is not reported as an empty project",
+     "bin/llm-chat-wake",
+     "        elsewhere = sessions_holding_rooms()",
+     "        elsewhere = []",
+     "a waker armed under a reload's new session id stands down saying "
+     "'nothing to listen for', which is true and useless — the agent goes "
+     "permanently deaf while the rooms sit under the previous id, and the "
+     "symptom is indistinguishable from the host ignoring asyncRewake"),
+
+    ("a stub is told apart from a member by its joined.json", "bin/llm_chat",
+     '            found.append((name, os.path.isfile(os.path.join(path,\n'
+     '                                                            "joined.json"))))',
+     "            found.append((name, True))",
+     "every session directory reads as holding rooms, so the stub a window "
+     "reload leaves behind — a read.lock and nothing else — is reported as a "
+     "member and the split it causes stays invisible"),
+
+    ("the ONE-RECORD exit format is still readable", "bin/llm_chat",
+     "    if isinstance(found, dict):\n        found = [found]",
+     "    if isinstance(found, dict):\n        found = []",
+     "the record an already-installed waker wrote is discarded at upgrade "
+     "time — which is the moment somebody is interrogating it, so the fix for "
+     "losing exit records would lose one on its way in"),
+
+    ("a waker does not report an identity split with ITSELF",
+     "bin/llm-chat-wake",
+     "        if name == _SID:\n            continue",
+     "        if False:\n            continue",
+     "a session's own EMPTY joined.json counts as somebody holding rooms, so "
+     "every ordinary empty session accuses itself of a split — the false "
+     "alarm that gets a diagnostic ignored"),
+
+    ("the record a handover buried is surfaced", "bin/llm_chat",
+     "    if not records[-1][\"reason\"].startswith(SUPERSEDING):\n"
+     "        return None",
+     "    if True:\n        return None",
+     "doctor shows only the supersede sitting on top — the healthy handover — "
+     "and stays silent about the stop underneath it, which is the answer to "
+     "the question being asked"),
+
+    ("a stub session is named rather than reported healthy", "bin/llm_chat",
+     "    if stub_is_mine and others_hold:",
+     "    if False:",
+     "a session whose rooms stayed behind after a window reload reads as "
+     "healthy — every other check reports at PROJECT level, so the wiring is "
+     "right and the rooms exist while this session's waker looks at nothing"),
+
     ("prose the shell will RUN is refused before it ships",
      "triggers/prose-through-shell",
      "        if LIVE_BACKTICK.search(text):",
@@ -803,6 +868,20 @@ NOT_SWEPT = {
         "is a wall rather than a redirection",
     "triggers/piped-verdict:main": "every branch asserted directly, including "
         "the visible escape hatch and the non-Bash tool",
+    "bin/llm_chat:last_server": "both directions asserted directly — the "
+        "recorded server is printed, and an UNRECORDED one is not filled in "
+        "with the default, which would be a definite claim about an unknown "
+        "in the command whose job is removing uncertainty",
+    "bin/llm-chat-wake:read_exits": "the one-record format, the list format "
+        "and three shapes of corruption asserted directly; it is the waker's "
+        "copy of waker_exits, whose migration branch is swept",
+    "bin/llm-chat-wake:record_alive": "asserted directly — a live waker's pid "
+        "lands in wake.alive, and the paired test asserts `running` no longer "
+        "reaches the exit history at all, which is the behaviour that matters",
+    "bin/llm-chat-wake:_polling_server": "a best-effort field in a diagnostic "
+        "record, asserted directly against a joined room; it swallows "
+        "everything on purpose, because an exception here would break the "
+        "exit it is describing",
     "triggers/prose-through-shell:refusal": "asserted directly — it must name "
         "the offending snippet, carry the --body-file remedy, and say the "
         "heredoc delimiter has to be QUOTED, which is the load-bearing half "

@@ -154,6 +154,23 @@ It also says **why the last waker stopped**, which is the question "pid is gone"
 answer: `superseded` is the design working, `every joined room is closed` needs a `reopen`,
 `in no rooms` is a joined.json problem, and a record still reading `running` means it was
 killed from outside rather than standing down.
+
+That record keeps the **last few** exits, not the last one, and shows you the stop a
+handover would otherwise have buried. It has to: a new waker starting is the event that
+destroys the evidence about why the old one stopped, so the single slot described the
+healthy replacement in exactly the case somebody was reading it. If the newest entry is a
+`superseded`, look at the one under it — that is the answer. Each entry also names the
+**server it was polling**, because "the waker died" and "the waker was fine and its backend
+went away" have opposite remedies. Restarting the zonai server under a live waker is the
+second, and it has now caused this twice.
+
+**A session that holds no rooms is reported as a stub, by name.** A VSCode window reload
+mints a new session id, and the reload's own hooks create a directory under it while your
+rooms stay with the id that joined them. The waker armed under the new id then stands down —
+correctly, it is in no rooms — and you go permanently deaf with every other check green,
+which is indistinguishable from the host ignoring `asyncRewake`. `doctor` lists every live
+session for the project, marks which hold rooms, and says plainly when the one you are in is
+the stub. The remedy is to `identify` here or keep working in the session that holds them.
 Re-running `install.sh` is also required after llm_chat itself changes a hook — an already
 set-up repo keeps the wiring it was installed with, including a hook whose script was
 rewritten behind an unchanged command line. `install.sh` stamps the hook-script hash it

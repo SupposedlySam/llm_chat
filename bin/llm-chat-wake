@@ -83,6 +83,16 @@ JOINED = (os.path.join(SESSION_STATE, "joined.json")
           else os.path.join(STATE, "joined.json"))
 PID_PATH = os.path.join(STATE, "wake.pid")
 EXIT_PATH = os.path.join(STATE, "wake.exit")
+# The LIVE waker, kept apart from the exit history on purpose. `reason:
+# running` used to be written into wake.exit, where it read as an exit record
+# and — worse — destroyed the real one. See record_exit.
+ALIVE_PATH = os.path.join(STATE, "wake.alive")
+
+# How many exit records to keep. The failure this is sized for is a waker
+# stopping and its replacement starting immediately, so the minimum useful
+# number is two. Four covers a VSCode window reload, which starts more than one
+# on this host, and is still small enough to read at a glance.
+KEEP_EXITS = 4
 REWAKE_PATH = os.path.join(STATE, "wake.rewake")
 LANDED_PATH = os.path.join(STATE, "wake.landed")
 
@@ -131,16 +141,130 @@ def record_exit(reason):
     was just unrecorded.
 
     Best-effort, and never allowed to break the exit it is describing.
+
+    A HISTORY, NOT A SLOT, and that is the whole of issue #11. The first
+    version wrote one record and truncated, which made the file answer the
+    wrong question in exactly the case it was built for:
+
+        $ cat .llm_chat/wake.exit
+        {"reason": "running", "pid": 503, ...}
+
+    pid 503 was the waker that started AFTER the failure. The record of the one
+    that was alive when the message arrived — the only reason anybody wanted —
+    had been overwritten by its replacement. The failure mode is structural:
+    A NEW WAKER STARTING IS THE EVENT THAT DESTROYS THE EVIDENCE ABOUT WHY THE
+    OLD ONE STOPPED, and on this host a window reload starts one. So the file
+    described the healthy waker and never the failed one.
+
+    Two things follow, and both are in the shape of the file now. `running` is
+    not an exit and no longer goes here at all — it lives in wake.alive, where
+    it cannot displace anything. And exits APPEND, keeping the last few, so a
+    supersede cannot bury the reason it superseded.
+
+    The SERVER is recorded because "the waker died" and "the waker was fine and
+    its backend went away" have sharply different remedies and were
+    indistinguishable after the fact. The reporter's own incident was the
+    second: they restarted the zonai server five minutes before the message.
+
+    The SESSION is recorded because of issue #12 — this file is project-level
+    while a waker is session-scoped, so without it two wakers' records are
+    indistinguishable in the one file they share.
     """
+    record = {"reason": reason, "pid": os.getpid(), "at": int(time.time())}
+    if _SID:
+        record["session"] = _SID
+    server = _polling_server()
+    if server:
+        record["server"] = server
     try:
         os.makedirs(os.path.dirname(EXIT_PATH), exist_ok=True)
+        history = read_exits() + [record]
         tmp = EXIT_PATH + ".tmp"
         with open(tmp, "w") as f:
-            json.dump({"reason": reason, "pid": os.getpid(),
-                       "at": int(time.time())}, f)
+            json.dump(history[-KEEP_EXITS:], f)
         os.replace(tmp, EXIT_PATH)
     except OSError:
         pass
+
+
+def read_exits():
+    """The exit history, oldest first. [] when there is none.
+
+    Reads the ONE-RECORD format too, because an installed waker is mid-flight
+    when this ships and the file it already wrote is the one somebody will be
+    interrogating. A migration that discards the previous record would repeat
+    this bug once, at upgrade time, which is a poor way to fix it.
+    """
+    try:
+        with open(EXIT_PATH) as f:
+            found = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if isinstance(found, dict):
+        return [found]
+    return [r for r in found if isinstance(r, dict)] if isinstance(found, list) else []
+
+
+def record_alive(server=None):
+    """This waker is running, in a file that answers only that question.
+
+    Separate from wake.exit because `reason: running` there was both a lie —
+    it is not an exit — and a destroyer of the record next to it.
+    """
+    try:
+        os.makedirs(os.path.dirname(ALIVE_PATH), exist_ok=True)
+        record = {"pid": os.getpid(), "at": int(time.time())}
+        if _SID:
+            record["session"] = _SID
+        if server:
+            record["server"] = server
+        tmp = ALIVE_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(record, f)
+        os.replace(tmp, ALIVE_PATH)
+    except OSError:
+        pass
+
+
+def sessions_holding_rooms():
+    """Other sessions in this project that DO hold an identity.
+
+    MIRRORS bin/llm_chat's live_sessions. Duplicated rather than imported for
+    the same reason the rest of this file duplicates its conventions: the
+    waker is spawned by a hook and must not depend on the CLI being importable.
+
+    Only the ones that are not this waker's own — being in no rooms while
+    somebody ELSE holds them is the split; being in no rooms alone is just an
+    empty project.
+    """
+    base = os.path.join(STATE, "sessions")
+    found = []
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return found
+    for name in names:
+        if name == _SID:
+            continue
+        if os.path.isfile(os.path.join(base, name, "joined.json")):
+            found.append(name)
+    return found
+
+
+def _polling_server():
+    """The server this waker is bound to, or None before rooms are resolved.
+
+    Best-effort by design: it is a field in a diagnostic record, and an
+    exception here would break the exit it is describing.
+    """
+    try:
+        for entry in (joined_rooms() or {}).values():
+            found = entry.get("server")
+            if found:
+                return found
+    except Exception:
+        pass
+    return None
 
 
 def on_term(_signum, _frame):
@@ -580,7 +704,18 @@ def main() -> int:
 
     rooms = joined_rooms()
     if not rooms:
-        record_exit("in no rooms — nothing to listen for")
+        # TWO DIFFERENT SILENCES, and they used to be one. "Nobody joined
+        # anything" is the ordinary case and healthy. "Somebody joined
+        # something, under a DIFFERENT session id in this same project" is
+        # issue #12: a window reload minted a new id, this waker was armed
+        # under it, and the rooms stayed with the id that joined them. The
+        # agent then goes permanently deaf while every check reports fine.
+        elsewhere = sessions_holding_rooms()
+        if elsewhere:
+            record_exit("in no rooms — but session %s holds rooms for this "
+                        "project (identity split)" % ", ".join(elsewhere))
+        else:
+            record_exit("in no rooms — nothing to listen for")
         return 0  # exit before touching the network
 
     if not claim_pidfile():
@@ -588,7 +723,9 @@ def main() -> int:
         return 0
 
     signal.signal(signal.SIGTERM, on_term)
-    record_exit("running")     # overwritten by whatever actually ends it
+    # NOT into wake.exit. Writing "running" there made a live waker overwrite
+    # the record of the dead one it replaced — see record_exit, and #11.
+    record_alive(_polling_server())
     # ONE doorbell for this project's identity. Bound before the first check,
     # so a message arriving during the reconcile below rings rather than being
     # missed between "I looked" and "I started listening".

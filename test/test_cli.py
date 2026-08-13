@@ -498,6 +498,148 @@ class DoctorTest(unittest.TestCase):
         self.joined()
         self.assertIn("no exit record", self.report())
 
+    # ── the record a handover would have buried (issue #11) ─────────────────
+
+    def exit_history(self, *records):
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "wake.exit"), "w") as f:
+            json.dump(list(records), f)
+
+    def test_THE_BURIED_RECORD_IS_SHOWN_when_a_supersede_sits_on_top(self):
+        """The whole of #11 from the reading side. A supersede on top says a
+        newer waker took over — healthy, and silent about the failure being
+        investigated. The reporter found exactly this and the answer was
+        already gone."""
+        self.joined()
+        self.exit_history(
+            {"reason": "orphaned — the session that armed it is gone",
+             "pid": 41, "at": cli.now_ms() // 1000},
+            {"reason": "superseded by a newer waker (healthy)",
+             "pid": 503, "at": cli.now_ms() // 1000})
+        text = self.report()
+        self.assertIn("the one BEFORE it", text)
+        self.assertIn("orphaned", text)
+        self.assertIn("41", text)
+
+    def test_a_REAL_stop_on_top_is_the_answer_and_nothing_is_dug_up(self):
+        """Paired. The buried record only matters when the newest one is a
+        handover; showing it always would bury the actual answer in noise."""
+        self.joined()
+        self.exit_history(
+            {"reason": "superseded by a newer waker (healthy)", "pid": 41},
+            {"reason": "every joined room is closed — nothing can arrive",
+             "pid": 503})
+        self.assertNotIn("the one BEFORE it", self.report())
+
+    def test_one_record_alone_has_nothing_underneath_it(self):
+        self.joined()
+        self.exit_history({"reason": "superseded by a newer waker", "pid": 1})
+        self.assertIsNone(cli.masked_exit(self.project))
+
+    def test_THE_SERVER_IT_WAS_POLLING_is_reported(self):
+        """"The waker died" and "its backend went away" have opposite remedies
+        and were indistinguishable after the fact. The reporter's incident was
+        the second: they restarted zonai five minutes before the message."""
+        self.joined()
+        self.exit_history({"reason": "orphaned", "pid": 41,
+                           "server": "http://localhost:7717"})
+        text = self.report()
+        self.assertIn("http://localhost:7717", text)
+        self.assertIn("likelier explanation", text)
+
+    def test_an_UNRECORDED_server_is_not_invented(self):
+        """Paired. A waker that predates this field must not be reported as
+        polling the default — that is a definite claim about an unknown."""
+        self.joined()
+        self.exit_history({"reason": "orphaned", "pid": 41})
+        self.assertIsNone(cli.last_server(self.project))
+        self.assertNotIn("it was polling", self.report())
+
+    def test_the_ONE_RECORD_format_still_reads(self):
+        """An installed waker is mid-flight when this ships, and the file it
+        already wrote is the one somebody will be interrogating."""
+        self.joined()
+        self.exited("orphaned — the session that armed it is gone")
+        self.assertIn("orphaned", self.report())
+
+    def test_a_history_of_the_WRONG_SHAPE_reads_as_no_record(self):
+        self.joined()
+        d = os.path.join(self.project, ".llm_chat")
+        for junk in ([1, 2, "three"], "a string", 7):
+            with self.subTest(junk=junk):
+                with open(os.path.join(d, "wake.exit"), "w") as f:
+                    json.dump(junk, f)
+                self.assertEqual(cli.waker_exits(self.project), [])
+                self.assertIn("no exit record", self.report())
+
+    # ── a session that holds no rooms (issue #12) ───────────────────────────
+
+    def session(self, sid, rooms=None):
+        d = os.path.join(self.project, ".llm_chat", "sessions", sid)
+        os.makedirs(d, exist_ok=True)
+        if rooms is not None:
+            with open(os.path.join(d, "joined.json"), "w") as f:
+                json.dump(rooms, f)
+        else:                      # a stub: the reload's own hooks made this
+            open(os.path.join(d, "read.lock"), "w").close()
+
+    def test_A_STUB_SESSION_IS_NAMED_rather_than_reported_healthy(self):
+        """Everything else in doctor reports at PROJECT level, which reads as
+        fine while this session's waker is looking at nothing. A window reload
+        mints a new id; the rooms stay with the id that joined them."""
+        self.joined()
+        self.session("5930ff25", {"room": {"identity": "me"}})
+        self.session("eaf6e8d1")
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "eaf6e8d1"
+        try:
+            text = self.report()
+        finally:
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.assertIn("THIS SESSION IS THE STUB", text)
+        self.assertIn("5930ff25", text)
+        self.assertIn("NO IDENTITY", text)
+
+    def test_the_session_HOLDING_the_rooms_is_not_accused(self):
+        """Paired. Being one of two sessions is not itself a problem — the
+        one with an identity is working correctly."""
+        self.joined()
+        self.session("5930ff25", {"room": {"identity": "me"}})
+        self.session("eaf6e8d1")
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "5930ff25"
+        try:
+            text = self.report()
+        finally:
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.assertIn("sessions: 2", text)
+        self.assertNotIn("THIS SESSION IS THE STUB", text)
+
+    def test_ONE_SESSION_SAYS_NOTHING_AT_ALL(self):
+        """A section that prints every time is a section people learn to skip,
+        and one session is the ordinary case."""
+        self.joined()
+        self.session("5930ff25", {"room": {"identity": "me"}})
+        self.assertNotIn("sessions:", self.report())
+
+    def test_a_human_at_a_terminal_is_told_which_they_are(self):
+        """No session id in the environment is not a stub — it is a human, and
+        a human at a terminal IS the project."""
+        self.joined()
+        self.session("5930ff25", {"room": {"identity": "me"}})
+        self.session("eaf6e8d1")
+        os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.assertIn("human at a terminal", self.report())
+
+    def test_live_sessions_reports_identity_per_session(self):
+        self.session("aaa", {"room": {"identity": "me"}})
+        self.session("bbb")
+        self.assertEqual(cli.live_sessions(self.project),
+                         [("aaa", True), ("bbb", False)])
+
+    def test_a_project_that_never_had_a_session_is_not_an_error(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(cli.live_sessions(tmp), [])
+
     def wired(self, checkout, fingerprint="old"):
         write_settings(self.project,
                        PostToolUse=["/x/bin/llm-chat-deliver"],

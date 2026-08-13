@@ -201,9 +201,23 @@ def report_global_leaks(before):
 # It reproduces only while an agent is working in this repo, which is exactly
 # when a release is being cut, and never while nothing is running — which is
 # how it survived a green gate minutes earlier.
+#
+# AND IT WENT SHORT AGAIN, which is why the last entry is now a PREFIX. Adding
+# `wake.alive` to the waker put a third stamp beside the two named here, and
+# naming files one at a time means the list is complete on the day it is
+# written and silently incomplete afterwards — the exact criticism this
+# module's own `guarded_paths` makes of hand-written lists, two functions
+# down. `wake.` covers pid, exit, alive, rewake and landed, and covers the
+# next one nobody has thought of yet. A rule about shape outlives a list of
+# names.
+#
+# `.llm_chat/sessions/` is deliberately NOT excluded, though live hooks write
+# there too. A test escaping into session state is a thing that has actually
+# happened here — the bridge's question-tracking wrote into the real repo
+# mid-suite — and the guard caught it. Losing that to silence a rarer race
+# would be trading a real catch for a quiet gate.
 UNGUARDED = (os.path.join(".llm_chat", "probe"),
-             os.path.join(".llm_chat", "wake.pid"),
-             os.path.join(".llm_chat", "wake.exit"))
+             os.path.join(".llm_chat", "wake."))
 
 
 def guarded_paths():

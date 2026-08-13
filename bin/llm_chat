@@ -255,6 +255,42 @@ def project_state_dir(project=None) -> str:
     return os.path.join(project or project_dir(), ".llm_chat")
 
 
+def live_sessions(project=None):
+    """[(session_id, holds_identity)] for this project, newest directory last.
+
+    A SESSION DIRECTORY WITH NO joined.json IS A STUB, not a member, and until
+    this existed nothing could tell them apart. The case is not exotic: a
+    VSCode window reload mints a new session id, and the reload's own hooks
+    create a directory under it — a `read.lock` and nothing else — while the
+    conversation carries on under the old one, which still holds the rooms.
+
+    The danger is that the stub is SILENT. A session with no identity is in no
+    rooms, and a waker in no rooms stands down without a word, so the agent
+    goes permanently deaf with every other check green. That is
+    indistinguishable from the host ignoring `asyncRewake`, which is the wrong
+    diagnosis this project has already reached once.
+
+    Reported rather than resolved, deliberately. Picking a winner between the
+    two ids is not available here: the reporter suggested preferring
+    CLAUDE_CODE_SESSION_ID over the hook payload, but the stub contained a
+    `read.lock`, and that path is built from `state_dir()` — which reads the
+    ENV VAR and nothing else. So the env var is what minted the stub, and
+    preferring it would have changed nothing. What is available is saying so.
+    """
+    base = os.path.join(project or project_dir(), ".llm_chat", "sessions")
+    found = []
+    try:
+        names = os.listdir(base)
+    except OSError:
+        return found
+    for name in sorted(names):
+        path = os.path.join(base, name)
+        if os.path.isdir(path):
+            found.append((name, os.path.isfile(os.path.join(path,
+                                                            "joined.json"))))
+    return found
+
+
 def joined_path() -> str:
     """Where THIS agent remembers who it is in each room.
 
@@ -2013,6 +2049,38 @@ def wake_landing(project):
     return record.get("at"), record.get("host")
 
 
+def waker_exits(project):
+    """Every kept exit record, oldest first. [] when there is none.
+
+    A LIST, because one slot answered the wrong question in precisely the case
+    it existed for. The file held `{"reason": "running", "pid": 503}` — a
+    waker that started AFTER the failure being investigated, during a window
+    reload. The record of the one alive when the message arrived had been
+    overwritten by its replacement, which is structural rather than unlucky: a
+    new waker starting is the event that destroys the evidence about why the
+    old one stopped.
+
+    Tolerates the one-record format, which is what an already-installed waker
+    wrote and what somebody will be interrogating at the moment this ships.
+    """
+    try:
+        with open(os.path.join(project, ".llm_chat", "wake.exit")) as f:
+            found = json.load(f)
+    except (OSError, ValueError):
+        return []
+    if isinstance(found, dict):
+        found = [found]
+    if not isinstance(found, list):
+        return []
+    return [r for r in found if isinstance(r, dict) and r.get("reason")]
+
+
+# A stop that another waker CAUSED. Seeing one of these on top is the signal
+# that the interesting record is the one underneath — the whole reason more
+# than one is kept.
+SUPERSEDING = ("superseded", "terminated")
+
+
 def waker_exit(project):
     """Why the last waker stopped, if it said. None when there is no record.
 
@@ -2021,13 +2089,76 @@ def waker_exit(project):
     one is the design working — so reporting the bare absence made a healthy
     handover and a dead session look identical.
     """
-    try:
-        with open(os.path.join(project, ".llm_chat", "wake.exit")) as f:
-            record = json.load(f) or {}
-    except (OSError, ValueError):
+    records = waker_exits(project)
+    if not records:
         return None
-    reason = record.get("reason")
-    return (reason, record.get("at"), record.get("pid")) if reason else None
+    last = records[-1]
+    return (last["reason"], last.get("at"), last.get("pid"))
+
+
+def report_sessions(project):
+    """Say when more than one session is live here, and which holds the rooms.
+
+    Silent for the ordinary case of one session, because a check that prints
+    something every time teaches people to skip the section.
+
+    The line that matters is the one naming THIS session as a stub. Everything
+    else in `doctor` reports at project level, which reads as healthy while
+    this session's own waker is looking at nothing — the wiring is right, the
+    rooms exist, and none of them belong to the id the waker was armed under.
+    """
+    sessions = live_sessions(project)
+    if len(sessions) < 2:
+        return
+    mine = session_id()
+    print("\nsessions: %d directories for this project" % len(sessions))
+    for name, has_identity in sessions:
+        here = "  (this session)" if mine and name == mine else ""
+        held = "holds rooms" if has_identity else "NO IDENTITY — a stub, in no rooms"
+        print("  %s%s  %s" % (name, here, held))
+    stub_is_mine = any(name == mine and not has for name, has in sessions)
+    others_hold = any(name != mine and has for name, has in sessions)
+    if stub_is_mine and others_hold:
+        print("  THIS SESSION IS THE STUB. Its waker stands down without a "
+              "word, which\n  looks exactly like the host ignoring "
+              "`asyncRewake` — the wrong diagnosis\n  this project has "
+              "already reached once.")
+        print("  A window reload does this: the host mints a new session id "
+              "while the\n  conversation carries on, and the rooms stay with "
+              "the id that joined them.")
+        print("  Remedy: `llm_chat identify <name> --channel <room>` here, or "
+              "keep working\n  in the session that holds them.")
+    elif not mine:
+        print("  (no session id in the environment — this is a human at a "
+              "terminal, and\n  a human at a terminal IS the project.)")
+
+
+def last_server(project):
+    """The server the most recent waker was polling, or None if unrecorded.
+
+    Asked because the two diagnoses have opposite remedies and were
+    indistinguishable after the fact: "the waker died" is a problem with the
+    waker, and "the waker was fine and its backend went away" is not. The
+    reporter's own incident was the second — they restarted the zonai server
+    five minutes before the message that never arrived.
+    """
+    records = waker_exits(project)
+    return records[-1].get("server") if records else None
+
+
+def masked_exit(project):
+    """The record a handover would have buried, or None.
+
+    Only returned when the NEWEST record is a supersede or a termination,
+    because that is the case where the top of the file describes the healthy
+    waker and the question was about the one it replaced.
+    """
+    records = waker_exits(project)
+    if len(records) < 2:
+        return None
+    if not records[-1]["reason"].startswith(SUPERSEDING):
+        return None
+    return records[-2]
 
 
 def waker_alive(project):
@@ -2229,6 +2360,8 @@ def do_doctor(server):
         print("\nno install stamp — wired before stamping existed; re-run "
               "install.sh to record one")
 
+    report_sessions(project)
+
     joined = read_joined()
     if joined:
         pid, alive = waker_alive(project)
@@ -2281,6 +2414,22 @@ def do_doctor(server):
                     print("    — it never recorded stopping, so it was killed "
                           "from outside rather\n      than standing down. "
                           "Usually the harness reclaiming an async hook.")
+                buried = masked_exit(project)
+                if buried:
+                    # THE RECORD THE HANDOVER WOULD HAVE BURIED. A supersede on
+                    # top says a newer waker took over, which is healthy and
+                    # says nothing about the failure being investigated — the
+                    # one underneath is the answer, and used to be gone.
+                    print(f"  and the one BEFORE it (pid {buried.get('pid')}) "
+                          f"stopped because:\n    {buried['reason']}")
+                    print("    — the newer waker did not cause that; it is the "
+                          "record the handover\n      used to overwrite, which "
+                          "is why more than one is kept now.")
+                served = last_server(project)
+                if served:
+                    print(f"  it was polling {served} — if that server was "
+                          "restarted or moved, THAT\n  is the likelier "
+                          "explanation than anything wrong with the waker.")
             else:
                 print("  no exit record — this waker predates the one that "
                       "writes it, or it was\n  killed before it could claim "
