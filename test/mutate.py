@@ -556,6 +556,14 @@ MUTATIONS = [
      "FILES exist is the half that still works when zonai changes the wording "
      "of its failure message"),
 
+    ("a rejected probe means the server is STALE, not fine", "bin/llm_chat",
+     '        return None                  # nothing listening; a different diagnosis\n    return "stale"',
+     '        return None                  # nothing listening; a different diagnosis\n    return "current"',
+     "a server predating the migration is reported as current, so `say` "
+     "reports sent, the column is silently dropped, and the field comes back "
+     "null — two agents lost hours to that in one day and doctor said the "
+     "wiring looked right throughout"),
+
     ("a compile that SAYS it failed is a failure", "bin/llm_chat",
      "    return any(marker in output for marker in COMPILE_FAILURE)",
      "    return False",

@@ -687,6 +687,86 @@ class DoctorTest(unittest.TestCase):
         self.joined_with_waker(os.getpid())
         self.assertIn("polling now: yes", self.report())
 
+    def test_doctor_PRINTS_the_stale_diagnosis_and_the_remedy(self):
+        """A helper nobody calls catches nothing, and the remedy is the part
+        that matters: restarting a bridge or re-running install.sh does NOT
+        restart the server, which is exactly how both agents got here."""
+        self.joined_with_waker(os.getpid())
+        real = cli.server_is_current
+        cli.server_is_current = lambda server: "stale"
+        try:
+            text = self.report()
+        finally:
+            cli.server_is_current = real
+        self.assertIn("SERVER IS STALE", text)
+        self.assertIn("silently", text)
+        self.assertIn("zonai serve", text)
+
+    def test_doctor_reports_a_current_server_without_alarm(self):
+        """Paired: a line that always warns is one nobody reads."""
+        self.joined_with_waker(os.getpid())
+        real = cli.server_is_current
+        cli.server_is_current = lambda server: "current"
+        try:
+            text = self.report()
+        finally:
+            cli.server_is_current = real
+        self.assertIn("server build        current", text)
+        self.assertNotIn("SERVER IS STALE", text)
+
+    def test_doctor_says_CANNOT_TELL_when_nothing_answered(self):
+        self.joined_with_waker(os.getpid())
+        real = cli.server_is_current
+        cli.server_is_current = lambda server: None
+        try:
+            text = self.report()
+        finally:
+            cli.server_is_current = real
+        self.assertIn("CANNOT TELL", text)
+
+    def test_A_STALE_SERVER_IS_NAMED_rather_than_reported_as_the_url(self):
+        """The gap that cost two agents hours in one day: doctor reported the
+        URL it was CONFIGURED with, which is not a claim about the process
+        listening there. A server predating the migration accepts a write
+        carrying an unknown column and silently drops it."""
+        real = cli.call
+        cli.call = lambda *a, **kw: {"error": "HTTP 500", "body": "no column"}
+        try:
+            self.assertEqual(cli.server_is_current("http://x"), "stale")
+        finally:
+            cli.call = real
+
+    def test_a_server_that_is_NOT_THERE_is_not_reported_as_stale(self):
+        """Two different diagnoses with two different remedies. Collapsing
+        them would send somebody restarting a server that is not running."""
+        real = cli.call
+        cli.call = lambda *a, **kw: {"error": "no llm_chat server at http://x"}
+        try:
+            self.assertIsNone(cli.server_is_current("http://x"))
+        finally:
+            cli.call = real
+
+    def test_a_current_server_says_so(self):
+        real = cli.call
+        cli.call = lambda *a, **kw: {"data": {"items": []}}
+        try:
+            self.assertEqual(cli.server_is_current("http://x"), "current")
+        finally:
+            cli.call = real
+
+    def test_the_probe_WRITES_NOTHING(self):
+        """It runs on every doctor. A probe with a side effect would put a row
+        in somebody's transcript each time they asked why nothing arrived."""
+        seen = []
+        real = cli.call
+        cli.call = lambda server, method, path, body=None, query=None, **kw: (
+            seen.append((method, path)) or {"data": {"items": []}})
+        try:
+            cli.server_is_current("http://x")
+        finally:
+            cli.call = real
+        self.assertEqual([m for m, _ in seen], ["GET"])
+
     def test_doctor_says_CANNOT_TELL_rather_than_nothing_armed(self):
         """A pidfile holding rubbish means a waker MAY be running. Saying "no
         waker has been armed" is a definite claim about an indefinite state,

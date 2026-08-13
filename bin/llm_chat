@@ -1953,6 +1953,46 @@ def hook_report(project):
     return registered, fired, events
 
 
+# The newest column this client WRITES. When the server predates the migration
+# that added it, `POST /db` returns SUCCESS and silently drops it — so a write
+# reports sent, the row comes back, and the field is simply gone.
+NEWEST_COLUMN = "thread"
+
+
+def server_is_current(server):
+    """Does the server behind this URL know the columns this build writes?
+
+    "current" / "stale" / None, and the third is a real answer.
+
+    THE CLI REPORTS THE URL IT IS CONFIGURED WITH, WHICH IS NOT THE SAME CLAIM
+    AS THE IDENTITY OF THE PROCESS LISTENING THERE. That sentence is
+    showrunner's, written after the gap between those two claims cost them a
+    session: they restarted the bridge after every pull and never the server
+    behind it, so a process started that morning kept serving while four
+    migrations landed. It cost me two hours the same day by a different route
+    — a lockfile holding binary made `kill $(cat ...)` a silent no-op.
+
+    Read-only and side-effect free. A `where` naming a column the server does
+    not know is REJECTED, unlike a POST carrying one, which is accepted and
+    quietly dropped — so the query is the cheapest thing that can tell the two
+    builds apart without writing anything.
+
+    A rejection is reported as STALE rather than as "probably fine", which is
+    also showrunner's correction: absence must fail loud, or the check
+    inherits the exact trap it exists to close.
+    """
+    res = call(server, "GET", "/db/list",
+               query={"table": "messages",
+                      "where": eq(NEWEST_COLUMN, "\x00never-matches"),
+                      "limit": 1})
+    if "error" not in res:
+        return "current"
+    problem = str(res.get("error", "")) + str(res.get("body", ""))
+    if "no llm_chat server" in problem:
+        return None                  # nothing listening; a different diagnosis
+    return "stale"
+
+
 def wake_landing(project):
     """(landed_at, host) if a rewake has ever been observed landing here.
 
@@ -2045,7 +2085,30 @@ def do_doctor(server):
     # is reportable, and a promise about a remedy has to be true.
     print(f"llm_chat doctor — {project}")
     print(f"  workspace           {ROOT}")
-    print(f"  server              {server}\n")
+    print(f"  server              {server}")
+    # THE URL IS NOT THE PROCESS. Everything above this line is a fact about
+    # configuration; this is the only line that asks what is actually
+    # listening there, and two agents lost hours in one day to the gap.
+    build = server_is_current(server)
+    if build == "stale":
+        print("  SERVER IS STALE     it rejected a query on a column this "
+              "build writes.")
+        print("                      A write carrying that column is ACCEPTED "
+              "and silently")
+        print("                      DROPPED, so `say` reports sent and the "
+              "field comes back")
+        print("                      null. Restart it — restarting a bridge "
+              "or re-running")
+        print("                      install.sh does NOT restart the server:")
+        print(f"                        cd {ROOT} && ./zonai db migrate apply")
+        print(f"                        ./zonai serve --port {port_of(server)}")
+    elif build is None:
+        print("  server build        CANNOT TELL — nothing answered. Not the "
+              "same as current.")
+    else:
+        print("  server build        current (knows every column this build "
+              "writes)")
+    print()
     print(install_report(project) + stale_skill_report(project) + "\n")
 
     registered, fired, events = hook_report(project)

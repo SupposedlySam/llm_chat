@@ -572,10 +572,24 @@ def pump_out(config, slack):
         try:
             posted = slack.post(("*%s*: %s" % (sender, line)) if sender
                                 else line, thread_ts=parent)
-            # A NEW ROOT ONLY WHEN THIS ACTUALLY STARTED ONE. Recording every
-            # relay as a parent grew the map by one entry per message and made
-            # the thread a human was replying in stop being the newest, so
-            # their next reply competed with a pile of roots.
+            # A REFUSAL IS NOT A DELIVERY. `chat.postMessage` answers a bad
+            # thread_ts with {"ok": false, "error": "thread_not_found"} — not
+            # an exception — and this used to read `ok` only to decide whether
+            # to record a root. So a refused post fell through to `relayed`,
+            # the message was already off llm_chat's cursor, and the sender was
+            # told it was sent.
+            #
+            # That is the artifact the reporter objected to and they were
+            # right: a message asserting it was threaded, absent from Slack
+            # entirely, with `say` reporting success. Loud, and it names the
+            # thread, because "which thread" is the only fact that makes it
+            # actionable.
+            if isinstance(posted, dict) and not posted.get("ok"):
+                print("REFUSED by Slack (%s)%s — NOT delivered:\n  %s"
+                      % (posted.get("error") or "no reason given",
+                         " thread=%s" % parent if parent else "",
+                         line), file=sys.stderr)
+                continue
             if isinstance(posted, dict) and posted.get("ok") and not parent:
                 remember_thread(posted.get("ts"), sender)
         except Exception as problem:

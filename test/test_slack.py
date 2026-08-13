@@ -918,6 +918,29 @@ class OutboundThreadingTest(BridgeTest):
         self.mod.note_question({}, ["--to", "alice"])
         self.assertEqual(self.mod.read_asked(), {})
 
+    def test_A_REFUSED_POST_IS_LOUD_NOT_COUNTED_AS_DELIVERED(self):
+        """Issue #10's surviving point. Slack answers a bad thread_ts with
+        {"ok": false} rather than an exception, and this used to read `ok`
+        only to decide whether to record a root — so a refusal fell through as
+        success while the message was already off llm_chat's cursor.
+
+        The artifact is the bad part: a message asserting it was threaded,
+        absent from Slack entirely, with the sender told it was sent."""
+        class Refuses:
+            posted = []
+
+            def post(self, text, thread_ts=None):
+                return {"ok": False, "error": "thread_not_found"}
+
+            def history(self, oldest=None):
+                return {"ok": True, "messages": []}
+        self.mod.waiting_for_human = lambda room, identity: [
+            ("alice", "an answer", "999.0")]
+        _, text = self.quiet(self.mod.pump_out, self.config, Refuses())
+        self.assertIn("REFUSED by Slack", text)
+        self.assertIn("thread_not_found", text)
+        self.assertIn("999.0", text, "must name the thread it could not reach")
+
     def test_AN_AGENT_CAN_NAME_THE_THREAD_ITSELF(self):
         """The mechanism that replaces guessing. The agent read the thread off
         the message it is answering and hands it back via `say --thread`, so
