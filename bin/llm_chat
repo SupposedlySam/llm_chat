@@ -2000,13 +2000,34 @@ def waker_alive(project):
     nothing re-arms one while a session is idle — only a turn-end or a session
     start does, and an idle agent produces neither.
 
-    Returns (pid, alive) from the pidfile, or (None, False).
+    Returns (pid, alive). `pid` is None when there is no pidfile at all, and
+    the string "?" when there is one that cannot be read as a pid — which are
+    different facts and used to be the same one.
+
+    A PIDFILE CAN HOLD RUBBISH. Not hypothetically: `.zonai/data/.serve.lock`
+    was found holding binary today, which made `kill $(cat ...)` a silent
+    no-op and left a day-old server answering requests. Reporting that as "no
+    waker has been armed" is a definite claim about an indefinite state, in
+    the command whose whole job is to remove uncertainty — and a waker may
+    well be running.
+
+    showrunner found the same shape in their own mutex from the description of
+    that lockfile, where it was worse: an unparseable pid read as STALE and
+    licensed RECLAIMING a lock a live process still held. Here the verdict
+    only feeds a report, so the cost is a wrong sentence rather than two
+    processes on one resource. Fixed anyway, because the sentence is read by
+    somebody deciding whether their agent is reachable.
     """
+    path = os.path.join(project, ".llm_chat", "wake.pid")
     try:
-        with open(os.path.join(project, ".llm_chat", "wake.pid")) as f:
-            pid = int(f.read().strip())
-    except (OSError, ValueError):
+        with open(path) as f:
+            raw = f.read().strip()
+    except OSError:
         return None, False
+    try:
+        pid = int(raw)
+    except ValueError:
+        return "?", False
     try:
         os.kill(pid, 0)          # signal 0 tests existence, changes nothing
         return pid, True
@@ -2177,7 +2198,13 @@ def do_doctor(server):
                       "run a tool, it is the second: the poll is\n  working "
                       "and the wake is not landing.")
         else:
-            gone = f"pid {pid} is gone" if pid else "no waker has been armed"
+            if pid == "?":
+                gone = ("the pidfile cannot be read as a pid — a waker may "
+                        "well be running.\n  That file has held binary here "
+                        "before, which also made `kill $(cat ...)` a\n  silent "
+                        "no-op. This is 'cannot tell', not 'nothing there'")
+            else:
+                gone = f"pid {pid} is gone" if pid else "no waker has been armed"
             print(f"\nLISTENING NOW: NO — {gone}.")
             if last:
                 reason, when, said_by = last

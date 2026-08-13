@@ -687,6 +687,18 @@ class DoctorTest(unittest.TestCase):
         self.joined_with_waker(os.getpid())
         self.assertIn("polling now: yes", self.report())
 
+    def test_doctor_says_CANNOT_TELL_rather_than_nothing_armed(self):
+        """A pidfile holding rubbish means a waker MAY be running. Saying "no
+        waker has been armed" is a definite claim about an indefinite state,
+        in the command whose whole job is removing uncertainty."""
+        self.joined_with_waker(os.getpid())
+        with open(os.path.join(self.project, ".llm_chat", "wake.pid"),
+                  "w") as f:
+            f.write("\x00\x01binary")
+        text = self.report()
+        self.assertIn("cannot be read as a pid", text)
+        self.assertNotIn("no waker has been armed", text)
+
     def test_POLLING_IS_NOT_WAKING_until_one_has_landed(self):
         """Issue #6. The poll runs, the pid rotates, and if the host drops
         exit 2 the messages arrive only when the agent next runs a tool."""
@@ -809,4 +821,15 @@ class WakerLivenessTest(unittest.TestCase):
 
     def test_an_unreadable_pidfile_is_not_mistaken_for_a_live_waker(self):
         self.write_pid("not-a-pid")
-        self.assertEqual(cli.waker_alive(self.project), (None, False))
+        self.assertFalse(cli.waker_alive(self.project)[1])
+
+    def test_UNREADABLE_IS_NOT_THE_SAME_AS_ABSENT(self):
+        """This fixture used to assert they were identical — a test written
+        from the same belief as the code, confirming a conflation rather than
+        catching it. A pidfile holding rubbish means a waker MAY be running;
+        no pidfile means none was armed. doctor states one of those as fact."""
+        self.write_pid("not-a-pid")
+        unreadable = cli.waker_alive(self.project)
+        os.remove(os.path.join(self.project, ".llm_chat", "wake.pid"))
+        self.assertNotEqual(unreadable, cli.waker_alive(self.project))
+
