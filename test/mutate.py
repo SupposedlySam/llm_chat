@@ -611,6 +611,35 @@ MUTATIONS = [
      "alarm that gets a guard switched off within the hour, and the same "
      "mistake this repo already corrected once in the remedy counter"),
 
+    ("prose the shell will RUN is refused before it ships",
+     "triggers/prose-through-shell",
+     "        if LIVE_BACKTICK.search(text):",
+     "        if False:",
+     "a backticked word inside a double-quoted --comment is executed by the "
+     "shell and its empty output pasted in — a public comment closing issue "
+     "#10 posted with the word missing, and gh answered ok, because the "
+     "substitution that ate it fails quietly by design"),
+
+    ("single quotes are read BEFORE double quotes",
+     "triggers/prose-through-shell",
+     '        elif char == "\'":\n'
+     '            close = code.find("\'", i + 1)\n'
+     "            i = n if close < 0 else close + 1",
+     '        elif char == "\'":\n'
+     "            i += 1",
+     "a double quote inside '...' is treated as an opener, so the scanner "
+     "pairs it with one far away and reports a quoted region that does not "
+     "exist — the guard starts refusing commands that are fine, which is how "
+     "a rail gets switched off within the hour"),
+
+    ("a QUOTED heredoc delimiter means the body is data",
+     "triggers/prose-through-shell",
+     "              for quoted, body in bodies if not quoted]",
+     "              for quoted, body in bodies]",
+     "`git commit -F - <<'MSG'` is refused for backticks in a message that "
+     "the shell never touches — every commit message in this repo is written "
+     "that way, and it is the remedy this guard's own refusal recommends"),
+
     ("a leftover per-repo skill copy is reported", "bin/llm_chat",
      '    if not os.path.isfile(path):\n        return ""',
      '    if True:\n        return ""',
@@ -774,6 +803,21 @@ NOT_SWEPT = {
         "is a wall rather than a redirection",
     "triggers/piped-verdict:main": "every branch asserted directly, including "
         "the visible escape hatch and the non-Bash tool",
+    "triggers/prose-through-shell:refusal": "asserted directly — it must name "
+        "the offending snippet, carry the --body-file remedy, and say the "
+        "heredoc delimiter has to be QUOTED, which is the load-bearing half "
+        "everyone drops",
+    "triggers/prose-through-shell:main": "every branch asserted directly, "
+        "including the visible escape hatch and the non-Bash tool",
+    "triggers/prose-through-shell:snippet": "presentation only — it decides "
+        "which 40 characters of a refused sentence get printed, and the "
+        "refusal is asserted to contain the backticked word either way",
+    "triggers/prose-through-shell:split_heredocs": "quoted, bare and "
+        "UNTERMINATED delimiters asserted directly, in both directions: the "
+        "quoted body must stay silent and the bare one must fire. The sibling "
+        "guard's version of this function is swept, and it is the same "
+        "function — an unterminated heredoc that swallows the rest of the "
+        "command makes the guard read as silent rather than as broken",
     "triggers/write-through-interpreter:refusal": "asserted directly — it must "
         "name Write/Edit, or the refusal is a wall rather than a redirection",
     "triggers/write-through-interpreter:main": "every branch asserted "

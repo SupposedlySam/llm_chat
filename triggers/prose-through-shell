@@ -1,0 +1,202 @@
+#!/usr/bin/env python3
+"""PreToolUse hook: refuse prose that the SHELL will read as code.
+
+Wired in `.claude/settings.local.json` against the `Bash` tool.
+
+THE DEFECT, with a public artifact. A comment closing issue #10 was posted as:
+
+    gh issue close 10 --comment "... only found it because a `kill` visibly
+                                  failed. The difference between us was luck"
+
+The shell ran `kill` before `gh` was started, took its empty output, and posted
+the sentence with the word missing — "because a  visibly failed". `kill` with
+no arguments wrote a usage error to stderr and substituted nothing; `gh`
+answered ok; the comment was public and wrong.
+
+That is this repo's own subject one layer out: a step that half-failed, reported
+success, and left an artifact asserting something untrue. The learning was
+already written down — prose handed to a CLI as an argument is code to the shell
+FIRST — and it did not survive a busy moment, which is what a resolution is
+worth against a habit.
+
+Backticks are the whole point of markdown prose and mean command substitution in
+the shell, so the two collide every time an agent writes about code. The
+substituted text is usually EMPTY, which is why this fails quietly: a loud
+failure would have been the good outcome.
+
+WHAT IT REFUSES — two regions where the shell substitutes, nothing else:
+
+  1. an unescaped backtick inside a DOUBLE-QUOTED argument. Single quotes
+     substitute nothing and are untouched.
+  2. an unescaped backtick inside a heredoc whose delimiter is UNQUOTED.
+     `<<'MSG'` is literal and safe; bare `<<MSG` expands its whole body, so a
+     commit message describing `some_fn()` runs it.
+
+WHAT IT DOES NOT SEE, because a rail goes quiet exactly where it is blind:
+
+  * `$` expansion. "$500" and "$HOME" mangle prose the same way, but `$` is
+    deliberate in almost every double-quoted string ever typed — `"EXIT=$?"` is
+    on the next line of the remedy this repo recommends. Refusing it would fire
+    constantly and be routed around within the hour. Backticks in prose are
+    never a deliberate substitution; `$(...)` is the spelling anyone means.
+  * prose reaching a shell any other way — through an interpreter one-liner, or
+    a path built from a variable. Same blind spot the sibling guards declare.
+
+THE REMEDY IS THE ONE THIS REPO ALREADY USES EVERYWHERE ELSE: put the prose in
+a file and hand over the PATH.
+
+    cat > /tmp/body.md <<'BODY'
+    ... backticks, $HOME, anything at all ...
+    BODY
+    gh issue comment 10 --body-file /tmp/body.md
+
+A quoted delimiter makes the body literal, and a path cannot be substituted.
+It survives the run too, so the next question can be answered from the file
+rather than from memory of what was sent.
+"""
+import json
+import re
+import sys
+
+# In the command itself, where a transcript reader can see the exception was
+# taken. An environment variable would belong to THIS process rather than to
+# the command being inspected — the decorative hatch a sibling guard shipped.
+ALLOW = "llm_chat:allow-prose-through-shell"
+
+# A backtick the shell will act on. An escaped one — \` — is already literal,
+# and is what someone writes when they mean the character.
+LIVE_BACKTICK = re.compile(r"(?<!\\)`")
+
+# `<<EOF`, `<<-EOF`, `<<'EOF'`, `<<"EOF"`. The captured quote is what decides
+# whether the body is data or code, so it is a group rather than a throwaway.
+HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1")
+
+
+def split_heredocs(command):
+    """(code, [(delimiter_was_quoted, body)]).
+
+    Bodies come out separately for two reasons. They obey different rules —
+    quoted delimiter means no substitution at all — and an unbalanced `"` in
+    prose would otherwise throw the quote scanner off for the rest of the
+    command, which is how a guard starts refusing arbitrary later lines.
+    """
+    code, bodies, rest = [], [], command
+    while True:
+        found = HEREDOC.search(rest)
+        if not found:
+            code.append(rest)
+            return "".join(code), bodies
+        code.append(rest[:found.end()])
+        after = rest[found.end():]
+        quoted = bool(found.group(1))
+        # The body ends at the delimiter alone on a line.
+        end = re.search(r"^\s*%s\s*$" % re.escape(found.group(2)), after, re.M)
+        if not end:
+            # Unterminated: everything left is body. Return rather than loop —
+            # odd input must not block every command after it.
+            bodies.append((quoted, after))
+            return "".join(code), bodies
+        bodies.append((quoted, after[:end.start()]))
+        rest = after[end.end():]
+
+
+def double_quoted(code):
+    """The contents of each double-quoted run, single quotes honoured.
+
+    Single quotes first, and that ordering is the whole correctness of this:
+    inside '...' a double quote is an ordinary character, and treating it as an
+    opener would pair it with something far away and report a region that does
+    not exist.
+    """
+    spans, i, n = [], 0, len(code)
+    while i < n:
+        char = code[i]
+        if char == "\\":
+            i += 2
+        elif char == "'":
+            close = code.find("'", i + 1)
+            i = n if close < 0 else close + 1
+        elif char == '"':
+            j = i + 1
+            while j < n and code[j] != '"':
+                j += 2 if code[j] == "\\" else 1
+            spans.append(code[i + 1:j])
+            i = j + 1
+        else:
+            i += 1
+    return spans
+
+
+def regions(command):
+    """(where, text) for every part the shell will substitute into."""
+    code, bodies = split_heredocs(command)
+    found = [("a double-quoted argument", text)
+             for text in double_quoted(code)]
+    found += [("an unquoted heredoc body", body)
+              for quoted, body in bodies if not quoted]
+    return found
+
+
+# Enough of the sentence to recognise which one, without reprinting an essay
+# into the refusal.
+def snippet(text):
+    pair = re.search(r"`[^`\n]{0,40}`", text)
+    if pair:
+        return pair.group(0)
+    at = LIVE_BACKTICK.search(text)
+    return text[max(0, at.start() - 20):at.start() + 20].strip()
+
+
+def offence(command):
+    """(where, snippet) for prose the shell will execute, or None."""
+    if not command:
+        return None
+    for where, text in regions(command):
+        if LIVE_BACKTICK.search(text):
+            return (where, snippet(text))
+    return None
+
+
+def refusal(where, found):
+    return (
+        "REFUSED: this hands the shell prose it will run as code.\n\n"
+        "%s contains %s. Backticks are command substitution — the shell "
+        "executes\nwhat is between them and pastes the OUTPUT in before the "
+        "command you meant\never starts.\n\n"
+        "This is not hypothetical here. A comment closing issue #10 was posted "
+        "with\n`kill` inside a double-quoted --comment. The shell ran it, took "
+        "its empty\noutput, and published the sentence with the word missing. "
+        "`gh` answered ok.\nThe substituted text is usually empty, which is "
+        "why it fails quietly.\n\n"
+        "Put the prose in a file and hand over the PATH:\n\n"
+        "    cat > /tmp/body.md <<'BODY'\n"
+        "    ... backticks, $HOME, anything at all ...\n"
+        "    BODY\n"
+        "    gh issue comment 10 --body-file /tmp/body.md\n\n"
+        "The QUOTED delimiter is what makes the body literal — bare <<BODY "
+        "expands it\njust the same. Single quotes round an argument work too. "
+        "If you genuinely\nmeant a substitution, $(...) is the spelling that "
+        "says so; put %s in\nthe command to take it anyway."
+        % (where.capitalize(), found, ALLOW)
+    )
+
+
+def main(argv=None):
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return 0
+    if payload.get("tool_name") != "Bash":
+        return 0
+    command = (payload.get("tool_input") or {}).get("command", "")
+    if ALLOW in command:
+        return 0
+    found = offence(command)
+    if not found:
+        return 0
+    print(refusal(*found), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
