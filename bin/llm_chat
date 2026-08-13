@@ -1330,7 +1330,7 @@ def refuse_impersonation(channel, identity):
     )
 
 
-def do_say(server, name, identity, text, audience=None):
+def do_say(server, name, identity, text, audience=None, thread=None):
     refuse_impersonation(name, identity)
     chan = get_channel(server, name)
     if chan is None:
@@ -1351,7 +1351,8 @@ def do_say(server, name, identity, text, audience=None):
     seq = count + 1
     create(server, "messages", {
         "channel": name, "seq": seq, "from_identity": identity,
-        "text": text, "audience": audience, "created_at": now_ms(),
+        "text": text, "audience": audience, "thread": thread,
+        "created_at": now_ms(),
     })
     update(server, "channels", eq("id", chan["id"]), {"message_count": seq})
     print(f"sent #{seq} to {name} as {identity}")
@@ -1430,6 +1431,7 @@ def do_read(server, name, identity, peek=False, all_messages=False,
         # already knew. This hands over the fact.
         print(json.dumps([{"seq": m["seq"], "from": m["from_identity"],
                            "text": m["text"], "audience": m.get("audience"),
+                           "thread": m.get("thread"),
                            "mine": m["from_identity"] == identity}
                           for m in waiting]))
         return waiting
@@ -2504,6 +2506,13 @@ def build_parser():
     p.add_argument("--to-none", action="store_true",
                    help="wake nobody; leave it for people to find. The default "
                         "already, in a broadcast room")
+    p.add_argument("--thread",
+                   help="the Slack thread this belongs in, taken from the "
+                        "`thread` field of the message you are answering "
+                        "(`read --json`). Omit it to post at the channel's top "
+                        "level, which is how you RAISE something rather than "
+                        "answer it. Only a bridged room does anything with "
+                        "this; elsewhere it is recorded and ignored")
     p.add_argument("--as", dest="identity")
 
     sub.add_parser("sync", help="pick up broadcast rooms opened or converted "
@@ -2675,7 +2684,7 @@ def main() -> int:
     if args.cmd == "say":
         args.text = message_text(args)
         do_say(server, args.channel, identity, args.text,
-               audience_for(args.to, args.to_all, args.to_none))
+               audience_for(args.to, args.to_all, args.to_none), args.thread)
     elif args.cmd == "read":
         do_read(server, args.channel, identity, args.peek, args.all_messages,
                 args.as_json)

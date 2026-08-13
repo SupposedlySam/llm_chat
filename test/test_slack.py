@@ -66,8 +66,8 @@ class BridgeTest(unittest.TestCase):
         self.config = {"room": "human", "identity": "me",
                        "slack": {"bot_token": "x", "channel": "C1"}}
         self.said = []
-        self.mod.say = lambda room, identity, text, addressing=None: (
-            self.said.append((room, identity, text, addressing)) or True)
+        self.mod.say = lambda room, identity, text, addressing=None, thread=None: (
+            self.said.append((room, identity, text, addressing, thread)) or True)
         # The room-still-exists lookup shells out to the CLI, so without a stub
         # every loop test queries the LIVE server. It answered — with the real
         # machine's rooms, none of them named `human` — so the bridge correctly
@@ -97,7 +97,7 @@ class BridgeTest(unittest.TestCase):
             {"ts": "2", "text": "an actual human answer", "user": "U1"},
         ])
         self.quiet(self.mod.pump_in, self.config, slack)
-        self.assertEqual([t for _, _, t, _a in self.said], ["an actual human answer"])
+        self.assertEqual([t for _, _, t, _a, _th in self.said], ["an actual human answer"])
 
     def test_bot_subtype_is_also_treated_as_the_bridge(self):
         slack = FakeSlack([{"ts": "1", "text": "relayed",
@@ -112,8 +112,10 @@ class BridgeTest(unittest.TestCase):
         self.quiet(self.mod.pump_in, self.config, slack)
         # --to-none because it is a TOP-LEVEL Slack message: the human thinking
         # out loud in the channel should not pull every agent off its work.
+        # The thread stamp is the message's OWN ts for a top-level post, which
+        # is what lets an agent open a thread ON it rather than reply beside it.
         self.assertEqual(self.said,
-                         [("human", "me", "yes, ship it", ["--to-none"])])
+                         [("human", "me", "yes, ship it", ["--to-none"], "5")])
 
     def test_joins_and_other_events_without_text_are_ignored(self):
         slack = FakeSlack([{"ts": "1", "user": "U1", "subtype": "channel_join"}])
@@ -140,12 +142,12 @@ class BridgeTest(unittest.TestCase):
             {"ts": "1", "text": "first", "user": "U1"},
         ])
         self.quiet(self.mod.pump_in, self.config, slack)
-        self.assertEqual([t for _, _, t, _a in self.said], ["first", "second"])
+        self.assertEqual([t for _, _, t, _a, _th in self.said], ["first", "second"])
 
     # ── outbound ────────────────────────────────────────────────────────────
     def test_agent_messages_are_relayed_to_slack(self):
         self.mod.waiting_for_human = lambda room, identity: [
-            ("builder", "should I force-push?")]
+            ("builder", "should I force-push?", None)]
         slack = FakeSlack()
         count, _ = self.quiet(self.mod.pump_out, self.config, slack)
         self.assertEqual(slack.posted, ["*builder*: should I force-push?"])
@@ -155,7 +157,7 @@ class BridgeTest(unittest.TestCase):
         """The message is already off llm_chat's cursor by then, so a silent
         failure loses it with nobody able to tell."""
         self.mod.waiting_for_human = lambda room, identity: [
-            ("builder", "hello")]
+            ("builder", "hello", None)]
         _, text = self.quiet(self.mod.pump_out, self.config,
                              FakeSlack(explode=True))
         self.assertIn("LOST", text)
@@ -671,7 +673,7 @@ class ThreadRepliesTest(BridgeTest):
         so nothing arrived, for every threaded reply ever sent."""
         slack = self.threaded(replies=[self.human(1, "in the thread")])
         self.quiet(self.mod.pump_in, self.config, slack)
-        self.assertEqual([t for _, _, t, _ in self.said], ["in the thread"])
+        self.assertEqual([t for _, _, t, _, _ in self.said], ["in the thread"])
 
     def test_it_is_routed_to_the_agent_WHOSE_THREAD_IT_IS(self):
         """The whole reason threading is the primary path: it is the only
@@ -692,7 +694,7 @@ class ThreadRepliesTest(BridgeTest):
         slack._replies.append(self.human(2, "second"))
         slack.count = 2
         self.quiet(self.mod.pump_in, self.config, slack)
-        self.assertEqual([t for _, _, t, _ in self.said], ["first", "second"])
+        self.assertEqual([t for _, _, t, _, _ in self.said], ["first", "second"])
 
     def test_the_PARENT_is_not_relayed_back_into_the_room(self):
         """It came FROM the room. Relaying it would post the agent's own
@@ -764,7 +766,7 @@ class ThreadRepliesTest(BridgeTest):
         self.assertEqual(slack.asked, [self.parent],
                          "the parent fell out of the history window and was "
                          "never asked about")
-        self.assertEqual([t for _, _, t, _ in self.said], ["the answer"])
+        self.assertEqual([t for _, _, t, _, _ in self.said], ["the answer"])
 
     def test_watching_is_bounded_by_age_count_and_recheck(self):
         """An out-of-window parent cannot be skipped for free, so an unbounded
@@ -865,8 +867,9 @@ class OutboundThreadingTest(BridgeTest):
         self.mod.note_question({"thread_ts": self.parent, "ts": self.parent},
                                ["--to", sender])
 
-    def answer(self, sender="alice", text="the answer"):
-        self.mod.waiting_for_human = lambda room, identity: [(sender, text)]
+    def answer(self, sender="alice", text="the answer", thread=None):
+        self.mod.waiting_for_human = lambda room, identity: [
+            (sender, text, thread)]
         slack = self.Recorder()
         self.quiet(self.mod.pump_out, self.config, slack)
         return slack
@@ -914,6 +917,27 @@ class OutboundThreadingTest(BridgeTest):
         thread that does not exist."""
         self.mod.note_question({}, ["--to", "alice"])
         self.assertEqual(self.mod.read_asked(), {})
+
+    def test_AN_AGENT_CAN_NAME_THE_THREAD_ITSELF(self):
+        """The mechanism that replaces guessing. The agent read the thread off
+        the message it is answering and hands it back via `say --thread`, so
+        with two questions outstanding it can answer EITHER — which is the case
+        no amount of inference could get right."""
+        self.ask()                                   # one debt outstanding
+        other = "%.6f" % (time.time() + 5)
+        slack = self.answer(thread=other)
+        self.assertEqual(slack.posted[0][1], other,
+                         "an explicitly named thread must beat the inferred "
+                         "one, or naming it achieves nothing")
+
+    def test_naming_NO_thread_still_posts_at_root_even_with_a_debt(self):
+        """Answering "none of them" has to be expressible too. An agent
+        raising something unrelated while a question is open must not have it
+        buried in that question's thread."""
+        self.ask()
+        self.mod.note_question(
+            {"thread_ts": "%.6f" % (time.time() + 5)}, ["--to", "alice"])
+        self.assertIsNone(self.answer().posted[0][1])
 
     def test_TWO_PENDING_QUESTIONS_POST_AT_ROOT_RATHER_THAN_GUESSING(self):
         """Issue #9, and the reporter's reasoning is the design.

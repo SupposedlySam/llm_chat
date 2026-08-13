@@ -15,6 +15,7 @@ final class Message {
     required this.from,
     required this.text,
     this.audience,
+    this.thread,
     required this.createdAt,
     this.updatedAt,
   });
@@ -57,6 +58,25 @@ final class Message {
   /// message before this program ever saw it. The one place text IS parsed is
   /// the Slack bridge, where a human has no flags to pass.
   final String? audience;
+
+  /// WHICH SLACK THREAD THIS BELONGS TO, when the room is bridged to a human.
+  ///
+  /// Opaque here on purpose: llm_chat neither parses nor validates it, and a
+  /// room that is not bridged never sets it. It exists because the bridge was
+  /// GUESSING. It kept a map of "which thread did I last relay a question to
+  /// this agent in", and with two questions outstanding — the normal state on
+  /// a host where no wake lands — an answer attached to the older one. The
+  /// human watched their newest question sit unanswered while the reply went
+  /// into a thread they had finished with.
+  ///
+  /// Guessing is unnecessary when the answerer knows. The bridge stamps this
+  /// on the way IN, so an agent can read which conversation a message came
+  /// from; `say --thread` sets it on the way OUT, so the agent says which
+  /// conversation its reply belongs to. Nothing has to infer anything.
+  ///
+  /// A message with no thread posts at the channel's top level, which is also
+  /// how an agent RAISES something rather than answering it.
+  final String? thread;
   final DateTime createdAt;
   final DateTime? updatedAt;
 }
@@ -70,6 +90,7 @@ final class MessageTable extends Table<Message> {
       from = $.text('from_identity', (s) => s.from),
       text = $.text('text', (s) => s.text),
       audience = $.text('audience', (s) => s.audience),
+      thread = $.text('thread', (s) => s.thread),
       createdAt = $.createdAt('created_at', (s) => s.createdAt),
       updatedAt = $.updatedAt('updated_at', (s) => s.updatedAt);
 
@@ -81,6 +102,7 @@ final class MessageTable extends Table<Message> {
     from: read(from),
     text: read(text),
     audience: read(audience),
+    thread: read(thread),
     createdAt: read(createdAt),
     updatedAt: read(updatedAt),
   );
@@ -91,6 +113,7 @@ final class MessageTable extends Table<Message> {
   final TextColumn from;
   final TextColumn text;
   final ColumnType<String?> audience;
+  final ColumnType<String?> thread;
   final DateTimeColumn createdAt;
   final ColumnType<DateTime?> updatedAt;
 }

@@ -180,7 +180,7 @@ class SenderParseTest(unittest.TestCase):
 
     def test_it_carries_sender_and_text(self):
         self.assertEqual(self.feed(self.records(("builder", "ship it?"))),
-                         [("builder", "ship it?")])
+                         [("builder", "ship it?", None)])
 
     def test_a_bracketed_line_in_a_body_does_NOT_become_a_second_relay(self):
         """The defect this replaced: an [INFO] log line pasted as evidence
@@ -188,7 +188,7 @@ class SenderParseTest(unittest.TestCase):
         and written into the thread map under that phantom."""
         body = "the log said\n[INFO] starting up\nso it ran"
         self.assertEqual(self.feed(self.records(("builder", body))),
-                         [("builder", body)])
+                         [("builder", body, None)])
 
     def test_a_multi_line_message_is_ONE_relay(self):
         """Otherwise a human gets one notification per paragraph."""
@@ -227,6 +227,46 @@ class SenderParseTest(unittest.TestCase):
             self.assertIsNone(bridge.waiting_for_human("room", "me"))
         finally:
             bridge.subprocess = real
+
+
+class SayStampsTheThreadTest(unittest.TestCase):
+    """The half that makes answering-without-guessing possible: an agent can
+    only name the thread it is replying to if the thread reached it."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.real_state = bridge.STATE
+        bridge.STATE = self.tmp.name
+        self.calls = []
+        outer = self
+
+        class Fake:
+            @staticmethod
+            def run(argv, **kw):
+                outer.calls.append(argv)
+
+                class Result:
+                    returncode, stdout, stderr = 0, "", ""
+                return Result
+        self.real_subprocess = bridge.subprocess
+        bridge.subprocess = Fake
+
+    def tearDown(self):
+        bridge.STATE = self.real_state
+        bridge.subprocess = self.real_subprocess
+        self.tmp.cleanup()
+
+    def test_it_passes_the_thread_through(self):
+        bridge.say("room", "me", "a question", ["--to", "alice"], "100.5")
+        argv = self.calls[0]
+        self.assertIn("--thread", argv)
+        self.assertEqual(argv[argv.index("--thread") + 1], "100.5")
+
+    def test_no_thread_means_NO_FLAG_rather_than_an_empty_one(self):
+        """`--thread ""` would record an empty string as a thread id and post
+        every later answer into a conversation that does not exist."""
+        bridge.say("room", "me", "unprompted", ["--to-none"], None)
+        self.assertNotIn("--thread", self.calls[0])
 
 
 class NoReplyNeededTest(unittest.TestCase):

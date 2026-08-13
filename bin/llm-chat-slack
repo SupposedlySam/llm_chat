@@ -442,7 +442,7 @@ def waiting_for_human(room, identity):
         records = json.loads((done.stdout or "").strip() or "[]")
     except ValueError:
         return None
-    return [(r.get("from"), r.get("text") or "")
+    return [(r.get("from"), r.get("text") or "", r.get("thread"))
             for r in records if isinstance(r, dict) and (r.get("text") or "").strip()]
 
 
@@ -499,17 +499,26 @@ def route(message, threads):
     return ["--to-none"]
 
 
-def say(room, identity, text, addressing=None):
+def say(room, identity, text, addressing=None, thread=None):
     """Post as the human. Via --file, so shell metacharacters in a Slack
-    message cannot be eaten before the CLI sees them."""
+    message cannot be eaten before the CLI sees them.
+
+    STAMPS THE THREAD IT CAME FROM. That is what lets an agent answer the
+    conversation it is actually in: it reads the `thread` field back out of
+    `read --json` and hands it to `say --thread`. Before this the bridge kept
+    its own map of who-was-asked-where and guessed, which went wrong the moment
+    two questions were outstanding.
+    """
     path = os.path.join(STATE, "slack-inbound.txt")
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write(text)
-        subprocess.run([sys.executable, CLI, "say", room, "--file", path,
-                        "--as", identity] + list(addressing or []),
-                       capture_output=True, text=True, timeout=15)
+        command = [sys.executable, CLI, "say", room, "--file", path,
+                   "--as", identity] + list(addressing or [])
+        if thread:
+            command += ["--thread", thread]
+        subprocess.run(command, capture_output=True, text=True, timeout=15)
         return True
     except Exception:
         return False
@@ -551,10 +560,15 @@ def pump_out(config, slack):
         _READ_STATE["broken"] = False
         print("reading #%s again" % config["room"], file=sys.stderr)
     asked = read_asked()
-    for sender, line in lines:
-        # ANSWER IN THE THREAD THAT ASKED, when there is one. The human is
-        # watching that thread; a reply anywhere else reads as no reply.
-        parent = parent_for(asked, sender) if sender else None
+    for sender, line, named in lines:
+        # THE AGENT'S OWN ANSWER FIRST. `say --thread` is the agent saying
+        # which conversation its reply belongs to, and it knows — it read the
+        # thread off the message it is answering. Nothing here has to infer it.
+        #
+        # The inferred parent stays as the fallback for an agent that said
+        # nothing, which is every agent written before --thread existed. It
+        # guesses only when unambiguous; see parent_for.
+        parent = named or (parent_for(asked, sender) if sender else None)
         try:
             posted = slack.post(("*%s*: %s" % (sender, line)) if sender
                                 else line, thread_ts=parent)
@@ -596,8 +610,12 @@ def pump_in(config, slack):
         ts = message.get("ts")
         if is_from_a_human(message):
             addressing = route(message, threads)
+            # A top-level message stamps its OWN ts, so an agent answering it
+            # opens a thread ON it rather than replying beside it in the
+            # channel. That is the second thing a human wants and there was no
+            # way to express it.
             if say(config["room"], config["identity"], message["text"],
-                   addressing):
+                   addressing, message.get("thread_ts") or message.get("ts")):
                 note_question(message, addressing)
                 relayed += 1
         if ts:
@@ -666,7 +684,7 @@ def pump_threads(config, slack, messages, threads):
                 # history, so this is where the routing finally gets its input.
                 addressing = route(reply, threads)
                 if say(config["room"], config["identity"], reply["text"],
-                       addressing):
+                       addressing, ts):
                     note_question(reply, addressing)
                     relayed += 1
             if float(at) > float(newest):
