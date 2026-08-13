@@ -23,10 +23,22 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TARGET="${1:-}"
+
+# Writing to a shared repo's .gitignore is a decision belonging to that repo,
+# not to a tool one developer is installing. In a monorepo, naming one person's
+# tooling in a committed file is a policy question, and it used to be assumed.
+NO_GITIGNORE=0
+TARGET=""
+for arg in "$@"; do
+  case "$arg" in
+    --no-gitignore|--no-ignore) NO_GITIGNORE=1 ;;
+    -*) echo "unknown option: $arg" >&2; exit 2 ;;
+    *) TARGET="$arg" ;;
+  esac
+done
 
 if [ -z "$TARGET" ]; then
-  echo "usage: ./install.sh <path-to-repo>" >&2
+  echo "usage: ./install.sh <path-to-repo> [--no-gitignore]" >&2
   exit 2
 fi
 if [ ! -d "$TARGET" ]; then
@@ -225,21 +237,59 @@ if [ -f "$OLD_SKILL" ]; then
   echo "removed the old per-repo skill copy — .claude/skills/llm-chat/SKILL.md"
 fi
 
-# Created when absent, not just appended to. Both entries are per-machine: the
-# identity would let a teammate's checkout claim this project's seat in a room,
-# and settings.local.json holds an absolute path to this machine's checkout.
-# A global ~/.config/git/ignore may already cover the latter — this does not
-# assume every machine has one.
+# Both entries are per-machine: the identity would let a teammate's checkout
+# claim this project's seat in a room, and settings.local.json holds an
+# absolute path to this machine's checkout. Neither may be committable.
+#
+# ASK GIT, NOT ONE FILE. This used to `grep -qsx` the target's .gitignore, so a
+# repo that ignored these paths ANYWHERE ELSE looked un-ignored and the lines
+# were appended again on every run. `.git/info/exclude` is the git-provided
+# place for exactly this — "ignore my tooling in my clone without telling my
+# teammates about it" — and a shared monorepo will reasonably choose it.
+#
+# Re-running is not optional: a changed hook script makes the wiring stale and
+# llm_chat itself demands a re-install. So the old check re-added lines a repo
+# had deliberately moved, on every upgrade, and the only defence was a human
+# remembering to revert them. Twice in one day, reported.
+#
+# `git check-ignore` consults .gitignore, .git/info/exclude and
+# core.excludesFile together — the same resolution git itself uses, so the
+# guard finally matches the question being asked.
 GITIGNORE="$TARGET/.gitignore"
-add_ignore() {
-  if ! grep -qsx "$1" "$GITIGNORE"; then
-    if [ -s "$GITIGNORE" ]; then printf '\n' >> "$GITIGNORE"; fi
-    printf '# %s\n%s\n' "$2" "$1" >> "$GITIGNORE"
-    echo "gitignored $1"
-  fi
+already_ignored() {
+  git -C "$TARGET" check-ignore -q "$1" 2>/dev/null
 }
+add_ignore() {
+  if already_ignored "$1"; then return; fi
+  if [ "$NO_GITIGNORE" = 1 ]; then
+    UNIGNORED="$UNIGNORED $1"
+    return
+  fi
+  if [ -s "$GITIGNORE" ]; then printf '\n' >> "$GITIGNORE"; fi
+  printf '# %s\n%s\n' "$2" "$1" >> "$GITIGNORE"
+  echo "gitignored $1"
+}
+UNIGNORED=""
 add_ignore ".llm_chat/" "llm_chat identity for this project"
 add_ignore ".claude/settings.local.json" "machine-local hook config (absolute paths)"
+
+# DECLINING MUST NOT BE SILENT. Writing to a shared repo's .gitignore is that
+# repo's decision, not this installer's — but the protection being declined is
+# real, so the operator has to be choosing an unignored state rather than
+# stumbling into one. Named paths, not a general warning.
+if [ -n "$UNIGNORED" ]; then
+  echo ""
+  echo "NOT IGNORED, and --no-gitignore means nothing was written:"
+  for path in $UNIGNORED; do echo "  $path"; done
+  echo "  Nothing here stops these being committed. .llm_chat/ holds this"
+  echo "  project's identity — committed, a teammate's checkout claims its seat"
+  echo "  in a room — and settings.local.json holds absolute paths to THIS"
+  echo "  machine. .git/info/exclude prevents a commit exactly as well as"
+  echo "  .gitignore and tells nobody else about your tools:"
+  for path in $UNIGNORED; do
+    echo "    echo '$path' >> $TARGET/.git/info/exclude"
+  done
+fi
 
 # Register the MCP server too, so the same CLI shows up as structured tools
 # for an MCP client, not just delivered messages. Local scope, for the same

@@ -339,6 +339,82 @@ class TeardownTest(ShellTestCase):
         self.assertIn("Remove llm_chat from a repo", done.stdout)
 
 
+class GitignoreTest(ShellTestCase):
+    """Issue #8: the ignore guard asked ONE FILE whether a path was ignored.
+
+    A repo that ignores these anywhere else — `.git/info/exclude` is the
+    git-provided place for per-developer tooling — looked un-ignored, so every
+    re-install appended the lines again. And re-installing is not optional: a
+    changed hook makes the wiring stale and llm_chat itself demands it. Twice
+    in one day, in a shared monorepo, with a human reverting the file each
+    time.
+    """
+
+    def install(self, *extra):
+        self.run_script(INSTALL, self.repo, *extra)
+
+    def gitignore(self):
+        path = os.path.join(self.repo, ".gitignore")
+        if not os.path.isfile(path):
+            return ""
+        with open(path) as f:
+            return f.read()
+
+    def exclude(self, *lines):
+        path = os.path.join(self.repo, ".git", "info", "exclude")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a") as f:
+            f.write("\n".join(lines) + "\n")
+
+    def test_a_fresh_repo_still_gets_its_entries(self):
+        self.install()
+        self.assertIn(".llm_chat/", self.gitignore())
+
+    def test_A_PATH_IGNORED_VIA_GIT_INFO_EXCLUDE_IS_NOT_RE_ADDED(self):
+        """The report, exactly. git check-ignore consults .gitignore,
+        .git/info/exclude and core.excludesFile together — the same
+        resolution git itself uses, so the guard matches the question."""
+        self.exclude(".llm_chat/", ".claude/settings.local.json")
+        self.install()
+        self.assertEqual(self.gitignore().strip(), "")
+
+    def test_re_installing_does_not_append_a_second_time(self):
+        """Idempotence, which the old grep did give for .gitignore itself —
+        kept, because the new check must not lose it."""
+        self.install()
+        first = self.gitignore()
+        self.install()
+        self.assertEqual(self.gitignore(), first)
+
+    def test_no_gitignore_writes_NOTHING_to_the_repo(self):
+        """Writing to a shared repo's .gitignore is that repo's decision."""
+        self.run_script(INSTALL, self.repo, "--no-gitignore")
+        self.assertEqual(self.gitignore().strip(), "")
+
+    def test_DECLINING_IS_NOT_SILENT(self):
+        """The protection being declined is real, so the operator has to be
+        choosing an unignored state rather than stumbling into one."""
+        done = self.run_script(INSTALL, self.repo, "--no-gitignore")
+        self.assertIn("NOT IGNORED", done.stdout)
+        self.assertIn(".llm_chat/", done.stdout)
+        self.assertIn(".git/info/exclude", done.stdout,
+                      "must name the place that prevents a commit without "
+                      "telling the whole repo about one developer's tools")
+
+    def test_no_gitignore_says_nothing_when_they_are_ALREADY_ignored(self):
+        """A warning that fires when there is nothing to warn about is the
+        kind that gets ignored when there is."""
+        self.exclude(".llm_chat/", ".claude/settings.local.json")
+        done = self.run_script(INSTALL, self.repo, "--no-gitignore")
+        self.assertNotIn("NOT IGNORED", done.stdout)
+
+    def test_an_unknown_option_is_refused_rather_than_taken_as_the_target(self):
+        """Otherwise a typo'd flag installs into a directory named after it."""
+        done = self.run_script(INSTALL, self.repo, "--nonsense",
+                               expect_success=False)
+        self.assertEqual(done.returncode, 2)
+
+
 @unittest.skipUnless(HAS_CLAUDE, "requires the `claude` CLI on PATH")
 class McpRegistrationTest(ShellTestCase):
     """The one thing worth spawning the real CLI for: does install.sh
