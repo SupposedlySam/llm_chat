@@ -264,6 +264,27 @@ MUTATIONS = [
      "the default) and will not always spell it the same, so one of them "
      "binds in a directory the other never rings"),
 
+    ("leaving a room CLEARS the debt", "bin/llm_chat",
+     '    if member.get("done"):\n        return None',
+     "    if False:\n        return None",
+     "an agent is blocked forever by a conversation it correctly finished — "
+     "`leave` is the documented way to say 'nothing left to add', so a debt "
+     "surviving it makes the one honest exit permanently unavailable"),
+
+    ("owed reports HAVING ANSWERED, not having read", "bin/llm_chat",
+     '            and m["seq"] > last_spoke',
+     "            and m[\"seq\"] > 0",
+     "every message ever addressed to this agent is owed forever, including "
+     "ones it already answered — a gate that fires always is turned off, and "
+     "then catches nothing"),
+
+    ("could not look is not nothing owed", "triggers/answer-when-asked",
+     "    if code == 2:",
+     "    if False:",
+     "a failed check ends the turn as though nobody were waiting — the "
+     "fail-open-in-silence shape this repo shipped once already, in the "
+     "bridge, on this same escalation path"),
+
     ("hang_up removes only THIS room's doorbells", "bin/llm_chat",
      '        if not (name.startswith(prefix) and name.endswith(".sock")):',
      "        if False:",
@@ -302,6 +323,34 @@ MUTATIONS = [
      '    remove(server, "messages", {})',
      "every message in every room is destroyed and the command reports "
      "success — the where-clause IS the safety property"),
+
+    ("THREAD REPLIES REACH THE ROOM", "bin/llm-chat-slack",
+     "    return relayed + pump_threads(config, slack, messages, threads)",
+     "    return relayed",
+     "the documented PRIMARY reply path is dead: conversations.history does "
+     "not return thread replies, so the one gesture a human on a phone is "
+     "told to use is the one that cannot arrive — and top-level wakes nobody, "
+     "so the agent that asked waits forever"),
+
+    ("a thread reply is relayed ONCE", "bin/llm-chat-slack",
+     '        if seen.get(ts, {}).get("count") == count:',
+     "        if False:",
+     "every reply in every live thread is re-relayed on every poll, so one "
+     "answer from a human becomes an unbounded stream into the room"),
+
+    ("a failed read is not an empty room", "bin/llm-chat-slack",
+     "    if done.returncode != 0:\n        return None",
+     "    if False:\n        return None",
+     "'I could not look' becomes 'nobody has said anything' — a bridge whose "
+     "agent->Slack half is dead prints nothing and relays nothing, measured "
+     "on a live setup for an entire session"),
+
+    ("--check exercises the llm_chat read too", "bin/llm-chat-slack",
+     '    if waiting_for_human(config["room"], config["identity"]) is None:',
+     "    if False:",
+     "the one command whose purpose is 'is the wiring live?' passes with half "
+     "the wiring dead, which is the worst possible false green on an "
+     "escalation path"),
 
     ("a bridge stops when its room is deleted", "bin/llm-chat-slack",
      "        if room_is_gone(config):",
@@ -800,7 +849,23 @@ NOT_SWEPT = {
         "argv produced",
     "bin/llm-chat-mcp:_build_read": "every branch asserted directly for "
         "the exact argv produced",
-    "bin/llm-chat-mcp:_build_delete": "asserted directly for the exact argv, "
+    "bin/llm-chat-slack:read_reply_state": "asserted through the relay tests "
+        "— a reply arriving once and only once IS this file being read and "
+        "written correctly; the bound is asserted directly",
+    "bin/llm-chat-slack:write_reply_state": "asserted directly for the bound, "
+        "and through every relay test for the round trip",
+    "bin/llm-chat-slack:replies": "asserted directly against the HTTP seam — "
+        "the endpoint, that it is a query rather than a body, and the ts",
+    "triggers/answer-when-asked:refusal": "asserted directly — it must name "
+        "the room, the asker, the question and the exact say command, because "
+        "a gate that only says 'you owe something' sends the agent looking, "
+        "and the looking is where the turn gets abandoned",
+    "triggers/answer-when-asked:owed": "every outcome asserted directly — "
+        "crash, unparseable, and the exit code passed through unchanged",
+    "bin/llm-chat-mcp:_build_owed": "asserted directly for the exact argv, "
+        "with and without --json; the CLI-correspondence tests additionally "
+        "prove every flag it emits is one the parser accepts",
+    "bin/llm-chat-mcp:_build_delete":"asserted directly for the exact argv, "
         "with and without --yes; the CLI-correspondence tests additionally "
         "prove the flag it emits is one this parser accepts",
     "bin/llm-chat-mcp:_build_leave":"both branches asserted directly for "

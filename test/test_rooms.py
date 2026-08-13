@@ -318,6 +318,188 @@ class ProjectIdentityTest(RoomTest):
             cli.do_identify("http://127.0.0.1:1", "has space")
 
 
+class OwedTest(RoomTest):
+    """Issue #3: replying when addressed was a convention, and conventions
+    hold only some of the time.
+
+    An agent did the work, answered in its own terminal, and never posted
+    back. Nothing was broken and every rule had been read — which is the
+    problem. From the human's side, away from that desk, it was
+    indistinguishable from an agent that had died.
+    """
+
+    SERVER = "http://127.0.0.1:1"
+
+    def arrange(self, mine=(), theirs=(), done=0, closed=0, audience="me"):
+        """A room where `theirs` are messages addressed to me at those seqs."""
+        self.fake.channel("room", closed=closed)
+        self.fake.tables.setdefault("memberships", []).append(
+            {"id": "m1", "channel": "room", "identity": "me", "done": done,
+             "seen_seq": 0})
+        rows = []
+        for seq in mine:
+            rows.append({"id": "s%d" % seq, "channel": "room", "seq": seq,
+                         "from_identity": "me", "body": "mine",
+                         "audience": None, "created_at": seq})
+        for seq in theirs:
+            rows.append({"id": "t%d" % seq, "channel": "room", "seq": seq,
+                         "from_identity": "asker", "body": "a question",
+                         "audience": audience, "created_at": seq})
+        self.fake.tables.setdefault("messages", []).extend(rows)
+        cli.remember("room", "me", self.SERVER)
+
+    def owed(self, as_json=False):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.do_owed(self.SERVER, "me", as_json)
+        return code, out.getvalue()
+
+    def test_A_QUESTION_AFTER_I_LAST_SPOKE_IS_OWED(self):
+        self.arrange(mine=[1], theirs=[2])
+        code, text = self.owed()
+        self.assertEqual(code, 1)
+        self.assertIn("asker asked at seq 2", text)
+
+    def test_answering_clears_it(self):
+        """The debt is the RELATIONSHIP between two seqs, so speaking after
+        the question settles it without anything being marked."""
+        self.arrange(mine=[1, 3], theirs=[2])
+        self.assertEqual(self.owed()[0], 0)
+
+    def test_HAVING_READ_IS_NOT_HAVING_ANSWERED(self):
+        """The gap `pending` cannot express. It reports what is UNREAD, so an
+        agent that read the question and went quiet shows wakes_me:false and
+        looks clean — the debt becomes invisible exactly once it is seen."""
+        self.arrange(mine=[1], theirs=[2])
+        self.fake.tables["memberships"][0]["seen_seq"] = 99
+        self.assertEqual(self.owed()[0], 1)
+
+    def test_a_message_that_does_NOT_address_me_is_not_a_debt(self):
+        """Being in the room is not being asked. Otherwise every passive line
+        in a busy room would block the turn."""
+        self.arrange(mine=[1], theirs=[2], audience="someone-else")
+        self.assertEqual(self.owed()[0], 0)
+
+    def test_LEAVING_CLEARS_THE_DEBT(self):
+        """`leave` is the documented way to say "I have nothing left to add".
+        A debt that survived it would make the one honest exit permanently
+        unavailable — blocked forever by a conversation correctly finished."""
+        self.arrange(mine=[1], theirs=[2], done=1)
+        self.assertEqual(self.owed()[0], 0)
+
+    def test_a_closed_room_owes_nothing(self):
+        self.arrange(mine=[1], theirs=[2], closed=1)
+        self.assertEqual(self.owed()[0], 0)
+
+    def test_a_question_before_I_ever_spoke_still_counts(self):
+        """An agent that has never spoken in a room owes the same answer as
+        one that spoke and then stopped."""
+        self.arrange(mine=[], theirs=[1])
+        self.assertEqual(self.owed()[0], 1)
+
+    def test_COULD_NOT_LOOK_IS_ITS_OWN_EXIT_CODE(self):
+        """The whole reason this is safe to gate on. A check that folds its
+        own failure into 'nothing owed' fails open in silence, which is issue
+        #1 in this repo."""
+        self.arrange(mine=[1], theirs=[2])
+        real = cli.get_channel
+
+        def unreachable(server, name):
+            raise SystemExit("no llm_chat server at %s" % server)
+        cli.get_channel = unreachable
+        try:
+            code, text = self.owed()
+        finally:
+            cli.get_channel = real
+        self.assertEqual(code, 2)
+        self.assertIn("COULD NOT CHECK", text)
+
+    def test_unreachable_OUTRANKS_owed(self):
+        """A gate seeing one debt and one failure would act on the debt and
+        never learn a second room could not be read at all."""
+        self.arrange(mine=[1], theirs=[2])
+        self.fake.channel("other")
+        self.fake.tables["memberships"].append(
+            {"id": "m2", "channel": "other", "identity": "me", "done": 0,
+             "seen_seq": 0})
+        cli.remember("other", "me", self.SERVER)
+        real = cli.get_channel
+        cli.get_channel = lambda server, name: (
+            real(server, name) if name == "room" else
+            (_ for _ in ()).throw(SystemExit("unreachable")))
+        try:
+            code, _ = self.owed()
+        finally:
+            cli.get_channel = real
+        self.assertEqual(code, 2)
+
+    def test_a_room_this_identity_never_joined_owes_nothing(self):
+        """joined.json can name a room the server no longer has us in — a
+        membership removed from elsewhere, or a room deleted and rebuilt."""
+        self.arrange(mine=[1], theirs=[2])
+        self.fake.tables["memberships"] = []
+        self.assertEqual(self.owed()[0], 0)
+
+    def test_an_entry_with_NO_identity_is_skipped_not_guessed(self):
+        """Guessing which identity a room belongs to would report a debt
+        against an agent that was never in it. Reached only when --as is also
+        absent, since an explicit identity legitimately fills the gap."""
+        self.arrange(mine=[1], theirs=[2])
+        joined = cli.read_joined()
+        joined["orphan"] = {"server": self.SERVER}
+        with open(cli.joined_path(), "w") as f:
+            json.dump(joined, f)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.do_owed(self.SERVER, None, False)
+        self.assertEqual(code, 1)          # the real room still counts
+        self.assertNotIn("orphan", out.getvalue())
+
+    def test_UNREADABLE_LOCAL_STATE_IS_LOUD(self):
+        """joined.json is the list of rooms to check. If it cannot be read,
+        the honest answer is not "no rooms, nothing owed" — that is the
+        fail-open-in-silence shape this verb exists to avoid."""
+        real = cli.read_joined
+
+        def unreadable():
+            raise OSError("permission denied")
+        cli.read_joined = unreadable
+        try:
+            with self.assertRaises(SystemExit) as caught:
+                cli.do_owed(self.SERVER, "me", False)
+        finally:
+            cli.read_joined = real
+        self.assertIn("could not read joined rooms", str(caught.exception))
+
+    def test_json_carries_what_a_gate_needs_to_say_WHAT_is_owed(self):
+        self.arrange(mine=[1], theirs=[2])
+        code, text = self.owed(as_json=True)
+        payload = json.loads(text)
+        self.assertEqual(code, 1)
+        debt = payload["owed"][0]
+        self.assertEqual(debt["room"], "room")
+        self.assertEqual(debt["from"], "asker")
+        self.assertEqual(debt["seq"], 2)
+        self.assertIn("a question", debt["text_preview"])
+
+    def test_nothing_owed_says_so_rather_than_printing_nothing(self):
+        """Silence from a check is indistinguishable from a check that did not
+        run, which is the failure this whole verb is about."""
+        self.arrange(mine=[1, 3], theirs=[2])
+        self.assertIn("nothing owed", self.owed()[1])
+
+    def test_owed_is_reachable_from_the_command_line(self):
+        self.arrange(mine=[1], theirs=[2])
+        argv = sys.argv
+        sys.argv = ["llm_chat", "--server", self.SERVER, "owed", "--as", "me"]
+        try:
+            out = io.StringIO()
+            with redirect_stdout(out):
+                self.assertEqual(cli.main(), 1)
+        finally:
+            sys.argv = argv
+
+
 class DeleteTest(RoomTest):
     """The only irreversible verb, so the refusals matter more than the act."""
 

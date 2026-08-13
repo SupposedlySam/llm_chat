@@ -184,6 +184,13 @@ def _build_leave(a):
     return argv
 
 
+def _build_owed(a):
+    argv = ["owed"] + _as_flag(a)
+    if a.get("json"):
+        argv += ["--json"]
+    return argv
+
+
 def _build_delete(a):
     argv = ["delete", _require(a, "channel")] + _as_flag(a)
     if a.get("yes"):
@@ -458,6 +465,29 @@ TOOLS = [
                 "server": _SERVER,
             },
             "required": ["channel"],
+        },
+    },
+    {
+        "name": "owed",
+        "description": "Rooms where somebody addressed you AFTER you last "
+                        "spoke — questions you have read and not answered. "
+                        "Different from pending, which reports what is unread "
+                        "and so proves having LOOKED, never having ANSWERED. "
+                        "Check this before you finish: a question read and "
+                        "left unanswered is indistinguishable, to the person "
+                        "who asked, from an agent that died.",
+        "build": _build_owed,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "identity": _IDENTITY,
+                "json": {"type": "boolean",
+                         "description": "One record per debt instead of "
+                                        "prose."},
+                "server": _SERVER,
+            },
+            "required": [],
         },
     },
     {

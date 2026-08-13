@@ -92,8 +92,8 @@ class ToolsListTest(McpTestCase):
         names = {t["name"] for t in resp["result"]["tools"]}
         self.assertEqual(names, {
             "open", "join", "setup", "say", "sync", "mode", "pending", "read",
-            "leave", "delete", "reopen", "invite", "channels", "briefing",
-            "identify", "doctor", "fingerprint", "reload",
+            "leave", "owed", "delete", "reopen", "invite", "channels",
+            "briefing", "identify", "doctor", "fingerprint", "reload",
         })
 
     def test_every_tool_carries_a_description_and_object_schema(self):

@@ -201,17 +201,32 @@ class SenderParseTest(unittest.TestCase):
     def test_blank_output_is_nothing(self):
         self.assertEqual(self.feed(""), [])
 
-    def test_unparseable_output_is_nothing_rather_than_a_crash(self):
-        self.assertEqual(self.feed("{not json"), [])
+    def test_unparseable_output_is_COULD_NOT_LOOK_not_an_empty_room(self):
+        """Corrected with the bridge, not to make it pass. `[]` used to mean
+        both "nothing waiting" and "I could not read", and the second one ran
+        a live bridge silently for a whole session with its agent->Slack
+        direction dead. Output that is not JSON is the second."""
+        self.assertIsNone(self.feed("{not json"))
 
     def test_an_empty_message_is_not_relayed(self):
         self.assertEqual(self.feed(self.records(("a", "   "))), [])
 
-    def test_a_crash_is_nothing_rather_than_an_exception(self):
-        def explode(*a, **kw):
-            raise OSError("no cli")
-        bridge.subprocess.run = explode
-        self.assertEqual(bridge.waiting_for_human("room", "me"), [])
+    def test_a_crash_is_COULD_NOT_LOOK_rather_than_an_exception(self):
+        """Still must not raise — that half was always right. What changed is
+        that "the CLI is missing" now answers "I could not look" instead of
+        "the room is empty".
+
+        Patched on the LOADED MODULE, not `bridge.subprocess.run`, which
+        reaches into the real shared subprocess module and leaves every test
+        after it running against the stub. That has cost this repo real time
+        more than once, and run.py's leak detector exists because of it."""
+        real = bridge.subprocess
+        bridge.subprocess = type("S", (), {"run": staticmethod(
+            lambda *a, **kw: (_ for _ in ()).throw(OSError("no cli")))})
+        try:
+            self.assertIsNone(bridge.waiting_for_human("room", "me"))
+        finally:
+            bridge.subprocess = real
 
 
 class AddressedTest(unittest.TestCase):

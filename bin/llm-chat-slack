@@ -66,6 +66,7 @@ CONFIG = os.path.join(STATE, "slack.json")
 FALLBACK = os.path.join(ROOT, ".game_loop", "notify.json")
 CURSOR = os.path.join(STATE, "slack-cursor.json")
 THREADS = os.path.join(STATE, "slack-threads.json")
+REPLIES = os.path.join(STATE, "slack-replies.json")
 
 # Slack does NOT send "@here" in the text. It sends <!here> and <!channel>,
 # already parsed, and matching only the literal would be a feature that never
@@ -74,6 +75,11 @@ THREADS = os.path.join(STATE, "slack-threads.json")
 EVERYONE = re.compile(r"<!(here|channel|everyone)>|(?<!\S)@(here|channel)\b",
                       re.IGNORECASE)
 MAX_THREADS = 500
+
+# Whether the llm_chat read is currently failing, so the message is printed on
+# the TRANSITION rather than on every poll. One bridge per process, so a module
+# global is the honest scope for it.
+_READ_STATE = {"broken": False}
 
 DEFAULT_POLL_SEC = 10
 
@@ -132,6 +138,28 @@ class Slack:
             params["oldest"] = oldest
         return self._call("conversations.history", params=params)
 
+    def replies(self, ts):
+        """A thread's messages. THE ONLY WAY TO SEE A THREAD REPLY.
+
+        `conversations.history` does not return them — by design, not by
+        accident, and it is not an error or an empty result but a correct
+        answer to a different question. The parent comes back carrying
+        `reply_count`, so history knows they exist and simply does not carry
+        them.
+
+        That made the documented PRIMARY reply path — "reply in a thread and
+        only the agent who asked is woken" — unreachable from the moment it
+        was written. Everything downstream was correct: `route` reads
+        `thread_ts`, the thread map is keyed properly. It was never fed. The
+        only gesture a human on a phone is told to use was the one gesture
+        that could not arrive, on the channel where waiting is the cost.
+
+        Needs no scope the bridge does not already have.
+        """
+        return self._call("conversations.replies",
+                          params={"channel": self.channel, "ts": ts,
+                                  "limit": 50})
+
 
 def read_cursor():
     try:
@@ -147,6 +175,29 @@ def write_cursor(ts):
     with open(tmp, "w") as f:
         json.dump({"oldest": ts}, f)
     os.replace(tmp, CURSOR)
+
+
+def read_reply_state():
+    """{parent_ts: {"count": N, "seen_ts": ts}} — how far into each thread we
+    have relayed. Separate from the thread map because that one answers "whose
+    thread is this" and is bounded by relays out; this one answers "what have I
+    already carried in" and is bounded by threads with replies."""
+    try:
+        with open(REPLIES) as f:
+            return json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_reply_state(state):
+    if len(state) > MAX_THREADS:
+        for old in list(state)[:len(state) - MAX_THREADS]:
+            del state[old]
+    os.makedirs(os.path.dirname(REPLIES), exist_ok=True)
+    tmp = REPLIES + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(state, f)
+    os.replace(tmp, REPLIES)
 
 
 def read_threads():
@@ -198,14 +249,32 @@ def waiting_for_human(room, identity):
     phantom routes the human's reply to nobody. Reported against the sibling
     consumer of the same rendering, with a reproduction; this one had the same
     defect and had not been caught yet.
+
+    READ HAS THREE OUTCOMES AND THIS RETURNS ALL THREE. `[]` is "nothing
+    waiting"; `None` is "I could not look". They used to be the same value,
+    because the exit code was discarded and `json.loads(out or "[]")` turned an
+    empty stdout into an empty list.
+
+    That is the exact failure llms.txt documents for every other consumer of
+    `read`, and this was the one caller violating it. Measured, by somebody
+    else, on a live bridge: the configured identity had never joined the room,
+    so every read exited non-zero with nothing on stdout, and the agent->Slack
+    direction was dead for the entire session while the bridge printed nothing
+    at all. On an escalation path that is the worst possible silence — an agent
+    posts a question it believes reached a human, and waits.
     """
     try:
-        out = subprocess.run(
+        done = subprocess.run(
             [sys.executable, CLI, "read", room, "--as", identity, "--json"],
-            capture_output=True, text=True, timeout=15).stdout.strip()
-        records = json.loads(out or "[]")
+            capture_output=True, text=True, timeout=15)
     except Exception:
-        return []
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        records = json.loads((done.stdout or "").strip() or "[]")
+    except ValueError:
+        return None
     return [(r.get("from"), r.get("text") or "")
             for r in records if isinstance(r, dict) and (r.get("text") or "").strip()]
 
@@ -280,8 +349,27 @@ def is_from_a_human(message):
 
 
 def pump_out(config, slack):
-    """llm_chat -> Slack. Returns how many were relayed."""
+    """llm_chat -> Slack. Returns how many were relayed.
+
+    A read that FAILED is reported and returns 0. Reported on the transition
+    only: this runs every poll_sec, so printing on each failure would bury the
+    first occurrence — the one that says when it started — under hundreds of
+    identical lines, and a log nobody can read is the same as no log.
+    """
     lines = waiting_for_human(config["room"], config["identity"])
+    if lines is None:
+        if not _READ_STATE["broken"]:
+            _READ_STATE["broken"] = True
+            print("CANNOT READ #%s as '%s' — the agent->Slack direction is "
+                  "DEAD.\n  Nothing an agent says will reach you. Most often "
+                  "that identity never\n  joined the room:\n"
+                  "    llm_chat join %s --as %s"
+                  % (config["room"], config["identity"],
+                     config["room"], config["identity"]), file=sys.stderr)
+        return 0
+    if _READ_STATE["broken"]:
+        _READ_STATE["broken"] = False
+        print("reading #%s again" % config["room"], file=sys.stderr)
     for sender, line in lines:
         try:
             posted = slack.post(("*%s*: %s" % (sender, line)) if sender
@@ -322,6 +410,61 @@ def pump_in(config, slack):
                 relayed += 1
         if ts:
             write_cursor(ts)
+    return relayed + pump_threads(config, slack, messages, threads)
+
+
+def pump_threads(config, slack, messages, threads):
+    """Relay thread REPLIES, which history never returns. Count relayed.
+
+    Driven off `reply_count` on the parents history DID return, so a thread
+    nobody has replied to costs nothing and a quiet channel costs one request
+    total. Only parents whose count has grown since last time are fetched —
+    without that this would re-request every live thread on every poll forever.
+
+    The parent itself comes back inside its own replies and is skipped by ts;
+    bot messages are skipped by `is_from_a_human`, which is the same loop guard
+    the top-level path relies on.
+    """
+    seen = read_reply_state()
+    relayed = 0
+    changed = False
+    for parent in messages:
+        ts = parent.get("ts")
+        count = parent.get("reply_count") or 0
+        if not ts or not count:
+            continue
+        if seen.get(ts, {}).get("count") == count:
+            continue
+        try:
+            payload = slack.replies(ts)
+        except Exception as problem:
+            print("could not read thread %s: %s" % (ts, problem),
+                  file=sys.stderr)
+            continue
+        if not payload.get("ok"):
+            print("Slack refused conversations.replies: %s"
+                  % payload.get("error"), file=sys.stderr)
+            continue
+        last = seen.get(ts, {}).get("seen_ts") or ts
+        newest = last
+        for reply in sorted(payload.get("messages") or [],
+                            key=lambda m: float(m.get("ts", 0))):
+            at = reply.get("ts")
+            if not at or at == ts or float(at) <= float(last):
+                continue
+            if is_from_a_human(reply):
+                # `thread_ts` is what `route` keys on, and a reply carries it —
+                # but only messages the human ALSO chose to broadcast appear in
+                # history, so this is where the routing finally gets its input.
+                if say(config["room"], config["identity"], reply["text"],
+                       route(reply, threads)):
+                    relayed += 1
+            if float(at) > float(newest):
+                newest = at
+        seen[ts] = {"count": count, "seen_ts": newest}
+        changed = True
+    if changed:
+        write_reply_state(seen)
     return relayed
 
 
@@ -354,6 +497,25 @@ def check(config):
                   "from scope.")
         return 1
     print("Slack reachable, bot is in the channel, history readable")
+
+    # THE HALF THIS COMMAND USED TO SKIP. It validated Slack and then printed
+    # "bridging <room> as <identity>" without ever asking whether that identity
+    # can read that room — so the one command whose entire purpose is "is the
+    # wiring live?" passed with half the wiring dead. A fresh bridge ran for a
+    # whole session that way: Slack perfect, llm_chat unreadable because the
+    # identity had never joined, and nothing said so.
+    #
+    # It is the same subprocess call the loop makes, so testing it costs one
+    # invocation and removes the only remaining way for --check to lie.
+    if waiting_for_human(config["room"], config["identity"]) is None:
+        print("but CANNOT READ #%s as '%s' — the agent->Slack direction is dead."
+              % (config["room"], config["identity"]))
+        print("  Nothing an agent says would reach you. Most often that "
+              "identity has never\n  joined the room:")
+        print("    llm_chat join %s --as %s"
+              % (config["room"], config["identity"]))
+        return 1
+    print("llm_chat readable as '%s'" % config["identity"])
     print("bridging #%s as '%s'" % (config["room"], config["identity"]))
     return 0
 
@@ -413,7 +575,7 @@ def main() -> int:
             # room that no longer exists, so leaving them means a NEW room of
             # the same name silently inherits another conversation's read
             # position and thread parents.
-            for path in (CURSOR, THREADS):
+            for path in (CURSOR, THREADS, REPLIES):
                 try:
                     os.remove(path)
                 except OSError:

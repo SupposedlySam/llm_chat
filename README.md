@@ -298,6 +298,7 @@ anybody remembering to carry them:
 |---|---|---|
 | `triggers/learnings-broadcast` | `harden` | posts the `--general` form to `#learnings` |
 | `triggers/learnings-digest` | `stepback` | opens a retro with what other agents have learned |
+| `triggers/answer-when-asked` | `Stop` | refuses to end a turn while a question is unanswered |
 
 Point your `.game_loop/triggers.json` (gitignored — it holds absolute paths) at them:
 

@@ -987,6 +987,110 @@ def do_pending(server, name, identity):
     }))
 
 
+def owed_in(server, name, entry, identity):
+    """The unanswered question in one room, or None.
+
+    "Owed" is the relationship between two facts the store already holds:
+    somebody addressed me at seq N, and my own last message here is at a seq
+    below N. That is answerable now and nothing exposed it.
+    """
+    chan = get_channel(server, name)
+    if chan is None or chan.get("closed"):
+        return None
+    member = get_membership(server, name, identity)
+    if member is None:
+        return None
+    # A ROOM YOU HAVE LEFT OWES NOTHING. `leave` is the documented way to say
+    # "I have nothing left to add", so a debt that survived it would make the
+    # one honest exit permanently unavailable — an agent blocked forever by a
+    # conversation it correctly finished.
+    if member.get("done"):
+        return None
+
+    messages = rows(server, "messages", eq("channel", name))
+    mine = [m["seq"] for m in messages if m["from_identity"] == identity]
+    last_spoke = max(mine) if mine else 0
+    asks = [m for m in messages
+            if m["from_identity"] != identity
+            and m["seq"] > last_spoke
+            and wakes(m, identity, chan)]
+    if not asks:
+        return None
+    first = min(asks, key=lambda m: m["seq"])
+    return {
+        "room": name,
+        "from": first["from_identity"],
+        "seq": first["seq"],
+        "waiting_since": first.get("created_at"),
+        "unanswered": len(asks),
+        "text_preview": (first.get("body") or "").replace("\n", " ")[:120],
+    }
+
+
+def do_owed(server, identity, as_json=False):
+    """Rooms where somebody addressed this agent after it last spoke.
+
+    WHY THIS IS A VERB AND NOT A CONVENTION. "Reply when addressed" was
+    written down, agreed with, and broken — an agent did the work, answered in
+    its own terminal, and never posted back. Nothing was broken and every rule
+    had been read. From the human's side, away from that desk, it was
+    indistinguishable from an agent that had died. Conventions hold only some
+    of the time, and a long session with a compaction in the middle is exactly
+    when this one stops holding.
+
+    `pending` cannot express it. It reports what is UNREAD, so it proves
+    having LOOKED, never having ANSWERED: an agent that reads a question and
+    then goes quiet shows `wakes_me: false` and looks clean. The debt is
+    invisible precisely once the agent has seen it.
+
+    THREE OUTCOMES, because this is built to be gated on:
+      0  nothing owed
+      1  something is owed  (the gate blocks)
+      2  COULD NOT LOOK     (the gate must not treat this as "nothing owed")
+    A check that folds its own failure into the safe answer fails open in
+    silence, which is issue #1 in this repo and the reason that rule exists.
+    """
+    try:
+        joined = read_joined()
+    except Exception as problem:
+        raise SystemExit(f"could not read joined rooms: {problem}")
+
+    debts, unreachable = [], []
+    for name, entry in sorted(joined.items()):
+        who = entry.get("identity") or identity
+        if not who:
+            continue
+        try:
+            found = owed_in(entry.get("server") or server, name, entry, who)
+        except SystemExit as problem:
+            unreachable.append((name, str(problem)))
+            continue
+        if found:
+            found["as"] = who
+            debts.append(found)
+
+    if as_json:
+        print(json.dumps({"owed": debts,
+                          "unreachable": [{"room": r, "why": w}
+                                          for r, w in unreachable]}))
+    else:
+        for debt in debts:
+            print(f"#{debt['room']}: {debt['from']} asked at seq "
+                  f"{debt['seq']} and {debt['as']} has not answered")
+            print(f"    {debt['text_preview']}")
+        for room, why in unreachable:
+            print(f"#{room}: COULD NOT CHECK — {why}")
+        if not debts and not unreachable:
+            print("nothing owed")
+
+    # Unreachable outranks owed. A gate that saw one debt and one failure
+    # would report "you owe something", act on it, and never learn that a
+    # second room could not be read at all.
+    if unreachable:
+        return 2
+    return 1 if debts else 0
+
+
 def workspace_key(server):
     """The workspace a doorbell belongs to, as a stable string.
 
@@ -2292,6 +2396,14 @@ def build_parser():
                    help="raise the cap at the same time; required if the room "
                         "closed by hitting it")
 
+    p = sub.add_parser("owed",
+                       help="rooms where somebody is waiting on YOUR answer")
+    p.add_argument("--as", dest="identity")
+    p.add_argument("--json", dest="as_json", action="store_true",
+                   help="one record per debt, for a gate. Exit 0 nothing "
+                        "owed, 1 something owed, 2 COULD NOT LOOK — a gate "
+                        "that folds 2 into 0 fails open in silence")
+
     p = sub.add_parser("delete", help="destroy a channel and its transcript")
     p.add_argument("channel")
     p.add_argument("--as", dest="identity")
@@ -2376,6 +2488,10 @@ def main() -> int:
                     resolve_identity(args.identity, args.channel),
                     message_text(args))
         return 0
+    if args.cmd == "owed":
+        # Its exit code IS the answer, so it returns rather than falling
+        # through to the shared `return 0` every other verb uses.
+        return do_owed(server, args.identity, args.as_json)
     if args.cmd == "reopen":
         do_reopen(server, args.channel, args.max_messages)
         return 0

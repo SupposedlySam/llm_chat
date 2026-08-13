@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Stop hook: refuse to end a turn while somebody is waiting on your answer.
+
+Wired in `.claude/settings.local.json` against the `Stop` event.
+
+THE FAILURE. A human asked an agent a direct question in a bridged room. The
+agent did the work, answered IN ITS OWN TERMINAL, and never posted back. From
+the human's side — away from that desk, on a phone — that is indistinguishable
+from an agent that ignored them or died. Nothing was broken. Every rule was
+written down and the agent had read them.
+
+That is the whole argument for a hook. "Reply when addressed" is a convention,
+and a convention is a promise made by the same process that later gets busy,
+compacts its context, and inherits the habit without the reasons. This project
+has watched three such promises fail in one session; the ones that held were
+the ones with a rail at the point of misuse.
+
+WHAT IT CANNOT DO, said plainly: it cannot make an answer good, and it cannot
+tell an answer from a noise. `say` clears the debt, so an agent determined to
+get past this can post "ok" and move on. That is fine. The failure being
+prevented is not a bad answer, it is SILENCE — a person waiting on a reply
+that was never going to come. Turning that into a bad answer is already the
+whole improvement, and the human can see a bad answer.
+
+THREE OUTCOMES, and the third is the one that matters:
+
+    0  nothing owed            -> the turn ends
+    1  something owed          -> BLOCK, and name what
+    2  could not look          -> BLOCK, and say the check failed
+
+A gate that folds "could not look" into "nothing owed" fails open in silence.
+That is issue #1 in this repo, in the bridge, on this same escalation path —
+so this refuses to make the same mistake one layer up. A blocked turn is
+cheap; a missed answer to a human is not.
+"""
+import json
+import os
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CLI = os.path.join(os.path.dirname(HERE), "bin", "llm_chat")
+
+# Written in the command itself so a reader of the transcript sees the
+# exception was taken. An environment variable would belong to this process
+# rather than to the turn being judged.
+ALLOW = "llm_chat:allow-unanswered"
+
+
+def owed(argv=None):
+    """(exit code, parsed payload). Never raises — a crashing Stop hook is a
+    turn that cannot end, which is worse than the thing being prevented."""
+    command = [sys.executable, CLI, "owed", "--json"]
+    if argv:
+        command += argv
+    try:
+        done = subprocess.run(command, capture_output=True, text=True,
+                              timeout=20)
+    except Exception as problem:
+        return 2, {"unreachable": [{"room": "?", "why": str(problem)}]}
+    try:
+        return done.returncode, json.loads(done.stdout or "{}")
+    except ValueError:
+        return done.returncode, {}
+
+
+def refusal(payload):
+    lines = ["ANSWER FIRST — somebody is waiting on you.", ""]
+    for debt in payload.get("owed") or []:
+        lines.append("  #%s: %s asked at seq %s%s"
+                     % (debt.get("room"), debt.get("from"), debt.get("seq"),
+                        "" if debt.get("unanswered", 1) < 2
+                        else " (+%d more)" % (debt["unanswered"] - 1)))
+        if debt.get("text_preview"):
+            lines.append("      %s" % debt["text_preview"])
+        lines.append("      llm_chat say %s \"...\" --to %s"
+                     % (debt.get("room"), debt.get("from")))
+    lines += [
+        "",
+        "A question read and not answered looks exactly like an agent that "
+        "died, to",
+        "the one person who cannot see your terminal. Answer in the ROOM, not "
+        "here.",
+        "",
+        "If you genuinely have nothing to add, `llm_chat leave <room>` says so "
+        "and",
+        "clears it — that is an answer too. To end the turn anyway, put %s in "
+        "your" % ALLOW,
+        "final message.",
+    ]
+    return "\n".join(lines)
+
+
+def main(argv=None):
+    payload_in = ""
+    if not sys.stdin.isatty():
+        payload_in = sys.stdin.read()
+    if ALLOW in (payload_in or ""):
+        return 0
+
+    code, payload = owed(argv)
+    if code == 0:
+        return 0
+    if code == 2:
+        rooms = ", ".join(r.get("room", "?")
+                          for r in (payload.get("unreachable") or [])) or "?"
+        print("COULD NOT CHECK whether anyone is waiting on you (%s).\n"
+              "  Not the same as nobody waiting. If the server is down, say "
+              "so and stop;\n  do not end a turn on an unanswered check.\n"
+              "  Put %s in your final message to end anyway."
+              % (rooms, ALLOW), file=sys.stderr)
+        return 2
+    print(refusal(payload), file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

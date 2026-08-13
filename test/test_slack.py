@@ -221,6 +221,10 @@ class ConfigTest(unittest.TestCase):
 class CheckTest(unittest.TestCase):
     def setUp(self):
         self.mod = load("llm-chat-slack")
+        # --check now exercises the llm_chat read too. Readable by default so
+        # each test states only the thing it is about; the read-side cases set
+        # it themselves.
+        self.mod.waiting_for_human = lambda room, identity: []
 
     def report(self, config, slack=None):
         if slack is not None:
@@ -264,7 +268,29 @@ class CheckTest(unittest.TestCase):
         code, text = self.report(config, slack)
         self.assertEqual(code, 0)
         self.assertIn("reachable", text)
+        self.assertIn("llm_chat readable", text)
         self.assertEqual(slack.posted, [], "--check must not post")
+
+    def test_A_HEALTHY_SLACK_HALF_IS_NOT_A_PASS(self):
+        """Issue #1. --check validated Slack and then announced
+        'bridging <room> as <identity>' without ever asking whether that
+        identity can read that room — so the one command whose entire purpose
+        is 'is the wiring live?' passed with half the wiring dead."""
+        self.mod.waiting_for_human = lambda room, identity: None
+        config = {"room": "r", "identity": "i",
+                  "slack": {"bot_token": "t", "channel": "C"}}
+        code, text = self.report(config, FakeSlack())
+        self.assertEqual(code, 1)
+        self.assertIn("CANNOT READ", text)
+
+    def test_it_names_the_join_that_usually_fixes_it(self):
+        """A refusal without the remedy is an obstacle. The measured cause was
+        an identity that had never joined."""
+        self.mod.waiting_for_human = lambda room, identity: None
+        code, text = self.report({"room": "r", "identity": "i",
+                                  "slack": {"bot_token": "t", "channel": "C"}},
+                                 FakeSlack())
+        self.assertIn("llm_chat join r --as i", text)
 
     def test_an_unreachable_slack_is_reported(self):
         config = {"room": "r", "identity": "i",
@@ -317,6 +343,17 @@ class SlackClientTest(unittest.TestCase):
         self.assertEqual(self.seen["headers"]["Authorization"],
                          "Bearer xoxb-secret")
 
+    def test_replies_asks_the_ONLY_endpoint_that_returns_thread_messages(self):
+        """conversations.history does not return thread replies. Not an error
+        and not an empty result — a correct answer to a different question,
+        which is why the primary reply path was dead and nothing complained."""
+        self.respond({"ok": True, "messages": []})
+        client = self.mod.Slack("t", "C1")
+        client.replies("100.0")
+        self.assertIn("conversations.replies", self.seen["url"])
+        self.assertIn("ts=100.0", self.seen["url"])
+        self.assertIsNone(self.seen["data"], "must be a query, not a body")
+
     def test_history_is_a_query_not_a_body(self):
         self.respond({"ok": True, "messages": []})
         client = self.mod.Slack("t", "C1")
@@ -349,7 +386,7 @@ class CliSeamTest(unittest.TestCase):
     def tearDown(self):
         self.tmp.cleanup()
 
-    def stub(self, stdout="", explode=False):
+    def stub(self, stdout="", explode=False, returncode=0):
         outer = self
 
         class Fake:
@@ -363,7 +400,7 @@ class CliSeamTest(unittest.TestCase):
                     pass
                 Result.stdout = stdout
                 Result.stderr = ""
-                Result.returncode = 0
+                Result.returncode = returncode
                 return Result
         self.mod.subprocess = Fake
 
@@ -382,12 +419,33 @@ class CliSeamTest(unittest.TestCase):
                          "human's own answers straight back to Slack")
 
     def test_nothing_new_is_not_a_message(self):
-        self.stub("nothing new in human")
+        """MEASURED against the real CLI rather than imagined: `read --json`
+        with nothing waiting prints `[]` and exits 0. This fixture used to
+        stub the PROSE line ("nothing new in human") with a zero exit, which
+        the CLI never emits on --json — a fixture written from the same belief
+        as the code it was guarding, and wrong about both."""
+        self.stub("[]\n")
         self.assertEqual(self.mod.waiting_for_human("human", "me"), [])
 
+    def test_A_FAILED_READ_IS_NOT_AN_EMPTY_ROOM(self):
+        """Issue #1, and the reason it was silent for a whole session.
+
+        Measured shape of the real failure: the identity had never joined, so
+        the CLI printed prose on stdout and exited 1. Folding that into `[]`
+        made "I could not look" indistinguishable from "nobody has said
+        anything" — on the one path where the cost is a person waiting."""
+        self.stub("me has not joined human\n", returncode=1)
+        self.assertIsNone(self.mod.waiting_for_human("human", "me"))
+
+    def test_unparseable_output_is_also_not_an_empty_room(self):
+        self.stub("something unexpected", returncode=0)
+        self.assertIsNone(self.mod.waiting_for_human("human", "me"))
+
     def test_a_broken_cli_does_not_take_the_bridge_down(self):
+        """Still true, and still the point — but the honest answer to "the CLI
+        is missing" is "I could not look", not "the room is empty"."""
         self.stub(explode=True)
-        self.assertEqual(self.mod.waiting_for_human("human", "me"), [])
+        self.assertIsNone(self.mod.waiting_for_human("human", "me"))
 
     def test_it_sends_via_file_so_the_shell_cannot_eat_the_text(self):
         """A Slack message can contain anything, including backticks — which a
@@ -518,6 +576,177 @@ class LoopTest(unittest.TestCase):
             with self.assertRaises(KeyboardInterrupt):
                 self.mod.main()
         self.assertNotIn("-> Slack", out.getvalue())
+
+
+class ThreadRepliesTest(BridgeTest):
+    """Issue #2: thread replies never arrived, because `conversations.history`
+    does not return them.
+
+    The reporter's point about why the old suite could not catch it is the
+    thing worth preserving: "the failure is not an error, an exception, or a
+    wrong value — it is an API that returns exactly what it promises and
+    simply does not contain the thing." So FakeSlack must model that split
+    honestly. A fake whose history returned replies would make the bug
+    untestable and the fix unnecessary, which is how it survived being written
+    down as the primary path.
+    """
+
+    class Threaded:
+        """history returns parents with reply_count; replies returns the rest."""
+
+        def __init__(self, parent_ts="100.0", replies=(), count=None):
+            self.parent_ts = parent_ts
+            self._replies = list(replies)
+            self.count = len(self._replies) if count is None else count
+            self.asked = []
+            self.posted = []
+
+        def history(self, oldest=None):
+            return {"ok": True, "messages": [
+                {"ts": self.parent_ts, "thread_ts": self.parent_ts,
+                 "bot_id": "B1", "text": "*asker*: question",
+                 "reply_count": self.count}]}
+
+        def replies(self, ts):
+            self.asked.append(ts)
+            return {"ok": True, "messages": [
+                {"ts": self.parent_ts, "bot_id": "B1", "text": "*asker*: question"}
+            ] + self._replies}
+
+        def post(self, text):
+            self.posted.append(text)
+            return {"ok": True, "ts": "1.0"}
+
+    def human(self, ts, text):
+        return {"ts": ts, "thread_ts": "100.0", "user": "U1", "text": text}
+
+    def setUp(self):
+        super().setUp()
+        self.mod.REPLIES = os.path.join(self.tmp.name, "slack-replies.json")
+        self.mod.THREADS = os.path.join(self.tmp.name, "slack-threads.json")
+        self.mod.remember_thread("100.0", "asker")
+
+    def test_A_THREAD_REPLY_REACHES_THE_ROOM(self):
+        """The bug, in one assertion. It was in `replies` and not in `history`,
+        so nothing arrived, for every threaded reply ever sent."""
+        slack = self.Threaded(replies=[self.human("101.0", "in the thread")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual([t for _, _, t, _ in self.said], ["in the thread"])
+
+    def test_it_is_routed_to_the_agent_WHOSE_THREAD_IT_IS(self):
+        """The whole reason threading is the primary path: it is the only
+        structured gesture a phone gives a human."""
+        slack = self.Threaded(replies=[self.human("101.0", "answer")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual(self.said[0][3], ["--to", "asker"])
+
+    def test_a_reply_is_relayed_ONCE(self):
+        slack = self.Threaded(replies=[self.human("101.0", "answer")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual(len(self.said), 1)
+
+    def test_a_LATER_reply_in_the_same_thread_still_arrives(self):
+        slack = self.Threaded(replies=[self.human("101.0", "first")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        slack._replies.append(self.human("102.0", "second"))
+        slack.count = 2
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual([t for _, _, t, _ in self.said], ["first", "second"])
+
+    def test_the_PARENT_is_not_relayed_back_into_the_room(self):
+        """It came FROM the room. Relaying it would post the agent's own
+        question back at it — the loop this bridge exists not to have."""
+        slack = self.Threaded(replies=[])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual(self.said, [])
+
+    def test_a_thread_with_NO_replies_is_never_fetched(self):
+        """One request per poll on a quiet channel, not one per thread. The
+        count on the parent is what makes that possible."""
+        slack = self.Threaded(replies=[], count=0)
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual(slack.asked, [])
+
+    def test_an_UNCHANGED_thread_is_not_re_fetched(self):
+        slack = self.Threaded(replies=[self.human("101.0", "answer")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual(slack.asked, ["100.0"])
+
+    def test_a_refused_replies_call_does_not_stop_the_poll(self):
+        class Refuses(self.Threaded):
+            def replies(self, ts):
+                return {"ok": False, "error": "thread_not_found"}
+        slack = Refuses(replies=[self.human("101.0", "x")])
+        _, text = self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertIn("thread_not_found", text)
+        self.assertEqual(self.said, [])
+
+    def test_a_thread_that_cannot_be_FETCHED_does_not_stop_the_poll(self):
+        """One unreachable thread must not stop the other messages arriving."""
+        class Explodes(self.Threaded):
+            def replies(self, ts):
+                raise OSError("network")
+        slack = Explodes(replies=[self.human("101.0", "x")])
+        _, text = self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertIn("could not read thread", text)
+
+    def test_the_reply_state_is_BOUNDED(self):
+        """Written once per live thread forever otherwise. Oldest drop first —
+        a thread nobody has touched in five hundred is not one about to move."""
+        state = {"%d.0" % n: {"count": 1, "seen_ts": "1.0"}
+                 for n in range(self.mod.MAX_THREADS + 25)}
+        self.mod.write_reply_state(state)
+        self.assertEqual(len(self.mod.read_reply_state()),
+                         self.mod.MAX_THREADS)
+
+    def test_a_here_in_a_thread_still_wakes_everyone(self):
+        """Explicit beats inferred, and that rule has to survive the path it
+        could never previously be exercised on."""
+        slack = self.Threaded(replies=[self.human("101.0", "@here look")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual(self.said[0][3], ["--to-all"])
+
+
+class DeadReadIsLoudTest(BridgeTest):
+    """Issue #1: the agent->Slack direction was dead for a whole session and
+    the bridge printed nothing at all."""
+
+    def setUp(self):
+        super().setUp()
+        self.mod._READ_STATE["broken"] = False
+        self.addCleanup(self.mod._READ_STATE.update, {"broken": False})
+
+    def test_A_FAILED_READ_SAYS_SO(self):
+        self.mod.waiting_for_human = lambda room, identity: None
+        count, text = self.quiet(self.mod.pump_out, self.config, FakeSlack())
+        self.assertEqual(count, 0)
+        self.assertIn("CANNOT READ", text)
+        self.assertIn("llm_chat join human --as me", text)
+
+    def test_it_says_it_ONCE_not_every_poll(self):
+        """Every poll_sec forever would bury the first occurrence — the line
+        that says WHEN it started — under hundreds of identical ones."""
+        self.mod.waiting_for_human = lambda room, identity: None
+        first = self.quiet(self.mod.pump_out, self.config, FakeSlack())[1]
+        again = self.quiet(self.mod.pump_out, self.config, FakeSlack())[1]
+        self.assertIn("CANNOT READ", first)
+        self.assertEqual(again, "")
+
+    def test_RECOVERY_is_reported_too(self):
+        """Otherwise the last thing in the log is a failure that has since
+        fixed itself, and nobody can tell the bridge came back."""
+        self.mod.waiting_for_human = lambda room, identity: None
+        self.quiet(self.mod.pump_out, self.config, FakeSlack())
+        self.mod.waiting_for_human = lambda room, identity: []
+        _, text = self.quiet(self.mod.pump_out, self.config, FakeSlack())
+        self.assertIn("reading #human again", text)
+
+    def test_a_working_read_is_silent(self):
+        self.mod.waiting_for_human = lambda room, identity: []
+        _, text = self.quiet(self.mod.pump_out, self.config, FakeSlack())
+        self.assertEqual(text, "")
 
 
 class RoomGoneTest(BridgeTest):
