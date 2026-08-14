@@ -581,13 +581,14 @@ class DoctorTest(unittest.TestCase):
         if rooms is not None:
             with open(os.path.join(d, "joined.json"), "w") as f:
                 json.dump(rooms, f)
-        else:                      # a stub: the reload's own hooks made this
+        else:                      # a stub: an id that never joined anything
             open(os.path.join(d, "read.lock"), "w").close()
 
     def test_A_STUB_SESSION_IS_NAMED_rather_than_reported_healthy(self):
         """Everything else in doctor reports at PROJECT level, which reads as
-        fine while this session's waker is looking at nothing. A window reload
-        mints a new id; the rooms stay with the id that joined them."""
+        fine while this session's waker is looking at nothing. The rooms stay
+        with the id that joined them; what created the other id is not known,
+        and this asserts the report rather than a cause."""
         self.joined()
         self.session("5930ff25", {"room": {"identity": "me"}})
         self.session("eaf6e8d1")

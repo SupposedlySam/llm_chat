@@ -164,9 +164,11 @@ healthy replacement in exactly the case somebody was reading it. If the newest e
 went away" have opposite remedies. Restarting the zonai server under a live waker is the
 second, and it has now caused this twice.
 
-**A session that holds no rooms is reported as a stub, by name.** A VSCode window reload
-mints a new session id, and the reload's own hooks create a directory under it while your
-rooms stay with the id that joined them. The waker armed under the new id then stands down —
+**A session that holds no rooms is reported as a stub, by name.** Directories appear under
+ids that never became a conversation — a `read.lock` and nothing else — while your rooms
+stay with the id that joined them. What creates them is not known. This text used to say a
+window reload did it; that was asserted without checking and has counter-evidence, because a
+session id survives the process restart a reload performs. The waker armed under the new id then stands down —
 correctly, it is in no rooms — and you go permanently deaf with every other check green,
 which is indistinguishable from the host ignoring `asyncRewake`. `doctor` lists every live
 session for the project, marks which hold rooms, and says plainly when the one you are in is

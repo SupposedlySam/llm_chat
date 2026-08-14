@@ -358,10 +358,22 @@ def live_sessions(project=None):
     """[(session_id, holds_identity)] for this project, newest directory last.
 
     A SESSION DIRECTORY WITH NO joined.json IS A STUB, not a member, and until
-    this existed nothing could tell them apart. The case is not exotic: a
-    VSCode window reload mints a new session id, and the reload's own hooks
-    create a directory under it — a `read.lock` and nothing else — while the
-    conversation carries on under the old one, which still holds the rooms.
+    this existed nothing could tell them apart. The case is not exotic:
+    directories appear here under ids that never became a conversation, a
+    `read.lock` and nothing else, while the rooms stay with the id that joined
+    them.
+
+    WHAT CAUSES THAT IS NOT KNOWN, and this docstring used to say it was a
+    window reload minting a new session id. That claim was mine, it was never
+    checked, and it now has counter-evidence: this project's own transcript
+    carries one sessionId from 2026-08-03 while the process serving it started
+    2026-08-12. A restart happened underneath a conversation whose id did not
+    change — so whatever writes a stub, a reload changing the conversation's
+    identity is not it.
+
+    The reporter of #12 separated their observation from their theory and
+    said so. I supplied a theory anyway. The observation stands on its own and
+    is what this reports; the mechanism is open.
 
     The danger is that the stub is SILENT. A session with no identity is in no
     rooms, and a waker in no rooms stands down without a word, so the agent
@@ -2708,8 +2720,9 @@ def report_who_is_home(project):
     if mine and not any((s.get("sessionId") or "") == mine for s in here):
         print("  BUT THE HOST DOES NOT LIST THE SESSION THIS SHELL IS IN "
               "(%s).\n  Your environment and the host disagree about who you "
-              "are, which is what\n  a window reload does. The rooms are held "
-              "by whichever id joined them." % mine[:8])
+              "are. The rooms are\n  held by whichever id joined them, and "
+              "this line is the disagreement itself\n  rather than a "
+              "diagnosis of what caused it." % mine[:8])
 
 
 def report_sessions(project):
@@ -2739,9 +2752,10 @@ def report_sessions(project):
               "word, which\n  looks exactly like the host ignoring "
               "`asyncRewake` — the wrong diagnosis\n  this project has "
               "already reached once.")
-        print("  A window reload does this: the host mints a new session id "
-              "while the\n  conversation carries on, and the rooms stay with "
-              "the id that joined them.")
+        print("  Something ran here under an id that never became a "
+              "conversation. What, is\n  not known — a reload is NOT it: a "
+              "session id survives the process restart\n  a reload performs, "
+              "measured on this repo's own transcript.")
         print("  Remedy: `llm_chat identify <name> --channel <room>` here, or "
               "keep working\n  in the session that holds them.")
     elif not mine:

@@ -312,11 +312,15 @@ class WakeLoopTest(unittest.TestCase):
         self.assertEqual(self.exit_record()["server"], "http://127.0.0.1:1")
 
     def test_A_STUB_SESSION_SAYS_SO_rather_than_standing_down_silently(self):
-        """Issue #12. A window reload mints a new session id; the waker armed
-        under it is in no rooms because the rooms stayed with the id that
-        joined them. "Nothing to listen for" is true and useless — it reads as
-        an empty project, and the agent goes permanently deaf with every other
-        check green."""
+        """Issue #12. A waker armed under one id is in no rooms while another
+        id in the same project holds them. "Nothing to listen for" is true and
+        useless — it reads as an empty project, and the agent goes permanently
+        deaf with every other check green.
+
+        This docstring used to name a window reload as the cause. That was
+        asserted without checking and is contradicted by this repo's own
+        transcript: one sessionId from 2026-08-03, the process serving it
+        started 2026-08-12. The split is real; the mechanism is open."""
         base = os.path.join(self.project, ".llm_chat", "sessions", "5930ff25")
         os.makedirs(base, exist_ok=True)
         with open(os.path.join(base, "joined.json"), "w") as f:

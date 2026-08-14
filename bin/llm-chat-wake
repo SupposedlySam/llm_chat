@@ -770,9 +770,12 @@ def main() -> int:
         # TWO DIFFERENT SILENCES, and they used to be one. "Nobody joined
         # anything" is the ordinary case and healthy. "Somebody joined
         # something, under a DIFFERENT session id in this same project" is
-        # issue #12: a window reload minted a new id, this waker was armed
-        # under it, and the rooms stayed with the id that joined them. The
-        # agent then goes permanently deaf while every check reports fine.
+        # issue #12: this waker was armed under an id that holds no rooms
+        # while another id holds them, and the agent goes permanently deaf
+        # while every check reports fine. What produces the second id is not
+        # known — the comment here used to say a window reload, which was
+        # asserted without checking and is contradicted by a session id
+        # outliving the process restart a reload performs.
         elsewhere = sessions_holding_rooms()
         if elsewhere:
             record_exit("in no rooms — but session %s holds rooms for this "
