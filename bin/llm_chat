@@ -288,6 +288,45 @@ def host_sessions():
         if isinstance(found, list) else None
 
 
+def ide_window(project=None):
+    """The VSCode window this project is open in, or None.
+
+    Claude Code writes `~/.claude/ide/<port>.lock` per WINDOW, carrying that
+    window's workspace folders. The port is the identifying key: every window
+    on this machine shares one extension-host pid, so a pid cannot tell them
+    apart and the port can.
+
+    This is an ADDRESS, not a lever. The socket behind it is the extension
+    offering tools TO Claude — diagnostics, selection, diffs — so nothing can
+    be pushed through it in the other direction, and no contributed command
+    submits a prompt either. What it gives is the ability to say WHICH window
+    an agent is in, which is the precondition for any window-side mechanism
+    and is worth having before there is one.
+
+    Returns {"port", "workspace", "pid"}. None means no window claims this
+    project — including when Claude Code is not the VSCode kind at all.
+    """
+    root = os.path.abspath(project or project_dir())
+    try:
+        locks = sorted(os.listdir(os.path.expanduser("~/.claude/ide")))
+    except OSError:
+        return None
+    for name in locks:
+        if not name.endswith(".lock"):
+            continue
+        try:
+            with open(os.path.join(os.path.expanduser("~/.claude/ide"),
+                                   name)) as f:
+                found = json.load(f)
+        except (OSError, ValueError):
+            continue
+        for folder in (found.get("workspaceFolders") or []):
+            if os.path.abspath(folder) == root:
+                return {"port": name[:-len(".lock")],
+                        "workspace": folder, "pid": found.get("pid")}
+    return None
+
+
 def live_here(project=None):
     """The host's live session for this project, or None. False-y answers are
     three different facts and the caller has to be able to tell them apart:
@@ -2655,6 +2694,13 @@ def report_who_is_home(project):
         print("\nagent here: yes — %s, pid %s, session %s%s"
               % (session.get("name") or "unnamed", session.get("pid") or "?",
                  sid[:8], it_is_me))
+    window = ide_window(project)
+    if window:
+        # Recorded because it is the only thing that tells two windows apart:
+        # every VSCode window on this machine shares one extension-host pid.
+        print("  window: VSCode, port %s (an address, not a lever — nothing "
+              "can be\n  pushed through it, and no editor command submits a "
+              "prompt)" % window["port"])
     # THE HOST'S OWN ANSWER to the question issue #12 could only guess at.
     # When a window reload mints a new id, the environment and the hook
     # payload disagree and neither is authoritative. This is a third source,

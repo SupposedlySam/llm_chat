@@ -752,6 +752,75 @@ class DoctorTest(unittest.TestCase):
         self.assertNotIn("HOST DOES NOT LIST THE SESSION", text)
         self.assertIn("(this session)", text)
 
+    # ── which WINDOW an agent is in ─────────────────────────────────────────
+
+    def ide(self, entries):
+        """Stub ~/.claude/ide/<port>.lock."""
+        home = tempfile.mkdtemp()
+        ide = os.path.join(home, ".claude", "ide")
+        os.makedirs(ide)
+        for port, folders in entries:
+            with open(os.path.join(ide, "%s.lock" % port), "w") as f:
+                json.dump({"pid": 1375, "workspaceFolders": folders}, f)
+        real = os.path.expanduser
+        os.path.expanduser = lambda p: (
+            p.replace("~", home, 1) if p.startswith("~") else real(p))
+        self.addCleanup(lambda: setattr(os.path, "expanduser", real))
+
+    def test_THE_PORT_IS_WHAT_TELLS_TWO_WINDOWS_APART(self):
+        """Every VSCode window on this machine shares one extension-host pid,
+        so the pid cannot identify a window and the port can."""
+        self.ide([("111", ["/other/project"]),
+                  ("222", [self.project])])
+        found = cli.ide_window(self.project)
+        self.assertEqual(found["port"], "222")
+
+    def test_a_project_in_NO_window_is_None(self):
+        self.ide([("111", ["/other/project"])])
+        self.assertIsNone(cli.ide_window(self.project))
+
+    def test_a_window_with_SEVERAL_folders_still_matches(self):
+        self.ide([("333", ["/somewhere/else", self.project])])
+        self.assertEqual(cli.ide_window(self.project)["port"], "333")
+
+    def test_an_unreadable_lock_does_not_stop_the_search(self):
+        """One corrupt file must not hide every other window.
+
+        Named to sort BEFORE the real one, because that is the only ordering
+        where it could do harm — the first version of this test wrote `999`
+        and the match happened before the corrupt file was ever opened, so it
+        proved nothing while passing."""
+        self.ide([("222", [self.project])])
+        ide = os.path.expanduser("~/.claude/ide")
+        with open(os.path.join(ide, "000.lock"), "w") as f:
+            f.write("{not json")
+        # And something that is not a lock at all, which the directory
+        # collects: a stray file must be stepped over, not parsed. The NAME
+        # matters for the same reason as above — it has to sort before the
+        # real lock, or the match returns first and this asserts nothing.
+        with open(os.path.join(ide, "000.txt"), "w") as f:
+            f.write("ignore me")
+        self.assertEqual(cli.ide_window(self.project)["port"], "222")
+
+    def test_no_ide_directory_at_all_is_not_an_error(self):
+        """Claude Code outside VSCode writes none of this, and that is a
+        normal state rather than a fault."""
+        home = tempfile.mkdtemp()
+        real = os.path.expanduser
+        os.path.expanduser = lambda p: (
+            p.replace("~", home, 1) if p.startswith("~") else real(p))
+        self.addCleanup(lambda: setattr(os.path, "expanduser", real))
+        self.assertIsNone(cli.ide_window(self.project))
+
+    def test_doctor_names_the_window_when_there_is_one(self):
+        self.joined()
+        self.hosts([{"pid": 42, "cwd": self.project, "sessionId": "bbb",
+                     "name": "w"}])
+        self.ide([("61888", [self.project])])
+        text = self.report()
+        self.assertIn("port 61888", text)
+        self.assertIn("not a lever", text)
+
     def test_live_sessions_reports_identity_per_session(self):
         self.session("aaa", {"room": {"identity": "me"}})
         self.session("bbb")

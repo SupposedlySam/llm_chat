@@ -868,6 +868,13 @@ MUTATIONS = [
      "and stays silent about the stop underneath it, which is the answer to "
      "the question being asked"),
 
+    ("one corrupt lock does not hide every other window", "bin/llm_chat",
+     "        except (OSError, ValueError):\n            continue",
+     "        except (OSError, ValueError):\n            return None",
+     "a single unreadable ~/.claude/ide lock file hides every window after it "
+     "in the listing, so the address is reported as absent for projects that "
+     "have one — and absent is the answer that reads as 'not a VSCode agent'"),
+
     ("nobody home is not the same as could not ask", "bin/llm_chat",
      "    sessions = host_sessions()\n    if sessions is None:\n"
      "        return None",
