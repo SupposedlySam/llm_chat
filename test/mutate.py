@@ -611,6 +611,60 @@ MUTATIONS = [
      "alarm that gets a guard switched off within the hour, and the same "
      "mistake this repo already corrected once in the remedy counter"),
 
+    ("a server that cannot be reached is NOT an hour of silence",
+     "bin/llm_chat",
+     "    except SystemExit:\n"
+     "        return None                 # could not look; NOT \"nothing "
+     "happened\"",
+     "    except SystemExit:\n        pass",
+     "an unreachable server reads as perfect quiet, so deferred work runs in "
+     "the middle of a busy afternoon — absence reported as a clean bill of "
+     "health, which is the inversion this repo has spent a day removing "
+     "everywhere else"),
+
+    ("the quiet number says what it could NOT see", "bin/llm_chat",
+     "    if not os.path.isfile(mark):",
+     "    if False:",
+     "an absent PostToolUse mark — 'no agent is wired into this project' — is "
+     "printed as though tool activity had been counted and found absent, so a "
+     "number derived from one signal reads as covering both"),
+
+    ("CANNOT TELL is not permission to run", "bin/llm_chat",
+     "        if quiet is None:",
+     "        if False:",
+     "the run path treats 'could not measure the silence' as 'the silence is "
+     "long enough' and starts a database rewrite while agents are working"),
+
+    ("an agent running a tool counts as activity", "bin/llm_chat",
+     "    if at and (newest is None or at > newest[0]):\n"
+     '        newest = (at, "an agent running a tool")',
+     "    if False:\n"
+     '        newest = (at, "an agent running a tool")',
+     "'no messages' is taken for 'nobody working', so a database rewrite "
+     "starts under an agent an hour deep in a silent task — the exact "
+     "interruption the queue exists to avoid"),
+
+    ("the queue holds NAMES, never commands", "bin/llm_chat",
+     "        if task not in MAINTENANCE:",
+     "        if False:",
+     "any string can be queued for unattended execution; this runs on a "
+     "loopback server with no authentication where any agent in any room can "
+     "write the queue file, so 'persuade an agent to write a file' becomes "
+     "arbitrary code execution"),
+
+    ("the registry is checked again at RUN time", "bin/llm_chat",
+     "        if not known:",
+     "        if False:",
+     "the queue file is on disk and anything that can write to the project "
+     "can edit it, so checking only at queue time leaves the gate open at the "
+     "one moment that matters — the moment of execution"),
+
+    ("a failed task is NOT marked done", "bin/llm_chat",
+     "        if ok:\n            entry[\"done\"] = True",
+     '        entry["done"] = True',
+     "a vacuum refused because the server holds the database open is recorded "
+     "as finished, so the work never happens and the queue reports success"),
+
     ("a SESSION START is not a wake landing", "bin/llm-chat-wake",
      '    if event != "Stop":',
      "    if False:",
@@ -978,6 +1032,58 @@ NOT_SWEPT = {
         "unparseable output, a room that is not listed, and a room with no "
         "member list. All four are 'could not look', and the paired sweep "
         "checks that is never reported as 'nobody is there'",
+    "bin/llm_chat:last_activity": "its refusal is swept — an unreachable "
+        "server must not read as silence — and the rest is asserted directly: "
+        "a recent message, a recent tool run, the newest of the two winning, "
+        "a zero timestamp not counting as now, and every message pushing the "
+        "deadline out, which is the debounce itself",
+    "bin/llm_chat:quiet_for": "a two-line wrapper whose only decision — None "
+        "stays None rather than becoming a number — is swept through "
+        "last_activity and asserted directly in both directions",
+    "bin/llm_chat:describe_quiet": "asserted directly in all three states: "
+        "how much longer to wait, due now, and CANNOT TELL reading as cannot "
+        "tell rather than as silence",
+    "bin/llm_chat:do_maintenance": "every action asserted directly — queue "
+        "refuses an unknown name and names the known ones, queueing twice "
+        "does not stack, cancel of something absent is not an error, list "
+        "shows attempts and finished work, run with nothing due says why. "
+        "The dispatch is exercised through the real parser, so an argparse "
+        "dest that did not match would fail here rather than in production",
+    "bin/llm_chat:run_maintenance": "the three refusals are swept or asserted "
+        "— CANNOT TELL is not permission, the threshold holds a minute under "
+        "the line, and a second runner finds the lock taken. The empty-queue "
+        "path is asserted to not even ask the server, because it runs on "
+        "every waker heartbeat",
+    "bin/llm_chat:_run_queued": "the registry re-check and the not-marked-"
+        "done rule are both swept; the rest is asserted directly, including "
+        "that a task raising does not break the turn, that the attempt "
+        "history is capped, and that a task queued AFTER the quiet check "
+        "waits for the next pass",
+    "bin/llm_chat:vacuum_store": "asserted against a real SQLite file with "
+        "real freed pages, a missing file, and a genuinely locked one — the "
+        "last being the case that decides whether this is safe to run "
+        "unattended beside a live server",
+    "bin/llm_chat:read_maintenance": "corrupt JSON, three wrong shapes and "
+        "the round trip asserted directly; it is the same tolerate-anything "
+        "reader as read_exits, whose migration branch is swept",
+    "bin/llm_chat:write_maintenance": "asserted by round trip through every "
+        "queue test in the file; it is an atomic replace with no decision in "
+        "it",
+    "bin/llm_chat:maintenance_path": "a path join, pinned by every test in "
+        "test_maintenance.py reading back what the CLI wrote",
+    "bin/llm_chat:maintenance_lock": "a path join, exercised by the "
+        "second-runner test which takes the lock by hand and asserts the run "
+        "declines",
+    "bin/llm_chat:_ago": "presentation only — it turns a timestamp into "
+        "minutes for a listing, and both the known and unknown cases are "
+        "asserted through the list output",
+    "bin/llm-chat-wake:run_maintenance": "all three paths asserted directly: "
+        "it asks the CLI, it does not ask when there is no server, and a "
+        "failure never breaks the waker it runs inside",
+    "bin/llm-chat-mcp:_build_maintenance": "covered by the correspondence "
+        "tests, which are stronger than a sweep here: every declared property "
+        "must reach the argv, and every built argv must be accepted by the "
+        "real CLI parser",
     "bin/llm_chat:commit_cursor": "its two properties are swept as ORDER "
         "rather than as body — that the text is out before it runs, and that "
         "it still runs on success. Both are asserted directly as well: a read "

@@ -542,6 +542,32 @@ def poll(channel, entry):
     return out
 
 
+def run_maintenance():
+    """Ask the CLI to do any deferred work, if it is quiet enough to.
+
+    Through the CLI rather than inline for the reason everything else here
+    goes through it: the quiet threshold, the task registry and the refusal
+    rules live in one place, and a waker that reimplemented them would drift
+    from the thing a human runs by hand.
+
+    Silent on failure and given a generous timeout, because the job it exists
+    for is a database rewrite that legitimately takes a while — and because a
+    chat outage must never break the session. Nothing is reported back to the
+    agent: the whole point is not to interrupt anybody.
+    """
+    rooms = joined_rooms()
+    server = next((e.get("server") for e in rooms.values() if e.get("server")),
+                  None)
+    if not server:
+        return
+    try:
+        subprocess.run([sys.executable, CLI, "--server", server,
+                        "maintenance", "run"],
+                       capture_output=True, text=True, timeout=600)
+    except Exception:
+        pass
+
+
 def sync_broadcasts():
     """Ask the CLI to reconcile broadcast rooms. Failure is silent on purpose —
     this is a convenience, and a chat outage must never break the session."""
@@ -824,6 +850,16 @@ def main() -> int:
             checked_once = True
             continue
         wait_for_ring(bells, HEARTBEAT_SEC)
+        # DEFERRED WORK GOES HERE AND NOWHERE ELSE. This is the only process
+        # that exists precisely BECAUSE nothing is happening — it is asleep on
+        # a doorbell during exactly the silence the queue is waiting for, and
+        # it already wakes on a heartbeat to recheck local facts.
+        #
+        # It does not wake the session with the result. Interrupting an agent
+        # to tell it a database was compacted is the interruption the whole
+        # mechanism exists to avoid; the record goes in maintenance.json and
+        # `llm_chat maintenance list` reads it back.
+        run_maintenance()
         # The only real stop conditions: nothing can arrive any more, a newer
         # waker took over, or the session is gone.
         if not still_worth_listening(joined_rooms()):

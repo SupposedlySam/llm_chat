@@ -329,6 +329,44 @@ class WakeLoopTest(unittest.TestCase):
         self.assertIn("identity split", reason)
         self.assertIn("5930ff25", reason)
 
+    def test_THE_WAKER_ASKS_THE_CLI_TO_DO_DEFERRED_WORK(self):
+        """It is the only process that exists precisely BECAUSE nothing is
+        happening — asleep on a doorbell during exactly the silence the
+        maintenance queue is waiting for."""
+        seen = []
+        real = self.mod.subprocess.run
+        self.mod.subprocess.run = lambda argv, **kw: seen.append(argv)
+        try:
+            self.mod.run_maintenance()
+        finally:
+            self.mod.subprocess.run = real
+        self.assertEqual(len(seen), 1)
+        self.assertIn("maintenance", seen[0])
+        self.assertIn("run", seen[0])
+
+    def test_it_does_not_ask_when_there_is_no_server_to_ask(self):
+        self.mod.joined_rooms = lambda: {}
+        real = self.mod.subprocess.run
+        self.mod.subprocess.run = lambda *a, **kw: self.fail("asked anyway")
+        try:
+            self.mod.run_maintenance()      # must not raise or call
+        finally:
+            self.mod.subprocess.run = real
+
+    def test_a_failing_maintenance_run_never_breaks_the_waker(self):
+        """It is bookkeeping running from a hook. An exception escaping would
+        take out the polling it was only trying to be helpful alongside."""
+        real = self.mod.subprocess.run
+
+        def boom(*a, **kw):
+            raise OSError("no such file")
+
+        self.mod.subprocess.run = boom
+        try:
+            self.mod.run_maintenance()      # must not raise
+        finally:
+            self.mod.subprocess.run = real
+
     def test_A_WAKER_DOES_NOT_REPORT_A_SPLIT_WITH_ITSELF(self):
         """The false alarm this is one line away from. A waker reaches the
         stand-down only when it is in no rooms, and its own session directory

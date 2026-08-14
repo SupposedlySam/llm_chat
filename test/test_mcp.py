@@ -94,6 +94,7 @@ class ToolsListTest(McpTestCase):
             "open", "join", "setup", "say", "sync", "mode", "pending", "read",
             "leave", "owed", "delete", "reopen", "invite", "channels",
             "briefing", "identify", "doctor", "fingerprint", "reload",
+            "maintenance",
         })
 
     def test_every_tool_carries_a_description_and_object_schema(self):

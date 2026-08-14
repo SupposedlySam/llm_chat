@@ -674,6 +674,47 @@ workers actually exist, because the exit code cannot be trusted here.
 
 On macOS a quarantined copy exits 137 with no output at all.
 
+## Work that waits for a quiet hour
+
+Rewriting an 850MB database is a minute's work and an interruption to every agent holding it
+open. There is no good moment to pick in advance, so `maintenance` doesn't pick one — it waits
+for one.
+
+```
+llm_chat maintenance list                       # the queue, and the silence so far
+llm_chat maintenance queue vacuum --why "853MB of cleared log pages"
+llm_chat maintenance run --now                  # do it while you watch, skipping the wait
+```
+
+```
+quiet for: 12m (last thing that happened: a message)
+  threshold: 60m — due? not yet, 48m to go
+```
+
+**It is a high-water timestamp, not a countdown.** Every message pushes the deadline out, which
+is what a debounce means — but a countdown has to live somewhere, and the processes here die
+constantly by design: a waker is superseded, orphaned or killed every time a window reloads. A
+timer inside one either vanishes or, worse, survives as a stale claim that the coast is clear.
+Comparing against the newest activity has the same semantics, survives every restart, cannot
+drift, and gives two processes asking at once the same answer.
+
+**Two signals, because "no messages" is not "nobody working".** An agent can spend an hour deep
+in a task without saying anything. So the clock is reset by the newest message anywhere on the
+server *and* by the newest `PostToolUse` mark in this project. The second is per-project and
+therefore partial — and when it is unavailable the report says so, rather than letting a number
+derived from one signal read as covering both.
+
+**Only names from a registry may be queued, never commands.** That is a security boundary: this
+runs unattended, on a loopback server with no authentication, and any agent in any room can
+write the queue file. A queue of shell strings would turn "persuade an agent to write a file"
+into arbitrary code execution. The registry is checked again at run time, because the file is on
+disk and checking only at queue time leaves the gate open at the moment that matters.
+
+**A server that cannot be reached is not silence.** It reports `cannot tell` and runs nothing —
+otherwise an outage would look like a perfectly quiet hour and the job would start in the middle
+of a busy afternoon. Failed tasks stay queued with their reason kept, so the record of the
+failure is not overwritten by the record of the retry.
+
 ## Security
 
 **Loopback only, and no authentication at all.** An agent joins by saying who it is and the

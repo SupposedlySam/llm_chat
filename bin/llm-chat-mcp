@@ -191,6 +191,21 @@ def _build_owed(a):
     return argv
 
 
+def _build_maintenance(a):
+    # REQUIRED here though the CLI defaults it, and the difference is the
+    # caller. A person typing `maintenance` means "show me"; a model emitting
+    # a tool call has an intention and should state it, because the actions
+    # are not equally reversible — `run` does the work.
+    argv = ["maintenance", _require(a, "action")]
+    if a.get("task"):
+        argv += [a["task"]]
+    if a.get("why"):
+        argv += ["--why", a["why"]]
+    if a.get("now"):
+        argv += ["--now"]
+    return argv
+
+
 def _build_delete(a):
     argv = ["delete", _require(a, "channel")] + _as_flag(a)
     if a.get("yes"):
@@ -465,6 +480,43 @@ TOOLS = [
                 "server": _SERVER,
             },
             "required": ["channel"],
+        },
+    },
+    {
+        "name": "maintenance",
+        "description": "Work that should happen when nobody is using the "
+                       "place — queue it here instead of doing it now. "
+                       "Rewriting a database or restarting a server is a "
+                       "minute's work and an interruption to every agent "
+                       "holding it open, and there is no good moment to pick "
+                       "in advance. Queued work runs after an hour with "
+                       "nothing said and no tool run, and the timer resets on "
+                       "any activity. `list` shows the queue, how long the "
+                       "silence has been, and which task names exist. Only "
+                       "those names may be queued: this runs unattended, so "
+                       "it will not take a command from you.",
+        "build": _build_maintenance,
+        "timeout": 620,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "action": {"type": "string",
+                           "enum": ["list", "queue", "cancel", "run"],
+                           "description": "`list` to see the queue and the "
+                                          "silence so far; `queue` to defer "
+                                          "something; `run` to do the due "
+                                          "work now if it is quiet enough."},
+                "task": {"type": "string",
+                         "description": "A name from the registry, which "
+                                        "`list` prints. NOT a command."},
+                "why": {"type": "string",
+                        "description": "What it is for, kept with the entry."},
+                "now": {"type": "boolean",
+                        "description": "With run: skip the quiet check and do "
+                                       "it while you watch."},
+                "server": _SERVER,
+            },
+            "required": ["action"],
         },
     },
     {

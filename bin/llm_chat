@@ -2034,6 +2034,343 @@ def hook_report(project):
 NEWEST_COLUMN = "thread"
 
 
+# How long everything has to have been quiet before deferred work may run.
+# An hour, because the thing being deferred locks a database other agents are
+# holding open, and the cost of going early is somebody's work interrupted
+# mid-task while the cost of going late is nothing at all.
+QUIET_SECONDS = int(os.environ.get("LLM_CHAT_QUIET_SECONDS") or 3600)
+
+
+def last_activity(server, project=None):
+    """(when, what) for the most recent sign of life, or None for CANNOT TELL.
+
+    NOT A TIMER, AND THAT IS THE DESIGN. A debounce that resets on each message
+    is usually written as a countdown some process holds, which means the
+    countdown is only as durable as that process — and the processes here die
+    constantly and by design: a waker is superseded, orphaned, or killed every
+    time a window reloads. A timer living in one of those either vanishes or,
+    worse, survives as a stale claim that the coast is clear.
+
+    A high-water TIMESTAMP has the same semantics — every message pushes the
+    deadline out — and none of the fragility. It is stateless, survives every
+    restart, cannot drift, and two processes asking at once get the same
+    answer. "Reset the timer" and "the newest message is newer" are the same
+    sentence written two ways; only one of them needs a daemon to be true.
+
+    TWO SIGNALS, because "no messages" is not "nobody working". An agent can
+    spend an hour deep in a task without saying anything, and starting a
+    database rewrite underneath it is precisely the interruption this exists to
+    avoid. So:
+
+      the newest message anywhere on this server  — somebody spoke
+      the newest PostToolUse mark in this project — an agent ran a tool
+
+    The second is per-project and therefore partial: it sees agents wired into
+    THIS checkout and no others. That is a real gap and is reported as one
+    rather than smoothed over — see `quiet_for`.
+
+    None means CANNOT TELL, and callers must treat it as "not quiet". A server
+    that cannot be reached would otherwise read as an hour of perfect silence,
+    which is the exact inversion this whole session has been fixing: absence
+    reported as a clean bill of health.
+    """
+    newest = None
+    try:
+        for m in rows(server, "messages"):
+            at = (m.get("created_at") or 0) / 1000.0
+            if at and (newest is None or at > newest[0]):
+                newest = (at, "a message")
+    except SystemExit:
+        return None                 # could not look; NOT "nothing happened"
+    mark = os.path.join(project or project_dir(), ".llm_chat", "probe",
+                        "post-tool-use")
+    try:
+        at = os.path.getmtime(mark)
+    except OSError:
+        at = None                   # this project has no agent wired in
+    if at and (newest is None or at > newest[0]):
+        newest = (at, "an agent running a tool")
+    return newest
+
+
+def activity_blind_spots(project=None):
+    """What this measurement could NOT see, as sentences.
+
+    A number that means "nothing has happened anywhere" is only worth that if
+    both signals were readable, and one of them routinely is not. An absent
+    PostToolUse mark is "no agent is wired into this project", which is NOT
+    the same fact as "no agent ran a tool" — and the second is what a bare
+    number invites you to read.
+
+    wcs's rule, arriving in #learnings while this was being written: when a
+    computation's inputs can each be independently missing, the guard belongs
+    on the COMPUTATION rather than on the inputs, because a caller can
+    otherwise combine present fields into a meaningless whole. The strict form
+    would refuse to produce a number at all. That is too strict here — the
+    message signal is genuinely server-wide and is the one the feature was
+    asked for — so the number survives and carries what it is missing.
+    """
+    missing = []
+    mark = os.path.join(project or project_dir(), ".llm_chat", "probe",
+                        "post-tool-use")
+    if not os.path.isfile(mark):
+        missing.append("no agent is wired into this project, so a tool "
+                       "running here is invisible — only messages were "
+                       "counted")
+    return missing
+
+
+def quiet_for(server, project=None):
+    """(seconds, what_was_last) since anything happened, or None.
+
+    None is CANNOT TELL and is never quiet enough for anything. A caller that
+    treats it as a long silence has inverted the check.
+    """
+    found = last_activity(server, project)
+    if found is None:
+        return None
+    when, what = found
+    return max(0, int(now_ms() / 1000.0 - when)), what
+
+
+def maintenance_path(project=None):
+    return os.path.join(project or project_dir(), ".llm_chat",
+                        "maintenance.json")
+
+
+def read_maintenance(project=None):
+    try:
+        with open(maintenance_path(project)) as f:
+            found = json.load(f)
+    except (OSError, ValueError):
+        return []
+    return [t for t in found if isinstance(t, dict) and t.get("task")] \
+        if isinstance(found, list) else []
+
+
+def write_maintenance(entries, project=None):
+    path = maintenance_path(project)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(entries, f, indent=1)
+    os.replace(tmp, path)
+
+
+def vacuum_store(server, project):
+    """Rewrite the zonai database so freed pages go back to the filesystem.
+
+    The motivating job: 853MB of cleared log rows that SQLite keeps allocated
+    because DELETE frees pages inside the file and nothing returns them.
+
+    REFUSES RATHER THAN FORCES. VACUUM needs an exclusive lock, and the zonai
+    server holds this database open — so if it is serving, this reports that
+    and stays queued. Waiting another hour costs nothing; wrestling a lock away
+    from the process that owns the data is not a thing to do unattended.
+    """
+    import sqlite3
+    store = os.path.join(ROOT, ".zonai", "data", "zonai.sqlite")
+    if not os.path.isfile(store):
+        return False, "no database at %s" % store
+    before = os.path.getsize(store)
+    try:
+        conn = sqlite3.connect(store, timeout=5.0)
+        try:
+            conn.execute("VACUUM")
+        finally:
+            conn.close()
+    except sqlite3.OperationalError as problem:
+        # Almost always "database is locked" — the server is serving. That is
+        # a REASON, not a failure: it stays queued and the next quiet window
+        # tries again.
+        return False, "%s (the server holds it open — still queued)" % problem
+    after = os.path.getsize(store)
+    return True, "reclaimed %.1f MB (%.1f MB -> %.1f MB)" % (
+        (before - after) / 1e6, before / 1e6, after / 1e6)
+
+
+# THE ONLY THINGS THAT MAY RUN UNATTENDED, by name.
+#
+# The queue holds NAMES, never commands, and that is a security decision
+# rather than a stylistic one. This file runs on a loopback server with no
+# authentication — the trust model of two people at one desk — and any agent
+# in any room can write to this project's state. A queue of shell strings
+# executed on a timer would turn "persuade an agent to write a file" into
+# arbitrary code execution, and persuading an agent is exactly what a message
+# from another machine gets to attempt.
+#
+# A name that is not in here is refused at queue time and again at run time.
+MAINTENANCE = {
+    "vacuum": ("return freed database pages to the filesystem", vacuum_store),
+}
+
+
+def maintenance_lock(project=None):
+    """Serialise runs. Two wakers reaching a quiet window together must not
+    both start rewriting the same database."""
+    return os.path.join(project or project_dir(), ".llm_chat",
+                        "maintenance.lock")
+
+
+def run_maintenance(server, project=None, force=False):
+    """Run what is queued, if it is quiet enough. Returns a list of lines.
+
+    THE QUIET CHECK IS RE-ASKED HERE rather than trusted from the caller,
+    because the caller decided some time ago and a message may have landed
+    since. The whole point is not to interrupt somebody, and the gap between
+    deciding and acting is where an interruption would fit.
+    """
+    queued = [t for t in read_maintenance(project) if not t.get("done")]
+    if not queued:
+        return []
+    quiet = quiet_for(server, project)
+    if not force:
+        if quiet is None:
+            # CANNOT TELL is not permission. A server that cannot be reached
+            # would otherwise look like an hour of perfect silence.
+            return ["maintenance: cannot tell how quiet it is — not running "
+                    "anything"]
+        seconds, what = quiet
+        if seconds < QUIET_SECONDS:
+            return []               # silent: this is the ordinary case
+    # THE SAME PRECONDITION AS describe_quiet, at the OTHER site computing
+    # from these inputs. wcs again, an hour after the first one: when you add
+    # a precondition to a derived value, grep for the arithmetic rather than
+    # the field. The report had grown this caveat and the decision had not —
+    # and the decision is where partial sight actually costs something.
+    notes = ["maintenance: ran with a partial view — %s" % blind
+             for blind in activity_blind_spots(project)]
+    fd = None
+    try:
+        os.makedirs(os.path.dirname(maintenance_lock(project)), exist_ok=True)
+        fd = os.open(maintenance_lock(project), os.O_CREAT | os.O_RDWR, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return []               # another runner has it; not our turn
+        return notes + _run_queued(server, project, queued)
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _run_queued(server, project, queued):
+    said = []
+    entries = read_maintenance(project)
+    for entry in entries:
+        if entry.get("done") or entry not in queued:
+            continue
+        name = entry.get("task")
+        known = MAINTENANCE.get(name)
+        if not known:
+            entry["done"] = True
+            entry["result"] = "refused: %r is not a known maintenance task" % name
+            said.append("maintenance: refused unknown task %r" % name)
+            continue
+        try:
+            ok, detail = known[1](server, project)
+        except Exception as problem:          # never let this break a turn
+            ok, detail = False, "raised %s: %s" % (type(problem).__name__,
+                                                   problem)
+        # The ATTEMPT is recorded whether or not it worked, and a failure does
+        # not mark the task done — the lesson from wake.exit one file over: the
+        # record of the retry must not overwrite the record of the failure.
+        entry.setdefault("attempts", []).append(
+            {"at": now_ms() // 1000, "ok": bool(ok), "detail": detail})
+        entry["attempts"] = entry["attempts"][-4:]
+        if ok:
+            entry["done"] = True
+        said.append("maintenance: %s — %s" % (name, detail))
+    write_maintenance(entries, project)
+    return said
+
+
+def describe_quiet(server, project=None):
+    """One line about how long it has been quiet, for a person reading."""
+    quiet = quiet_for(server, project)
+    if quiet is None:
+        return ("quiet for: CANNOT TELL — the server did not answer. That is "
+                "not silence,\n  and nothing deferred will run on the "
+                "strength of it.")
+    seconds, what = quiet
+    ready = "yes" if seconds >= QUIET_SECONDS else (
+        "not yet, %dm to go" % ((QUIET_SECONDS - seconds + 59) // 60))
+    lines = ["quiet for: %dm (last thing that happened: %s)" % (seconds // 60,
+                                                                what),
+             "  threshold: %dm — due? %s" % (QUIET_SECONDS // 60, ready)]
+    # What the number could NOT see, printed with the number rather than in a
+    # docstring nobody reads at the moment they are deciding.
+    for blind in activity_blind_spots(project):
+        lines.append("  NOT COUNTED: %s" % blind)
+    return "\n".join(lines)
+
+
+def do_maintenance(server, action, task=None, why=None, now=False):
+    """Defer disruptive work until nobody is using the place.
+
+    The problem this solves is one of timing, not capability: rewriting an
+    850MB database is a minute's work and an interruption to every agent
+    holding it open. There is no good moment to choose in advance, so this
+    waits for one — an hour with nothing said and no tool run — and takes it.
+    """
+    if action == "list":
+        print(describe_quiet(server))
+        entries = read_maintenance()
+        pending = [e for e in entries if not e.get("done")]
+        print("\nqueued: %d" % len(pending))
+        for entry in pending:
+            print("  %-10s %s" % (entry["task"], entry.get("why") or ""))
+            for attempt in entry.get("attempts") or []:
+                print("      tried %s ago: %s"
+                      % (_ago(attempt.get("at")),
+                         attempt.get("detail") or "no detail"))
+        done = [e for e in entries if e.get("done")]
+        if done:
+            print("\ndone: %s" % ", ".join(e["task"] for e in done))
+        print("\nthings that may be queued:")
+        for name, (what, _) in sorted(MAINTENANCE.items()):
+            print("  %-10s %s" % (name, what))
+        return 0
+    if action == "queue":
+        if task not in MAINTENANCE:
+            raise SystemExit(
+                "%r is not a maintenance task. This runs UNATTENDED, so only "
+                "reviewed\nnames may be queued — never a command. Known: %s"
+                % (task, ", ".join(sorted(MAINTENANCE))))
+        entries = read_maintenance()
+        if any(e["task"] == task and not e.get("done") for e in entries):
+            print("%s is already queued" % task)
+            return 0
+        entries.append({"task": task, "why": why,
+                        "queued_at": now_ms() // 1000})
+        write_maintenance(entries)
+        print("queued %s — it runs after %dm of quiet.\n%s"
+              % (task, QUIET_SECONDS // 60, describe_quiet(server)))
+        return 0
+    if action == "cancel":
+        entries = read_maintenance()
+        left = [e for e in entries if e.get("task") != task or e.get("done")]
+        if len(left) == len(entries):
+            print("%s was not queued" % task)
+            return 0
+        write_maintenance(left)
+        print("cancelled %s" % task)
+        return 0
+    said = run_maintenance(server, force=now)
+    if not said:
+        print(describe_quiet(server))
+        print("\nnothing ran.")
+    for line in said:
+        print(line)
+    return 0
+
+
+def _ago(at):
+    if not at:
+        return "?"
+    return "%dm" % max(0, (now_ms() // 1000 - int(at)) // 60)
+
+
 def server_is_current(server):
     """Does the server behind this URL know the columns this build writes?
 
@@ -2942,6 +3279,24 @@ def build_parser():
                         "owed, 1 something owed, 2 COULD NOT LOOK — a gate "
                         "that folds 2 into 0 fails open in silence")
 
+    p = sub.add_parser("maintenance",
+                       help="work to do once everybody has gone quiet")
+    p.add_argument("action", nargs="?", default="list",
+                   choices=("list", "queue", "cancel", "run"),
+                   help="`queue <task>` defers one, `run` does the due ones "
+                        "if it is quiet enough, `list` shows the queue and "
+                        "how long the silence has been")
+    p.add_argument("task", nargs="?",
+                   help="a name from the registry — `list` names them. NEVER "
+                        "a command: this runs unattended, so only things "
+                        "someone has already reviewed may be named here")
+    p.add_argument("--why", help="what this is for, kept with the entry so "
+                                 "the next reader knows why it is pending")
+    p.add_argument("--now", action="store_true",
+                   help="with `run`: skip the quiet check. For doing it "
+                        "deliberately while you watch, which is not what the "
+                        "queue is for")
+
     p = sub.add_parser("delete", help="destroy a channel and its transcript")
     p.add_argument("channel")
     p.add_argument("--as", dest="identity")
@@ -3031,6 +3386,9 @@ def main() -> int:
                     resolve_identity(args.identity, args.channel),
                     message_text(args))
         return 0
+    if args.cmd == "maintenance":
+        return do_maintenance(server, args.action, args.task, args.why,
+                              args.now)
     if args.cmd == "owed":
         # Its exit code IS the answer, so it returns rather than falling
         # through to the shared `return 0` every other verb uses.
