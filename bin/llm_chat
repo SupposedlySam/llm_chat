@@ -1972,6 +1972,47 @@ RELOAD_ADVICE = {
 }
 
 
+def auto_reload_path(project=None):
+    return os.path.join(project or project_dir(), ".llm_chat",
+                        "wake-by-reload")
+
+
+def auto_reload_allowed(project=None):
+    """May a MISSED wake reload this window without being asked?
+
+    OFF UNLESS TURNED ON, per project, and that is the human's rule rather
+    than a default I chose. Reloading is UI automation that ends whatever turn
+    is in flight; it is recoverable, but it is not the sort of thing a chat
+    tool should start doing to somebody's editor because it decided a message
+    was late.
+    """
+    return os.path.isfile(auto_reload_path(project))
+
+
+def do_auto_reload(setting):
+    """Turn the opt-in on or off, and say what it means either way."""
+    path = auto_reload_path()
+    if setting == "on":
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("a missed wake may reload this window\n")
+        print("auto-reload ON for %s.\n"
+              "  When a wake is asked for and does not land, and a message is "
+              "still\n  waiting, this window will be reloaded to bring the "
+              "session back.\n"
+              "  It refuses if the host reports more than one live session "
+              "here."
+              % os.path.basename(project_dir()))
+    else:
+        try:
+            os.remove(path)
+        except OSError:
+            pass
+        print("auto-reload OFF. A missed wake will be recorded and nothing "
+              "else.")
+    return 0
+
+
 def do_reload(force=False, i_know=False):
     """Reload the VSCode window, so newly-written hooks are registered.
 
@@ -2040,6 +2081,26 @@ def do_reload(force=False, i_know=False):
             "any waiting message will wake it.\n\nRe-run with --force:"
             "\n  llm_chat reload --force"
         )
+
+    # ONE WINDOW CAN HOLD MORE THAN ONE SESSION, and a reload takes them all.
+    # The title guard below identifies a WINDOW; it cannot see how many
+    # conversations are inside it. On a machine running one session per
+    # repository that distinction never bites, which is exactly why it would
+    # go unnoticed until the day somebody opens a second panel and a reload
+    # ends a colleague's turn they never asked about.
+    #
+    # Askable now: the host lists live sessions with their cwd.
+    here = live_here(project)
+    if here is not None and len(here) > 1 and not i_know:
+        raise SystemExit(
+            "refusing: the host reports %d live sessions in this project, and "
+            "a reload\n  takes the whole WINDOW — every conversation in it, "
+            "not just yours.\n%s\n  Reload by hand if you mean all of them, "
+            "or `--i-know` to accept it."
+            % (len(here),
+               "\n".join("    %s  %s" % ((s.get("sessionId") or "?")[:8],
+                                         s.get("name") or "unnamed")
+                         for s in here)))
 
     # Target THIS project's window explicitly. The first version activated
     # VSCode and drove whatever was frontmost, which on a machine running seven
@@ -3527,6 +3588,12 @@ def build_parser():
     p.add_argument("--i-know", dest="i_know", action="store_true",
                    help="reload even though SessionStart has never been seen "
                         "firing; you accept being stranded")
+    p.add_argument("--auto", choices=("on", "off"),
+                   help="let a MISSED wake reload this window by itself. OFF "
+                        "unless you turn it on, per project: it is UI "
+                        "automation that ends whatever turn is in flight, and "
+                        "it refuses when the host reports more than one live "
+                        "session here — one window holds them all")
 
     return ap
 
@@ -3581,6 +3648,8 @@ def main() -> int:
         do_reopen(server, args.channel, args.max_messages)
         return 0
     if args.cmd == "reload":
+        if args.auto:
+            return do_auto_reload(args.auto)
         do_reload(args.force, args.i_know)
         return 0
     if args.cmd == "fingerprint":

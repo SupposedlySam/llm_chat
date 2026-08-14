@@ -681,6 +681,30 @@ MUTATIONS = [
      "a vacuum refused because the server holds the database open is recorded "
      "as finished, so the work never happens and the queue reports success"),
 
+    ("a reload refuses when a window holds MORE THAN ONE session",
+     "bin/llm_chat",
+     "    if here is not None and len(here) > 1 and not i_know:",
+     "    if False:",
+     "a reload takes the whole WINDOW, so a second conversation in it loses "
+     "whatever turn was in flight — the title guard identifies a window and "
+     "cannot see inside it, and one-session-per-repo is exactly the setup "
+     "where this goes unnoticed until it does not"),
+
+    ("a missed wake is NOTICED at all", "bin/llm-chat-wake",
+     "    note_rewake()\n    watch_for_a_missed_wake()\n    sys.exit(2)",
+     "    note_rewake()\n    sys.exit(2)",
+     "nothing outlives the exit, so a wake the harness ignores is never seen "
+     "by anything: no turn means no Stop, no Stop means no waker, no waker "
+     "means nobody looks — the circularity that lets an idle session go deaf "
+     "in silence"),
+
+    ("reloading on a missed wake is OPT-IN", "bin/llm-chat-wake",
+     "    if os.path.isfile(AUTO_RELOAD_PATH):",
+     "    if True:",
+     "every project gets its window reloaded by a chat tool that decided a "
+     "message was late — UI automation ending whatever turn was in flight, "
+     "on machines whose owner never asked for it"),
+
     ("a SESSION START is not a wake landing", "bin/llm-chat-wake",
      '    if event != "Stop":',
      "    if False:",
@@ -1176,6 +1200,22 @@ NOT_SWEPT = {
         "without earlier messages, the own-post filter and the closed-room "
         "note. It is do_read's body, moved so that committing the cursor is "
         "the LAST act of every exit rather than the first act of the function",
+    "bin/llm-chat-wake:watch_for_a_missed_wake": "the spawn itself is swept — "
+        "removing it is the circularity coming back — and its two refusals "
+        "are asserted directly: no pending note and a corrupt one both spawn "
+        "nothing, and a Popen that raises never breaks the wake it runs one "
+        "line before",
+    "bin/llm_chat:auto_reload_allowed": "a file-exists check whose only "
+        "decision — off unless turned on — is swept in the waker, where it "
+        "decides whether a window gets reloaded, and asserted directly in "
+        "both directions through the switch",
+    "bin/llm_chat:auto_reload_path": "a path join, pinned by the switch tests "
+        "writing it and auto_reload_allowed reading it back",
+    "bin/llm_chat:do_auto_reload": "both directions asserted directly, "
+        "including that turning it OFF when it was never on is not an error, "
+        "and that the switch says what it will and will not do. Reached "
+        "through the real parser, which asserts it short-circuits before "
+        "do_reload — otherwise turning the opt-in on would reload the window",
     "bin/llm_chat:host_sessions": "every way of not getting an answer is "
         "asserted directly and they all return None: a `claude` that is not "
         "installed, a non-zero exit, unparseable output and two wrong shapes. "

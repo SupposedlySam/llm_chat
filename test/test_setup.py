@@ -298,9 +298,101 @@ class ReloadTest(unittest.TestCase):
         recorder = self.stub()
         with redirect_stdout(io.StringIO()):
             cli.do_reload(force=True)
-        script = recorder.calls[0][0][0]
-        self.assertIn("osascript", script[0])
-        self.assertIn(os.path.basename(self.project), " ".join(script))
+        # FOUND rather than assumed to be first. `do_reload` now asks the host
+        # how many live sessions are in this project before it touches the UI,
+        # so indexing call zero pinned an ordering the test never meant to
+        # assert and broke on a guard being added in front of it.
+        scripts = [c[0][0] for c in recorder.calls if "osascript" in c[0][0][0]]
+        self.assertEqual(len(scripts), 1, "expected exactly one osascript run")
+        self.assertIn(os.path.basename(self.project), " ".join(scripts[0]))
+
+    @unittest.skipUnless(sys.platform == "darwin", "the reload path is macOS-only")
+    def test_IT_REFUSES_WHEN_A_WINDOW_HOLDS_MORE_THAN_ONE_SESSION(self):
+        """The danger the human named. A reload takes the whole WINDOW, and
+        the title guard identifies a window without seeing how many
+        conversations are inside it. One session per repository is the setup
+        here, which is exactly why this would go unnoticed until somebody
+        opens a second panel and a reload ends a turn they never asked
+        about."""
+        self.stub()
+        real = cli.live_here
+        cli.live_here = lambda project=None: [
+            {"sessionId": "aaaaaaaa", "name": "one"},
+            {"sessionId": "bbbbbbbb", "name": "two"}]
+        self.addCleanup(lambda: setattr(cli, "live_here", real))
+        with self.assertRaises(SystemExit) as caught:
+            with redirect_stdout(io.StringIO()):
+                cli.do_reload(force=True)
+        said = str(caught.exception)
+        self.assertIn("2 live sessions", said)
+        self.assertIn("whole WINDOW", said)
+        self.assertIn("aaaaaaaa", said)
+
+    @unittest.skipUnless(sys.platform == "darwin", "the reload path is macOS-only")
+    def test_ONE_session_is_the_ordinary_case_and_proceeds(self):
+        """Paired. Refusing on ambiguity must not become refusing always."""
+        recorder = self.stub()
+        real = cli.live_here
+        cli.live_here = lambda project=None: [{"sessionId": "aaaaaaaa"}]
+        self.addCleanup(lambda: setattr(cli, "live_here", real))
+        with redirect_stdout(io.StringIO()):
+            cli.do_reload(force=True)
+        self.assertTrue([c for c in recorder.calls
+                         if "osascript" in c[0][0][0]])
+
+    @unittest.skipUnless(sys.platform == "darwin", "the reload path is macOS-only")
+    def test_a_host_that_CANNOT_BE_ASKED_does_not_block_a_reload(self):
+        """None means could-not-ask. Refusing on it would make the whole verb
+        unusable wherever `claude agents` is unavailable, to prevent a case
+        nobody has evidence of."""
+        recorder = self.stub()
+        real = cli.live_here
+        cli.live_here = lambda project=None: None
+        self.addCleanup(lambda: setattr(cli, "live_here", real))
+        with redirect_stdout(io.StringIO()):
+            cli.do_reload(force=True)
+        self.assertTrue([c for c in recorder.calls
+                         if "osascript" in c[0][0][0]])
+
+    def test_AUTO_RELOAD_IS_OFF_UNTIL_TURNED_ON(self):
+        """The human's rule, and the right default: this is UI automation
+        that ends whatever turn is in flight."""
+        self.assertFalse(cli.auto_reload_allowed(self.project))
+        with redirect_stdout(io.StringIO()):
+            cli.do_auto_reload("on")
+        self.assertTrue(cli.auto_reload_allowed(self.project))
+        with redirect_stdout(io.StringIO()):
+            cli.do_auto_reload("off")
+        self.assertFalse(cli.auto_reload_allowed(self.project))
+
+    def test_the_switch_is_reachable_through_the_real_parser(self):
+        """`--auto` must short-circuit before `do_reload` runs, or turning the
+        opt-in on would itself reload the window."""
+        seen = []
+        real = cli.do_reload
+        cli.do_reload = lambda *a, **kw: seen.append(a)
+        argv = sys.argv
+        sys.argv = ["llm_chat", "reload", "--auto", "on"]
+        try:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(), 0)
+        finally:
+            sys.argv = argv
+            cli.do_reload = real
+        self.assertEqual(seen, [], "turning the switch on reloaded the window")
+        self.assertTrue(cli.auto_reload_allowed(self.project))
+
+    def test_turning_it_off_when_it_was_never_on_is_not_an_error(self):
+        with redirect_stdout(io.StringIO()) as out:
+            cli.do_auto_reload("off")
+        self.assertIn("OFF", out.getvalue())
+
+    def test_the_switch_says_what_it_will_and_will_not_do(self):
+        with redirect_stdout(io.StringIO()) as out:
+            cli.do_auto_reload("on")
+        said = out.getvalue()
+        self.assertIn("does not land", said)
+        self.assertIn("more than one live session", said)
 
     @unittest.skipUnless(sys.platform == "darwin", "the reload path is macOS-only")
     def test_a_failed_reload_says_what_to_do_instead(self):

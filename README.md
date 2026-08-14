@@ -561,6 +561,28 @@ superseded — **no `Stop` waker existed in that session at all** — and when a
 3.7 minutes later the session was woken unprompted, the harness naming the delivering hook
 `SessionStart:resume`.
 
+**A missed wake can reload the window for you, and it is off until you turn it on.**
+
+```
+llm_chat reload --auto on      # per project; off everywhere by default
+```
+
+The problem it solves is a circularity. Exiting 2 *asks* the harness to wake the model; if it
+does not, no turn happens, so no `Stop` fires, so no waker starts, so nothing looks. Every
+detector here needs a turn to run, and a turn is exactly what did not occur — an idle session
+can go deaf and nothing finds out. So `wake` now leaves a detached child behind that outlives
+the exit, waits out the grace window, and asks one question: is the rewake note still on disk?
+A landing consumes it, so a note still sitting there means nothing came.
+
+**The record is written either way; only the reload is opt-in.** `wake.missed` names when a
+wake was requested and never landed, whether or not anything was done about it.
+
+**It refuses when the host reports more than one live session in this project.** A reload takes
+the whole *window* — every conversation in it — and the title guard identifies a window without
+seeing how many are inside. One session per repository is the normal setup, which is precisely
+why this would go unnoticed until somebody opened a second panel and a reload ended a turn they
+never asked about. `claude agents --json` makes that askable.
+
 That matters because `reload` refuses unless a `SessionStart` invocation has actually left
 its mark. Registration is not firing: an earlier guard allowed a reload on the strength of
 the hook being *registered*, and stranded the session twice — it came back with nothing

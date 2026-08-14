@@ -156,6 +156,186 @@ class WakerEvidenceTest(unittest.TestCase):
             os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None)
 
 
+class MissedWakeWatcherTest(unittest.TestCase):
+    """Something that outlives the exit, so a wake that never lands is seen.
+
+    THE CIRCULARITY. Exiting 2 asks the harness to wake the model; if it does
+    not, no turn happens, so no Stop fires, so no waker starts, so nothing
+    looks. Every other detector here needs a turn to run, and a turn is
+    exactly what did not occur. A detached child is the only thing that can
+    ask afterwards.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.mod = load("llm-chat-wake")
+        self.mod.STATE = self.tmp.name
+        self.mod.REWAKE_PATH = os.path.join(self.tmp.name, "wake.rewake")
+        self.mod.MISSED_PATH = os.path.join(self.tmp.name, "wake.missed")
+        self.mod.AUTO_RELOAD_PATH = os.path.join(self.tmp.name,
+                                                 "wake-by-reload")
+        self.mod.REWAKE_GRACE = 0
+        self.mod.WATCH_MARGIN = 0
+        self.slept = []
+        self.mod.time = type("T", (), {
+            "sleep": staticmethod(lambda s: self.slept.append(s)),
+            "time": staticmethod(lambda: 1000.0)})
+        self.ran = []
+        self.mod.subprocess = type("S", (), {
+            "DEVNULL": -3,
+            "Popen": staticmethod(lambda *a, **k: None),
+            "run": staticmethod(lambda argv, **k: (
+                self.ran.append(argv) or type("R", (), {
+                    "returncode": 0, "stdout": "reload requested",
+                    "stderr": ""})()))})
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def pending(self, at=1000.0):
+        with open(self.mod.REWAKE_PATH, "w") as f:
+            json.dump({"at": at, "pid": 7}, f)
+
+    def missed(self):
+        with open(self.mod.MISSED_PATH) as f:
+            return json.load(f)
+
+    def test_A_CONSUMED_REQUEST_MEANS_THE_WAKE_LANDED(self):
+        """`wake_landing` removes the note as its first act, so a note that is
+        gone is a turn that happened. Nothing is owed and nothing is
+        recorded."""
+        self.assertEqual(self.mod.watch(1000.0), 0)
+        self.assertFalse(os.path.exists(self.mod.MISSED_PATH))
+
+    def test_A_NOTE_STILL_SITTING_THERE_IS_A_MISSED_WAKE(self):
+        self.pending()
+        self.mod.watch(1000.0)
+        self.assertEqual(self.missed()["requested_at"], 1000)
+
+    def test_a_NEWER_request_is_not_this_watcher_s_business(self):
+        """Two wakes in quick succession. The second one's note is not
+        evidence about the first, and recording it as such would report a miss
+        every time a session is busy."""
+        self.pending(at=2000.0)
+        self.mod.watch(1000.0)
+        self.assertFalse(os.path.exists(self.mod.MISSED_PATH))
+
+    def test_IT_DOES_NOT_RELOAD_UNLESS_OPTED_IN(self):
+        """The human's rule. The record is useful to everybody; the action is
+        somebody's call."""
+        self.pending()
+        self.mod.watch(1000.0)
+        self.assertEqual(self.ran, [])
+        self.assertFalse(self.missed()["acted"])
+
+    def test_OPTED_IN_it_asks_the_CLI_to_reload(self):
+        self.pending()
+        open(self.mod.AUTO_RELOAD_PATH, "w").close()
+        self.mod.watch(1000.0)
+        self.assertEqual(len(self.ran), 1)
+        self.assertIn("reload", self.ran[0])
+        self.assertIn("--force", self.ran[0])
+        self.assertTrue(self.missed()["acted"])
+
+    def test_the_CLI_owns_every_refusal(self):
+        """It asks rather than decides: not a VSCode host, more than one live
+        session, SessionStart never seen firing. A refusal is recorded as not
+        having acted, with what it said."""
+        self.pending()
+        open(self.mod.AUTO_RELOAD_PATH, "w").close()
+        self.mod.subprocess = type("S", (), {
+            "DEVNULL": -3, "Popen": staticmethod(lambda *a, **k: None),
+            "run": staticmethod(lambda argv, **k: type("R", (), {
+                "returncode": 1, "stdout": "",
+                "stderr": "refusing: 2 live sessions"})())})
+        self.mod.watch(1000.0)
+        record = self.missed()
+        self.assertFalse(record["acted"])
+        self.assertIn("2 live sessions", record["said"])
+
+    def test_a_reload_that_EXPLODES_still_records_the_miss(self):
+        """The miss is the fact worth keeping. Losing it because the remedy
+        failed would leave the session deaf AND undiagnosed."""
+        self.pending()
+        open(self.mod.AUTO_RELOAD_PATH, "w").close()
+        def boom(*a, **kw):
+            raise OSError("no such file")
+        self.mod.subprocess = type("S", (), {
+            "DEVNULL": -3, "Popen": staticmethod(lambda *a, **k: None),
+            "run": staticmethod(boom)})
+        self.mod.watch(1000.0)
+        self.assertIn("no such file", self.missed()["said"])
+
+    def test_it_waits_out_the_GRACE_WINDOW_before_judging(self):
+        """Asking immediately would call every wake a miss."""
+        self.mod.REWAKE_GRACE = 90
+        self.mod.WATCH_MARGIN = 20
+        self.mod.watch(1000.0)
+        self.assertEqual(self.slept, [110])
+
+    def test_the_spawn_never_breaks_the_wake_it_describes(self):
+        """It runs inside `wake`, one line before the exit that delivers the
+        message. Bookkeeping must not take the delivery down with it."""
+        self.pending()
+        self.mod.subprocess = type("S", (), {
+            "DEVNULL": -3,
+            "Popen": staticmethod(lambda *a, **k: (_ for _ in ()).throw(
+                OSError("cannot fork"))),
+            "run": staticmethod(lambda *a, **k: None)})
+        self.mod.watch_for_a_missed_wake()      # must not raise
+
+    def test_no_pending_note_spawns_nothing(self):
+        seen = []
+        self.mod.subprocess = type("S", (), {
+            "DEVNULL": -3,
+            "Popen": staticmethod(lambda *a, **k: seen.append(a)),
+            "run": staticmethod(lambda *a, **k: None)})
+        self.mod.watch_for_a_missed_wake()
+        self.assertEqual(seen, [])
+
+    def test_an_unwritable_state_dir_does_not_break_the_watcher(self):
+        """Every bookkeeping write here is best-effort, and this one runs in a
+        detached process nobody is watching — raising would be silent."""
+        self.pending()
+        self.mod.MISSED_PATH = "/proc/nope/wake.missed"
+        self.assertEqual(self.mod.watch(1000.0), 0)   # must not raise
+
+    def test_THE_WATCH_MODE_IS_REACHED_FROM_ARGV(self):
+        """It is spawned detached with no payload coming, so main() has to
+        take this branch BEFORE reading stdin — otherwise it waits forever for
+        something nobody will send."""
+        seen = []
+        real = self.mod.watch
+        self.mod.watch = lambda at: seen.append(at) or 0
+        argv = sys.argv
+        sys.argv = ["llm-chat-wake", "--watch", "1234.5"]
+        try:
+            self.assertEqual(self.mod.main(), 0)
+        finally:
+            sys.argv = argv
+            self.mod.watch = real
+        self.assertEqual(seen, [1234.5])
+
+    def test_a_MALFORMED_watch_argument_does_not_crash(self):
+        argv = sys.argv
+        sys.argv = ["llm-chat-wake", "--watch", "not-a-number"]
+        try:
+            self.assertEqual(self.mod.main(), 0)
+        finally:
+            sys.argv = argv
+
+    def test_a_corrupt_note_spawns_nothing(self):
+        with open(self.mod.REWAKE_PATH, "w") as f:
+            f.write("{not json")
+        seen = []
+        self.mod.subprocess = type("S", (), {
+            "DEVNULL": -3,
+            "Popen": staticmethod(lambda *a, **k: seen.append(a)),
+            "run": staticmethod(lambda *a, **k: None)})
+        self.mod.watch_for_a_missed_wake()
+        self.assertEqual(seen, [])
+
+
 class StillLandingTest(unittest.TestCase):
     """Is the wake path working NOW — asked of the queue, not of history.
 

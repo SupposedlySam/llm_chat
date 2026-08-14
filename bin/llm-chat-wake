@@ -654,7 +654,84 @@ def wake(blocks):
     # finding this note fresh is the only evidence available that anything
     # happened. See wake_landing() for why it is evidence rather than proof.
     note_rewake()
+    watch_for_a_missed_wake()
     sys.exit(2)
+
+
+MISSED_PATH = os.path.join(STATE, "wake.missed")
+AUTO_RELOAD_PATH = os.path.join(STATE, "wake-by-reload")
+
+# How long after the request to give up on it. The grace window is what
+# `wake_landing` already uses to decide a turn is attributable, plus enough
+# margin that a slow host is not called a failure.
+WATCH_MARGIN = 20
+
+
+def watch_for_a_missed_wake():
+    """Leave something alive that can notice this wake never landed.
+
+    THE CIRCULARITY THIS BREAKS. Exiting 2 asks the harness to wake the model;
+    if it does not, no turn happens, so no Stop fires, so no waker starts, so
+    nothing looks. Every detector this project has needs a turn to run, and a
+    turn is precisely the thing that did not occur. An idle session can
+    therefore go deaf and nothing anywhere finds out.
+
+    A detached child outlives the exit and can. It sleeps out the grace
+    window and then asks one question: is the rewake note still on disk? A
+    landing consumes it — `wake_landing` removes it as its first act — so a
+    note still sitting there means nothing came.
+
+    It runs whatever the project has decided about reloading, because the
+    RECORD is useful to everybody and only the ACTION is somebody's call.
+    """
+    try:
+        with open(REWAKE_PATH) as f:
+            at = float((json.load(f) or {}).get("at") or 0)
+    except (OSError, ValueError, TypeError):
+        return
+    try:
+        subprocess.Popen(
+            [sys.executable, os.path.abspath(__file__), "--watch", str(at)],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True)
+    except Exception:
+        pass            # never let bookkeeping break the wake it describes
+
+
+def watch(at):
+    """Wait out the grace window, then record whether the wake landed."""
+    time.sleep(REWAKE_GRACE + WATCH_MARGIN)
+    try:
+        with open(REWAKE_PATH) as f:
+            pending = json.load(f) or {}
+    except (OSError, ValueError):
+        return 0                     # consumed: a turn happened. Nothing owed.
+    if abs(float(pending.get("at") or 0) - at) > 0.5:
+        return 0                     # a NEWER request; this one was answered
+    record = {"at": int(time.time()), "requested_at": int(at),
+              "acted": False}
+    if os.path.isfile(AUTO_RELOAD_PATH):
+        # Opt-in, per project, and off unless somebody turned it on. The CLI
+        # owns every refusal — not a VSCode host, more than one live session
+        # in this project, SessionStart never observed firing — so this asks
+        # rather than decides.
+        try:
+            done = subprocess.run(
+                [sys.executable, CLI, "reload", "--force"],
+                capture_output=True, text=True, timeout=90)
+            record["acted"] = done.returncode == 0
+            record["said"] = (done.stdout or done.stderr or "").strip()[:300]
+        except Exception as problem:
+            record["said"] = str(problem)[:300]
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        tmp = MISSED_PATH + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(record, f)
+        os.replace(tmp, MISSED_PATH)
+    except OSError:
+        pass
+    return 0
 
 
 def note_rewake():
@@ -731,6 +808,15 @@ def wake_landing(event="unknown"):
 
 
 def main() -> int:
+    # THE WATCH MODE IS CHECKED FIRST, and before stdin is touched. This
+    # process is spawned detached with no payload coming, so reading stdin
+    # would be a wait for something nobody is going to send.
+    if len(sys.argv) > 2 and sys.argv[1] == "--watch":
+        try:
+            return watch(float(sys.argv[2]))
+        except ValueError:
+            return 0
+
     # The payload names the event that invoked us. Recording only "it ran" was
     # not enough: this hook is registered on BOTH Stop and SessionStart, wrote
     # the same mark either way, and so could not answer the one question that
