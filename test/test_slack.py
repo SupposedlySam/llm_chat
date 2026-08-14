@@ -749,6 +749,72 @@ class ThreadRepliesTest(BridgeTest):
         self.quiet(self.mod.pump_in, self.config, slack)
         self.assertEqual([t for _, _, t, _, _ in self.said], ["first", "second"])
 
+    # ── a relay that FAILED must not move the mark ──────────────────────────
+    # Reported by wcs, and the shape named by showrunner: one value answering
+    # two questions — "how far have I read" and "what is safe to never re-read"
+    # — which disagree in exactly the case that matters. On this channel the
+    # sender is a person, so a dropped reply is somebody waiting.
+
+    def test_A_FAILED_RELAY_DOES_NOT_ADVANCE_THE_MARK(self):
+        """The advance sat outside the success branch, so a reply whose relay
+        failed moved the high-water mark and was never looked at again."""
+        self.mod.say = lambda *a, **kw: False
+        slack = self.threaded(replies=[self.human(1, "please answer me")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+
+        # It is still retryable: the mark must not have passed it.
+        seen = self.mod.read_reply_state().get(self.parent, {})
+        self.assertEqual(seen.get("seen_ts"), self.parent,
+                         "the mark moved past a message that never arrived")
+
+    def test_and_the_NEXT_POLL_ACTUALLY_RETRIES_IT(self):
+        """Paired, and the one that matters — the mark not moving is only
+        useful if the retry then happens."""
+        self.mod.say = lambda *a, **kw: False
+        slack = self.threaded(replies=[self.human(1, "please answer me")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual(self.said, [])
+
+        self.mod.say = lambda room, identity, text, addressing=None, thread=None: (
+            self.said.append((room, identity, text, addressing, thread)) or True)
+        self.quiet(self.mod.pump_in, self.config, slack)
+        self.assertEqual([t for _, _, t, _, _ in self.said],
+                         ["please answer me"])
+
+    def test_a_failure_does_not_step_over_LATER_replies_either(self):
+        """Ordering. If the first of three fails, the two behind it must not
+        be relayed and marked while the first is still owed — that would
+        deliver a conversation out of order and strand the opening line."""
+        self.mod.say = lambda *a, **kw: False
+        slack = self.threaded(replies=[self.human(1, "first"),
+                                       self.human(2, "second")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        seen = self.mod.read_reply_state().get(self.parent, {})
+        self.assertEqual(seen.get("seen_ts"), self.parent)
+
+    def test_a_SUCCESSFUL_relay_still_advances_it(self):
+        """Paired with all of the above: refusing to advance on failure must
+        not become refusing to advance at all, which would relay every reply
+        forever."""
+        slack = self.threaded(replies=[self.human(1, "answer")])
+        self.quiet(self.mod.pump_in, self.config, slack)
+        seen = self.mod.read_reply_state().get(self.parent, {})
+        self.assertNotEqual(seen.get("seen_ts"), self.parent)
+
+    def test_A_NAME_IN_A_THREAD_REPLY_IS_HONOURED(self):
+        """The name-tagging path did not reach here at all — `route` was
+        called without members, so `@build fix this` in a thread woke the
+        thread's owner instead of build. A gap in a feature shipped hours
+        earlier, found by reading the call sites rather than the tests."""
+        real = self.mod.members_of
+        self.mod.members_of = lambda room: ("build", "asker")
+        try:
+            slack = self.threaded(replies=[self.human(1, "@build take this")])
+            self.quiet(self.mod.pump_in, self.config, slack)
+        finally:
+            self.mod.members_of = real
+        self.assertEqual(self.said[0][3], ["--to", "build"])
+
     def test_the_PARENT_is_not_relayed_back_into_the_room(self):
         """It came FROM the room. Relaying it would post the agent's own
         question back at it — the loop this bridge exists not to have."""

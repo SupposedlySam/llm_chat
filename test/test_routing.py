@@ -10,7 +10,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from support import load  # noqa: E402
@@ -222,6 +222,83 @@ class NameTaggingTest(unittest.TestCase):
     def test_no_text_and_no_members_are_both_safe(self):
         self.assertEqual(bridge.addressed_names("", self.MEMBERS), [])
         self.assertEqual(bridge.addressed_names("hello", ()), [])
+
+
+class SayChecksTheExitCodeTest(unittest.TestCase):
+    """`say` ran the CLI and returned True whatever it did.
+
+    `subprocess.run` does not raise on a non-zero exit, so a relay refused for
+    any of the reasons it gets refused — a closed room, the message cap, a
+    server that went away — reported success. The caller counted it, the
+    cursor moved past it, and nothing anywhere looked wrong.
+
+    wcs relayed the framing from the gents owner and it is the right one: an
+    effector that silently no-ops yields FALSE CONFIDENCE rather than zero
+    output. The count going UP is why nobody saw it.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.real_state = bridge.STATE
+        bridge.STATE = self.tmp.name
+        self.real_run = bridge.subprocess.run
+        self.addCleanup(self.tmp.cleanup)
+        self.addCleanup(lambda: setattr(bridge, "STATE", self.real_state))
+        self.addCleanup(lambda: setattr(bridge.subprocess, "run",
+                                        self.real_run))
+
+    def answers(self, returncode=0, stderr="", stdout=""):
+        def run(*a, **kw):
+            return type("R", (), {"returncode": returncode,
+                                  "stderr": stderr, "stdout": stdout})()
+        bridge.subprocess.run = run
+
+    def say(self):
+        err = io.StringIO()
+        with redirect_stderr(err):
+            got = bridge.say("human", "me", "a human's question")
+        return got, err.getvalue()
+
+    def test_A_REFUSED_SAY_IS_NOT_A_DELIVERY(self):
+        self.answers(returncode=1, stderr="#human is closed — reopen it")
+        got, _ = self.say()
+        self.assertFalse(got)
+
+    def test_it_says_WHY_on_stderr(self):
+        """A silent False would leave the operator with a bridge that relays
+        nothing and reports nothing."""
+        self.answers(returncode=1, stderr="#human is closed — reopen it")
+        _, err = self.say()
+        self.assertIn("could not relay", err)
+        self.assertIn("closed", err)
+
+    def test_a_refusal_printed_only_to_STDOUT_is_still_reported(self):
+        """The CLI prints some refusals to stdout. Reading only stderr would
+        report the failure with 'no reason given' — true, and useless."""
+        self.answers(returncode=1, stdout="at its message cap")
+        _, err = self.say()
+        self.assertIn("message cap", err)
+
+    def test_a_refusal_with_NO_output_still_names_the_exit_code(self):
+        self.answers(returncode=2)
+        _, err = self.say()
+        self.assertIn("exit 2", err)
+        self.assertIn("no reason given", err)
+
+    def test_a_SUCCESSFUL_say_is_still_a_delivery(self):
+        """Paired. Checking the code must not become refusing everything."""
+        self.answers(returncode=0)
+        got, err = self.say()
+        self.assertTrue(got)
+        self.assertEqual(err, "")
+
+    def test_an_EXPLODING_subprocess_is_reported_rather_than_silent(self):
+        def boom(*a, **kw):
+            raise OSError("no such file")
+        bridge.subprocess.run = boom
+        got, err = self.say()
+        self.assertFalse(got)
+        self.assertIn("could not relay", err)
 
 
 class MembersOfTest(unittest.TestCase):

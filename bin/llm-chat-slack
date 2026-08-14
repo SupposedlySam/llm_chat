@@ -693,10 +693,28 @@ def say(room, identity, text, addressing=None, thread=None):
                    "--as", identity] + list(addressing or [])
         if thread:
             command += ["--thread", thread]
-        subprocess.run(command, capture_output=True, text=True, timeout=15)
-        return True
-    except Exception:
+        done = subprocess.run(command, capture_output=True, text=True,
+                              timeout=15)
+    except Exception as problem:
+        print("could not relay into #%s: %s" % (room, problem),
+              file=sys.stderr)
         return False
+    # THE EXIT CODE IS THE ANSWER, and this ignored it. `subprocess.run` does
+    # not raise on a non-zero exit, so a `say` refused for any of the reasons
+    # it refuses — a closed room, the message cap, a server that went away —
+    # returned True, the caller counted `relayed += 1`, and the cursor moved
+    # past a message that never left. Nothing looked wrong anywhere.
+    #
+    # wcs relayed the framing from the gents owner, and it is the right one:
+    # an effector that silently no-ops yields FALSE CONFIDENCE rather than
+    # zero output. That is why this was invisible — the count went up.
+    if done.returncode != 0:
+        why = (done.stderr or done.stdout or "").strip().splitlines()
+        print("could not relay into #%s (exit %d): %s"
+              % (room, done.returncode, why[0] if why else "no reason given"),
+              file=sys.stderr)
+        return False
+    return True
 
 
 def is_from_a_human(message):
@@ -824,10 +842,14 @@ def pump_in(config, slack):
                 relayed += 1
         if ts:
             write_cursor(ts)
-    return relayed + pump_threads(config, slack, messages, threads)
+    # Handed on so a poll that already asked does not ask twice. Still None
+    # when no top-level human message needed it, and pump_threads looks it up
+    # lazily in that case — a thread reply can name somebody too, and the
+    # first version of the name-tagging feature did not reach this path at all.
+    return relayed + pump_threads(config, slack, messages, threads, members)
 
 
-def pump_threads(config, slack, messages, threads):
+def pump_threads(config, slack, messages, threads, members=None):
     """Relay thread REPLIES, which history never returns. Count relayed.
 
     ENUMERATED FROM THE THREAD MAP, NOT FROM THE HISTORY WINDOW. The first
@@ -877,6 +899,7 @@ def pump_threads(config, slack, messages, threads):
             continue
         last = seen.get(ts, {}).get("seen_ts") or ts
         newest = last
+        stuck = False
         for reply in sorted(payload.get("messages") or [],
                             key=lambda m: float(m.get("ts", 0))):
             at = reply.get("ts")
@@ -886,11 +909,28 @@ def pump_threads(config, slack, messages, threads):
                 # `thread_ts` is what `route` keys on, and a reply carries it —
                 # but only messages the human ALSO chose to broadcast appear in
                 # history, so this is where the routing finally gets its input.
-                addressing = route(reply, threads)
+                if members is None:
+                    members = members_of(config["room"])
+                addressing = route(reply, threads, members)
                 if say(config["room"], config["identity"], reply["text"],
                        addressing, ts):
                     note_question(reply, addressing)
                     relayed += 1
+                else:
+                    # THE MARK MUST NOT PASS A MESSAGE THAT DID NOT ARRIVE.
+                    # This advance used to sit outside the success branch, so
+                    # a failed relay moved the high-water mark and the reply
+                    # was never looked at again — on the one channel where the
+                    # sender is a person, waiting.
+                    #
+                    # wcs reported it and showrunner named the shape: one
+                    # value answering two questions — "how far have I read"
+                    # and "what is safe to never re-read" — which disagree in
+                    # exactly the case that matters. Stopping here keeps them
+                    # the same value honestly, by never reading past a failure.
+                    # The next poll re-fetches from `last` and tries again.
+                    stuck = True
+                    break
             if float(at) > float(newest):
                 newest = at
         # `count` is None for an out-of-window parent — there was no hint to
@@ -898,8 +938,27 @@ def pump_threads(config, slack, messages, threads):
         # skip works again the moment this parent comes back into the window.
         replied = len([m for m in (payload.get("messages") or [])
                        if m.get("ts") != ts])
-        seen[ts] = {"count": count if count is not None else replied,
-                    "seen_ts": newest, "checked_at": now()}
+        if stuck:
+            # A THREAD WITH AN OWED RETRY IS NOT "CHECKED", by either measure
+            # this uses. Both skips have to be declined, and the second is the
+            # one that actually bit:
+            #
+            #   checked_at  gates on TIME and would delay the retry by
+            #               RECHECK_SEC — on this channel, a person waiting
+            #               out the interval for nothing.
+            #   count       gates on "provably unchanged", and adopting the
+            #               new count would claim these replies are accounted
+            #               for. They are not; one of them never arrived.
+            #
+            # Keeping the PREVIOUS count is what makes the next poll see a
+            # mismatch and ask again. It needs no sentinel value: the count we
+            # had genuinely accounted for is simply the one from before this
+            # attempt failed.
+            seen[ts] = {"count": (seen.get(ts) or {}).get("count"),
+                        "seen_ts": newest, "checked_at": 0}
+        else:
+            seen[ts] = {"count": count if count is not None else replied,
+                        "seen_ts": newest, "checked_at": now()}
         changed = True
     if changed:
         write_reply_state(seen)

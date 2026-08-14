@@ -390,7 +390,8 @@ MUTATIONS = [
      "remove — doctor would say 'listening' on a host that never wakes"),
 
     ("THREAD REPLIES REACH THE ROOM", "bin/llm-chat-slack",
-     "    return relayed + pump_threads(config, slack, messages, threads)",
+     "    return relayed + pump_threads(config, slack, messages, threads, "
+     "members)",
      "    return relayed",
      "the documented PRIMARY reply path is dead: conversations.history does "
      "not return thread replies, so the one gesture a human on a phone is "
@@ -711,6 +712,39 @@ MUTATIONS = [
      "every marker written before this distinction existed reads as a "
      "confirmed turn, which is every marker anybody already has — the bug "
      "preserved for exactly the people upgrading to the fix for it"),
+
+    ("say checks the exit code", "bin/llm-chat-slack",
+     "    if done.returncode != 0:",
+     "    if False:",
+     "a relay refused by the CLI — a closed room, the message cap, a server "
+     "that went away — reports success, the caller counts it, and the cursor "
+     "moves past a message that never left. subprocess.run does not raise on "
+     "a non-zero exit, so the count going UP is why nobody saw it"),
+
+    ("a failed relay does not move the mark", "bin/llm-chat-slack",
+     "                    stuck = True\n                    break",
+     "                    pass",
+     "the high-water mark advances past a thread reply that never arrived, so "
+     "it is never looked at again — on the one channel where the sender is a "
+     "person, waiting for an answer that was silently dropped"),
+
+    ("an owed retry is not a CHECKED thread", "bin/llm-chat-slack",
+     '            seen[ts] = {"count": (seen.get(ts) or {}).get("count"),\n'
+     '                        "seen_ts": newest, "checked_at": 0}',
+     '            seen[ts] = {"count": count if count is not None else '
+     'replied,\n                        "seen_ts": newest, "checked_at": '
+     "now()}",
+     "a thread holding a failed relay records the new count and a fresh "
+     "timestamp, so both skips in watched_parents fire and the retry never "
+     "happens — the mark was held back correctly and nothing ever went back "
+     "to look"),
+
+    ("a name in a THREAD REPLY is honoured too", "bin/llm-chat-slack",
+     "                addressing = route(reply, threads, members)",
+     "                addressing = route(reply, threads)",
+     "`@build fix this` typed in a thread wakes the thread's owner instead of "
+     "build — the name-tagging path never reached the reply route, so the "
+     "feature worked in the channel and silently did not in threads"),
 
     ("a name beats @here", "bin/llm-chat-slack",
      "    named = addressed_names(text, members)\n"
