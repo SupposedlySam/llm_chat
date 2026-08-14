@@ -1,5 +1,5 @@
 # Zonai configuration
-version: 0.6.2
+version: 0.7.1
 
 migrationsPath: .zonai/migrations
 schemasPath: lib/src/schemas

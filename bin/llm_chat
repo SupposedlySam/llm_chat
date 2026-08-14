@@ -2177,14 +2177,36 @@ def vacuum_store(server, project):
         conn = sqlite3.connect(store, timeout=5.0)
         try:
             conn.execute("VACUUM")
+            # THE VACUUM ALONE RECLAIMS NOTHING HERE, and the first version of
+            # this shipped without the next line and reported success having
+            # freed 0 bytes. In WAL mode VACUUM rebuilds the database into the
+            # log; the main file only shrinks when a checkpoint truncates it,
+            # and a live server keeping the database open means that never
+            # happens on its own. Measured: page_count said 407 pages — 1.6MB
+            # of content — inside an 853MB file.
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            # What the file SHOULD be if the truncate worked. Asked of the
+            # database rather than assumed, because "the command returned"
+            # was exactly what the broken version believed.
+            pages = conn.execute("PRAGMA page_count").fetchone()[0]
+            size = conn.execute("PRAGMA page_size").fetchone()[0]
         finally:
             conn.close()
     except sqlite3.OperationalError as problem:
-        # Almost always "database is locked" — the server is serving. That is
-        # a REASON, not a failure: it stays queued and the next quiet window
-        # tries again.
-        return False, "%s (the server holds it open — still queued)" % problem
+        # Almost always "database is locked" — the server is mid-write. That
+        # is a REASON, not a failure: it stays queued and the next quiet
+        # window tries again.
+        return False, "%s (still queued)" % problem
     after = os.path.getsize(store)
+    expected = pages * size
+    if after > expected * 2 and after > 8_000_000:
+        # It ran, it said nothing, and the file is still full of nothing.
+        # Reporting this as success is how the first version wasted a quiet
+        # hour and marked the job done.
+        return False, ("VACUUM left %.1f MB on disk holding %.1f MB of "
+                       "content — the file was not truncated, so something "
+                       "still has it open. Still queued."
+                       % (after / 1e6, expected / 1e6))
     return True, "reclaimed %.1f MB (%.1f MB -> %.1f MB)" % (
         (before - after) / 1e6, before / 1e6, after / 1e6)
 

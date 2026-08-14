@@ -622,6 +622,21 @@ MUTATIONS = [
      "health, which is the inversion this repo has spent a day removing "
      "everywhere else"),
 
+    ("a vacuum that freed nothing is not a success", "bin/llm_chat",
+     "    if after > expected * 2 and after > 8_000_000:",
+     "    if False:",
+     "VACUUM in WAL mode rebuilds into the log and the main file only shrinks "
+     "when a checkpoint truncates it — so with a server holding the database "
+     "open it returns cleanly, frees zero bytes, and the task is marked done. "
+     "Measured on the real thing: 407 pages of content, 1.6MB, inside an "
+     "853MB file, reported as 'reclaimed 0.0 MB' and finished"),
+
+    ("the checkpoint is what actually truncates the file", "bin/llm_chat",
+     '            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")',
+     "            pass",
+     "the VACUUM alone leaves every freed byte on disk in WAL mode, which is "
+     "the mode this database runs in — the whole job silently does nothing"),
+
     ("the quiet number says what it could NOT see", "bin/llm_chat",
      "    if not os.path.isfile(mark):",
      "    if False:",

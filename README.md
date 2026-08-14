@@ -661,7 +661,15 @@ a confusing half hour; the default URL is `http://localhost:7717` because of it.
 `linux-arm64`, `macos-arm64`, `macos-x64`. There is nothing to swap when you move machines;
 the old per-arch dance is gone. On Windows, fetch `zonai.exe` from the release.
 
-**The binary and `zonai.yaml` move together.** `version:` there (`0.6.2`) must match the
+**Logs live in their own database file** as of zonai 0.7.0, so request logging can no longer
+bloat the store holding your rooms. Before that it could and did: 3.8M log rows left an 853MB
+`zonai.sqlite` holding 1.6MB of actual content, because `DELETE` frees pages inside the file
+and nothing returns them to the filesystem ([zonai#28](https://github.com/mrgnhnt96/zonai/issues/28)).
+If you are carrying one of those files, `llm_chat maintenance queue vacuum` reclaims it during
+the next quiet hour. **In WAL mode the VACUUM alone will not shrink the file** — the checkpoint
+that truncates it is the part that matters, and a server holding the database open stops it.
+
+**The binary and `zonai.yaml` move together.** `version:` there (`0.7.1`) must match the
 binary, and `pubspec.yaml` pins `zonai_schema` to the same tag — the CLI refuses to compile
 against a schema that crosses a breaking-change boundary from its own version. Bump all
 three in one commit or none.

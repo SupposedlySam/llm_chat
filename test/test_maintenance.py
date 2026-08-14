@@ -620,6 +620,76 @@ class VacuumTest(unittest.TestCase):
             self.assertLess(os.path.getsize(store), before)
             self.assertIn("reclaimed", detail)
 
+    def test_A_VACUUM_THAT_FREED_NOTHING_IS_NOT_A_SUCCESS(self):
+        """The bug this shipped with, found by running it on the real 853MB
+        database. In WAL mode VACUUM rebuilds into the log and the main file
+        only shrinks when a checkpoint truncates it — so with a server holding
+        the database open it returned cleanly, freed zero bytes, and the task
+        was marked done.
+
+        Simulated here by leaving a reader attached, which is what a live
+        server is. The assertion is on the CLAIM: reclaiming nothing must not
+        report success."""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            data = os.path.join(tmp, ".zonai", "data")
+            os.makedirs(data)
+            store = os.path.join(data, "zonai.sqlite")
+            conn = sqlite3.connect(store)
+            conn.execute("pragma journal_mode=wal")
+            conn.execute("create table junk (id integer, body text)")
+            conn.executemany("insert into junk values (?, ?)",
+                             [(i, "x" * 2000) for i in range(6000)])
+            conn.commit()
+            conn.execute("delete from junk")
+            conn.commit()
+            conn.close()
+
+            # A LIVE READER IS WHAT A RUNNING SERVER IS. Holding an open read
+            # snapshot stops the checkpoint truncating the file, which is
+            # exactly the condition on the real machine.
+            reader = sqlite3.connect(store)
+            reader.execute("pragma journal_mode=wal")
+            reader.execute("begin")
+            reader.execute("select count(*) from junk").fetchone()
+            real = cli.ROOT
+            cli.ROOT = tmp
+            try:
+                ok, detail = cli.vacuum_store("http://127.0.0.1:1", tmp)
+            finally:
+                cli.ROOT = real
+                reader.close()
+            self.assertFalse(ok, "reclaiming nothing reported success: "
+                                 + detail)
+            self.assertIn("not truncated", detail)
+            self.assertIn("Still queued", detail)
+
+    def test_the_size_it_REPORTS_is_the_size_on_disk(self):
+        """Paired with the above, and the property the broken version
+        violated: it said "reclaimed 0.0 MB" and called that done."""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            data = os.path.join(tmp, ".zonai", "data")
+            os.makedirs(data)
+            store = os.path.join(data, "zonai.sqlite")
+            conn = sqlite3.connect(store)
+            conn.execute("create table junk (id integer, body text)")
+            conn.executemany("insert into junk values (?, ?)",
+                             [(i, "x" * 2000) for i in range(6000)])
+            conn.commit()
+            conn.execute("delete from junk")
+            conn.commit()
+            conn.close()
+            real = cli.ROOT
+            cli.ROOT = tmp
+            try:
+                ok, detail = cli.vacuum_store("http://127.0.0.1:1", tmp)
+            finally:
+                cli.ROOT = real
+            self.assertTrue(ok, detail)
+            on_disk = os.path.getsize(store) / 1e6
+            self.assertIn("-> %.1f MB" % on_disk, detail)
+
     def test_A_LOCKED_DATABASE_IS_A_REASON_NOT_A_CRASH(self):
         """VACUUM needs an exclusive lock and the zonai server holds this file
         open. Refusing and staying queued is right: waiting another hour costs

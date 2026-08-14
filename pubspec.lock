@@ -245,10 +245,10 @@ packages:
     dependency: transitive
     description:
       name: revali_core
-      sha256: "5f0267a8934dbb6d62c108ead838216199cd0a9573801d623edd22947f639349"
+      sha256: "72089a73b3d0139ef29c75be1884e801cd2121cc56d9c14184a8eb96f13420fe"
       url: "https://pub.dev"
     source: hosted
-    version: "2.0.1"
+    version: "3.0.0"
   scoped_deps:
     dependency: transitive
     description:
@@ -437,10 +437,10 @@ packages:
     dependency: "direct main"
     description:
       path: "libs/zonai_schema"
-      ref: "v0.6.2"
-      resolved-ref: b187d2b9417aff501daa4cbabed5c95187d258bc
+      ref: "v0.7.1"
+      resolved-ref: ab56e63cdb03e7a7a7059a4b437ea57dba014d02
       url: "https://github.com/mrgnhnt96/zonai.git"
     source: git
-    version: "0.1.1"
+    version: "0.3.0"
 sdks:
   dart: ">=3.12.0 <4.0.0"

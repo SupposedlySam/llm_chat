@@ -77,6 +77,47 @@ class RepoDamageTest(unittest.TestCase):
                 self.assertFalse(
                     gate.report_repo_damage(before, gate.fingerprint_repo()))
 
+    def test_every_LIVE_WRITTEN_path_is_excluded(self):
+        """The anti-drift rule, after getting this wrong three times.
+
+        The exclusion list has now gone short of its own reasoning once per
+        file added to a background process: first `wake.pid`/`wake.exit`, then
+        `wake.alive`, then `slack-replies.json` — each discovered by a REFUSED
+        RELEASE, because the failure only reproduces while something is
+        actively using the repo, which is exactly when a release is cut.
+
+        So the expected set is derived from the processes themselves rather
+        than remembered. A new state file on a live writer fails this test,
+        which names it, instead of failing a publish that does not.
+        """
+        from support import load
+        waker = load("llm-chat-wake")
+        bridge = load("bin/llm-chat-slack")
+        cli = load("llm_chat")
+
+        live = [waker.PID_PATH, waker.EXIT_PATH, waker.ALIVE_PATH,
+                waker.REWAKE_PATH, waker.LANDED_PATH,
+                bridge.CURSOR, bridge.THREADS, bridge.REPLIES, bridge.ASKED,
+                os.path.join(bridge.STATE, "slack-inbound.txt"),
+                cli.maintenance_path(gate.ROOT),
+                cli.maintenance_lock(gate.ROOT)]
+        for path in live:
+            relative = os.path.join(".llm_chat", os.path.basename(path))
+            with self.subTest(path=relative):
+                self.assertTrue(
+                    any(relative.startswith(entry) for entry in gate.UNGUARDED),
+                    "%s is written by a live background process and is not "
+                    "excluded — it will fail a release while an agent is "
+                    "working, which is when releases happen" % relative)
+
+    def test_the_CONFIG_the_bridge_reads_is_still_guarded(self):
+        """Paired, and the line the prefix has to fall on. `slack-` covers the
+        bridge's live cursors; `slack.json` is configuration a human wrote,
+        and a test that rewrote it would be real damage."""
+        relative = os.path.join(".llm_chat", "slack.json")
+        self.assertFalse(
+            any(relative.startswith(entry) for entry in gate.UNGUARDED))
+
     def test_something_ELSE_in_the_state_dir_is_still_damage(self):
         """Paired with the prefix, and the reason it is `wake.` rather than
         `.llm_chat`. A test escaping into session state has actually happened

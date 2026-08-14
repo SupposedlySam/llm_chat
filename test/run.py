@@ -216,8 +216,19 @@ def report_global_leaks(before):
 # happened here — the bridge's question-tracking wrote into the real repo
 # mid-suite — and the guard caught it. Losing that to silence a rarer race
 # would be trading a real catch for a quiet gate.
+#
+# THIRD TIME. `slack-replies.json` failed a release while a live bridge polled
+# during the run, and the maintenance queue the waker now writes on its
+# heartbeat would have been the fourth. Enumerating by hand has now been wrong
+# once per file added, so the LIST is still here but a test derives the
+# expected set from the live processes' own path constants — see
+# test_gate.py's test_every_LIVE_WRITTEN_path_is_excluded. Adding a state file
+# to a background process without adding it here now fails a test that names
+# it, instead of failing a release that does not.
 UNGUARDED = (os.path.join(".llm_chat", "probe"),
-             os.path.join(".llm_chat", "wake."))
+             os.path.join(".llm_chat", "wake."),
+             os.path.join(".llm_chat", "slack-"),
+             os.path.join(".llm_chat", "maintenance."))
 
 
 def guarded_paths():
