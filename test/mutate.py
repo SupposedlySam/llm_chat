@@ -868,6 +868,31 @@ MUTATIONS = [
      "and stays silent about the stop underneath it, which is the answer to "
      "the question being asked"),
 
+    ("nobody home is not the same as could not ask", "bin/llm_chat",
+     "    sessions = host_sessions()\n    if sessions is None:\n"
+     "        return None",
+     "    sessions = host_sessions() or []",
+     "a host that cannot be asked reports as 'no live session in this "
+     "project', so a missed wake reads as an agent that simply went home — "
+     "the two states this check exists to separate, collapsed by the one line "
+     "that separates them"),
+
+    ("a sibling directory is not this project", "bin/llm_chat",
+     "        if cwd == root or cwd.startswith(root + os.sep):",
+     "        if cwd.startswith(root):",
+     "`/x/llm_chat_old` matches `/x/llm_chat`, so doctor reports a live agent "
+     "in a project nobody is working in and a missed wake looks like somebody "
+     "sitting there deaf"),
+
+    ("the host disagreeing about who you are is named", "bin/llm_chat",
+     '    if mine and not any((s.get("sessionId") or "") == mine '
+     "for s in here):",
+     "    if False:",
+     "the environment and the host can disagree about this session's id after "
+     "a window reload, and issue #12 is that nothing noticed — this is the "
+     "one source that belongs to the host rather than to us, reporting "
+     "agreement it never checked"),
+
     ("a stub session is named rather than reported healthy", "bin/llm_chat",
      "    if stub_is_mine and others_hold:",
      "    if False:",
@@ -1144,6 +1169,16 @@ NOT_SWEPT = {
         "without earlier messages, the own-post filter and the closed-room "
         "note. It is do_read's body, moved so that committing the cursor is "
         "the LAST act of every exit rather than the first act of the function",
+    "bin/llm_chat:host_sessions": "every way of not getting an answer is "
+        "asserted directly and they all return None: a `claude` that is not "
+        "installed, a non-zero exit, unparseable output and two wrong shapes. "
+        "The one decision that matters — None is not an empty list — is swept "
+        "through live_here",
+    "bin/llm_chat:report_who_is_home": "all four states asserted through the "
+        "rendered report: nobody home, somebody named, could-not-ask, and the "
+        "host disagreeing with the environment about who this session is. "
+        "The last is swept, because it is issue #12 answered by a third "
+        "source and reporting agreement it never checked is the failure",
     "bin/llm_chat:last_server": "both directions asserted directly — the "
         "recorded server is printed, and an UNRECORDED one is not filled in "
         "with the default, which would be a definite claim about an unknown "

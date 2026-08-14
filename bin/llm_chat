@@ -255,6 +255,66 @@ def project_state_dir(project=None) -> str:
     return os.path.join(project or project_dir(), ".llm_chat")
 
 
+def host_sessions():
+    """Every Claude Code session the HOST says is alive, or None.
+
+    `claude agents --json` prints pid, cwd, kind and sessionId for every live
+    session — interactive ones included — needs no TTY, and answered here
+    without reaching the login keychain. It is a third source of truth about
+    who is running, independent of both the environment variable and the hook
+    payload, and it is the only one that belongs to the host rather than to
+    us.
+
+    THIS IS THE ANSWER TO A QUESTION THIS PROJECT HAS BEEN GUESSING AT. Every
+    other check here reports on state we wrote: a pidfile, a probe mark, a
+    joined.json. All of them describe what happened, and none can say whether
+    an agent is at the keyboard NOW. That gap is why a missed wake and an
+    agent that simply went home have looked identical.
+
+    None means could-not-ask, and it is never read as "nobody is there".
+    """
+    try:
+        done = subprocess.run(["claude", "agents", "--json"],
+                              capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    if done.returncode != 0:
+        return None
+    try:
+        found = json.loads(done.stdout or "[]")
+    except ValueError:
+        return None
+    return [s for s in found if isinstance(s, dict)] \
+        if isinstance(found, list) else None
+
+
+def live_here(project=None):
+    """The host's live session for this project, or None. False-y answers are
+    three different facts and the caller has to be able to tell them apart:
+
+      None            could not ask the host
+      []              asked, and nobody is running here
+      [{...}]         somebody is running here, with their real session id
+
+    Matched on `cwd`, because that is what the host reports and what a project
+    IS. A session started in a subdirectory is still that project's, so the
+    match is a prefix — the same walk-up `project_dir` already does.
+    """
+    sessions = host_sessions()
+    if sessions is None:
+        return None
+    root = os.path.abspath(project or project_dir())
+    here = []
+    for session in sessions:
+        cwd = session.get("cwd")
+        if not cwd:
+            continue
+        cwd = os.path.abspath(cwd)
+        if cwd == root or cwd.startswith(root + os.sep):
+            here.append(session)
+    return here
+
+
 def live_sessions(project=None):
     """[(session_id, holds_identity)] for this project, newest directory last.
 
@@ -2565,6 +2625,47 @@ def waker_exit(project):
     return (last["reason"], last.get("at"), last.get("pid"))
 
 
+def report_who_is_home(project):
+    """Is there an agent here at all, according to the host.
+
+    Printed BEFORE the waker diagnosis, because it changes what that
+    diagnosis means. "No wake has landed" reads as a broken mechanism when
+    somebody is sitting there deaf, and as nothing at all when the session
+    ended hours ago — and until the host could be asked, those were the same
+    line.
+    """
+    here = live_here(project)
+    if here is None:
+        # Could not ask. Said out loud rather than skipped, because silence
+        # here would read as "nobody home" — the inversion this file keeps
+        # removing.
+        print("\nagent here: CANNOT TELL — `claude agents --json` did not "
+              "answer.\n  Not the same as nobody being here.")
+        return
+    if not here:
+        print("\nagent here: NO live session in this project.")
+        print("  So nothing can be woken, and nothing is broken. Anything "
+              "said reaches\n  them when they next start — `read` still has "
+              "it.")
+        return
+    mine = session_id()
+    for session in here:
+        sid = session.get("sessionId") or "?"
+        it_is_me = " (this session)" if mine and sid == mine else ""
+        print("\nagent here: yes — %s, pid %s, session %s%s"
+              % (session.get("name") or "unnamed", session.get("pid") or "?",
+                 sid[:8], it_is_me))
+    # THE HOST'S OWN ANSWER to the question issue #12 could only guess at.
+    # When a window reload mints a new id, the environment and the hook
+    # payload disagree and neither is authoritative. This is a third source,
+    # and it belongs to the host rather than to us.
+    if mine and not any((s.get("sessionId") or "") == mine for s in here):
+        print("  BUT THE HOST DOES NOT LIST THE SESSION THIS SHELL IS IN "
+              "(%s).\n  Your environment and the host disagree about who you "
+              "are, which is what\n  a window reload does. The rooms are held "
+              "by whichever id joined them." % mine[:8])
+
+
 def report_sessions(project):
     """Say when more than one session is live here, and which holds the rooms.
 
@@ -2829,6 +2930,7 @@ def do_doctor(server):
         print("\nno install stamp — wired before stamping existed; re-run "
               "install.sh to record one")
 
+    report_who_is_home(project)
     report_sessions(project)
 
     joined = read_joined()

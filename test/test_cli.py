@@ -630,6 +630,128 @@ class DoctorTest(unittest.TestCase):
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         self.assertIn("human at a terminal", self.report())
 
+    # ── is anybody actually here (the host's own answer) ────────────────────
+
+    def hosts(self, sessions, returncode=0, stdout=None):
+        """Stub `claude agents --json`."""
+        real = cli.subprocess.run
+
+        def run(argv, **kw):
+            out = stdout if stdout is not None else json.dumps(sessions)
+            return type("R", (), {"returncode": returncode, "stdout": out,
+                                  "stderr": ""})()
+
+        cli.subprocess.run = run
+        self.addCleanup(lambda: setattr(cli.subprocess, "run", real))
+
+    def test_a_live_session_IN_THIS_PROJECT_is_found(self):
+        self.hosts([{"pid": 1, "cwd": "/elsewhere", "sessionId": "aaa"},
+                    {"pid": 2, "cwd": self.project, "sessionId": "bbb",
+                     "name": "here"}])
+        here = cli.live_here(self.project)
+        self.assertEqual([s["sessionId"] for s in here], ["bbb"])
+
+    def test_a_session_in_a_SUBDIRECTORY_is_still_this_project(self):
+        """A session started in a subdirectory belongs to the project, which
+        is the same walk-up `project_dir` already does."""
+        self.hosts([{"pid": 2, "cwd": os.path.join(self.project, "lib", "x"),
+                     "sessionId": "bbb"}])
+        self.assertEqual(len(cli.live_here(self.project)), 1)
+
+    def test_a_session_with_NO_cwd_is_skipped_not_matched(self):
+        """The host reports what it has. A record missing `cwd` cannot be
+        placed in any project, and treating it as one here would put a live
+        agent in whichever project happened to ask."""
+        self.hosts([{"pid": 2, "sessionId": "bbb"},
+                    {"pid": 3, "cwd": self.project, "sessionId": "ccc"}])
+        self.assertEqual([s["sessionId"] for s in cli.live_here(self.project)],
+                         ["ccc"])
+
+    def test_a_SIBLING_directory_is_not_this_project(self):
+        """Paired, and the reason the match is a prefix on a path separator
+        rather than a bare startswith: `/x/llm_chat_old` must not match
+        `/x/llm_chat`."""
+        self.hosts([{"pid": 2, "cwd": self.project + "_old",
+                     "sessionId": "bbb"}])
+        self.assertEqual(cli.live_here(self.project), [])
+
+    def test_NOBODY_HOME_is_a_different_answer_from_CANNOT_ASK(self):
+        """The distinction the whole check exists for. An empty list means
+        the host looked and found nobody; None means the host could not be
+        asked, and reporting that as nobody-home would be the inversion this
+        file keeps removing."""
+        self.hosts([])
+        self.assertEqual(cli.live_here(self.project), [])
+        self.hosts([], returncode=1)
+        self.assertIsNone(cli.live_here(self.project))
+
+    def test_unparseable_or_wrong_shaped_output_is_CANNOT_ASK(self):
+        for junk in ("{not json", '"a string"', "7"):
+            with self.subTest(junk=junk):
+                self.hosts(None, stdout=junk)
+                self.assertIsNone(cli.host_sessions())
+
+    def test_a_host_that_is_not_installed_is_CANNOT_ASK(self):
+        real = cli.subprocess.run
+
+        def boom(*a, **kw):
+            raise FileNotFoundError("no claude on PATH")
+
+        cli.subprocess.run = boom
+        self.addCleanup(lambda: setattr(cli.subprocess, "run", real))
+        self.assertIsNone(cli.host_sessions())
+
+    def test_doctor_says_NOTHING_CAN_BE_WOKEN_when_nobody_is_home(self):
+        """It changes what the waker diagnosis means. "No wake has landed"
+        reads as a broken mechanism when somebody is sitting there deaf, and
+        as nothing at all when the session ended hours ago."""
+        self.joined()
+        self.hosts([])
+        text = self.report()
+        self.assertIn("NO live session", text)
+        self.assertIn("nothing is broken", text)
+
+    def test_doctor_NAMES_the_live_agent(self):
+        self.joined()
+        self.hosts([{"pid": 42, "cwd": self.project, "sessionId": "bbbbbbbb",
+                     "name": "worker-7"}])
+        text = self.report()
+        self.assertIn("worker-7", text)
+        self.assertIn("pid 42", text)
+
+    def test_doctor_says_CANNOT_TELL_rather_than_staying_silent(self):
+        self.joined()
+        self.hosts([], returncode=1)
+        text = self.report()
+        self.assertIn("CANNOT TELL", text)
+        self.assertIn("Not the same as nobody", text)
+
+    def test_THE_HOST_DISAGREEING_WITH_THE_ENVIRONMENT_IS_NAMED(self):
+        """Issue #12's ambiguity, answered by a third source. When a reload
+        mints a new id the environment and the hook payload disagree and
+        neither is authoritative; the host's list belongs to the host."""
+        self.joined()
+        self.hosts([{"pid": 42, "cwd": self.project, "sessionId": "otherid",
+                     "name": "worker-7"}])
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "myid"
+        try:
+            text = self.report()
+        finally:
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.assertIn("HOST DOES NOT LIST THE SESSION", text)
+
+    def test_matching_ids_make_no_such_complaint(self):
+        self.joined()
+        self.hosts([{"pid": 42, "cwd": self.project, "sessionId": "myid",
+                     "name": "worker-7"}])
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "myid"
+        try:
+            text = self.report()
+        finally:
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+        self.assertNotIn("HOST DOES NOT LIST THE SESSION", text)
+        self.assertIn("(this session)", text)
+
     def test_live_sessions_reports_identity_per_session(self):
         self.session("aaa", {"room": {"identity": "me"}})
         self.session("bbb")
