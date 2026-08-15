@@ -80,9 +80,19 @@ class DetectionTest(unittest.TestCase):
     def test_SINGLE_QUOTES_ARE_READ_FIRST_so_a_quote_inside_them_is_data(self):
         """The correctness of the scanner in one case. Inside '...' a double
         quote is an ordinary character; pairing it with a later one would
-        invent a region and refuse a command that is fine."""
-        self.assertIsNone(guard.offence(
-            "grep 'he said \"go\"' notes.md && echo done"))
+        invent a region and refuse a command that is fine.
+
+        THE BACKTICK INSIDE THE SINGLE QUOTES IS WHAT MAKES THIS A TEST. The
+        first version used `grep 'he said "go"' notes.md`, where mis-scanning
+        invents a double-quoted region whose contents are harmless — so both
+        the correct and the broken scanner answered None and the assertion
+        measured nothing. This mutation SURVIVED the first sweep that ran
+        tests. With a backtick in there, a scanner that fails to skip the
+        single-quoted run reports an offence and the two answers differ."""
+        self.assertIsNone(
+            guard.offence("echo 'say \"a ` b\"' && echo done"),
+            "a double quote inside '...' was treated as an opener, so the "
+            "scanner invented a quoted region and refused a safe command")
 
     def test_a_backtick_OUTSIDE_any_quotes_is_left_alone(self):
         """Deliberate legacy substitution is not prose. It is bare on the

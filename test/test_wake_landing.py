@@ -324,6 +324,32 @@ class MissedWakeWatcherTest(unittest.TestCase):
         finally:
             sys.argv = argv
 
+    def test_MAIN_ACTUALLY_ARMS_THE_WATCHER_before_waking(self):
+        """Every other test here calls `watch_for_a_missed_wake` directly, so
+        all of them pass with the CALL SITE deleted — which is the whole
+        mechanism. Moving the spawn out of `wake` into main() to stop tests
+        forking real processes left nothing asserting main still does it, and
+        the mutation SURVIVED the next sweep.
+
+        Ordered after note_rewake, because the watcher reads the note it is
+        going to watch."""
+        order = []
+        real_note = self.mod.note_rewake
+        real_watch = self.mod.watch_for_a_missed_wake
+        real_wake = self.mod.wake
+        self.mod.note_rewake = lambda: order.append("note")
+        self.mod.watch_for_a_missed_wake = lambda: order.append("watch")
+        self.mod.wake = lambda blocks: order.append("wake")
+        try:
+            self.mod.announce(["#room\n  [other] hi"])
+        except SystemExit:
+            pass
+        finally:
+            self.mod.note_rewake = real_note
+            self.mod.watch_for_a_missed_wake = real_watch
+            self.mod.wake = real_wake
+        self.assertEqual(order, ["note", "watch", "wake"])
+
     def test_a_corrupt_note_spawns_nothing(self):
         with open(self.mod.REWAKE_PATH, "w") as f:
             f.write("{not json")

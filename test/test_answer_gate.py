@@ -59,6 +59,42 @@ class GateTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("ANSWER FIRST", text)
 
+    def test_IT_OFFERS_A_WAY_OUT_THAT_DOES_NOT_WAKE_ANYBODY(self):
+        """Issue #15. This gate used to print `leave` as the remedy for having
+        nothing to add, which is the one move that costs a headless agent its
+        waker — a session that leaves and then stops with work outstanding
+        becomes unreachable, and a Crawler's verdict had to be recovered from
+        a transcript because of it.
+
+        The leaf was squeezed three ways: the gate demanded an answer, the
+        etiquette forbids trivial acknowledgements because every message wakes
+        the room, and the remedy on offer was the trap. `--to-none` is the
+        move that satisfies all three, and its discharge is proved in
+        test_rooms."""
+        self.answer(1, DEBT)
+        _, text = self.run_gate()
+        self.assertIn("--to-none", text)
+        # The ROOM, not a placeholder: an agent reading this is mid-turn and
+        # under a gate, and a substitution step is where turns get abandoned.
+        self.assertIn("llm_chat say ops \"done:", text)
+
+    def test_the_non_waking_line_survives_an_EMPTY_debt_list(self):
+        """`owed` and the payload can disagree — the gate blocks on the exit
+        code, and a formatter that indexes [0] of an empty list would crash
+        the Stop hook it is trying to be helpful in."""
+        self.answer(1, {"owed": [], "unreachable": []})
+        code, text = self.run_gate()
+        self.assertEqual(code, 2)
+        self.assertIn("<room>", text)
+
+    def test_IT_SAYS_WHAT_LEAVING_COSTS(self):
+        """It still offers `leave`, because finishing with a room is real —
+        but an agent choosing it should know it stands down its own waker."""
+        self.answer(1, DEBT)
+        _, text = self.run_gate()
+        self.assertIn("stands down your waker", text)
+        self.assertIn("unreachable", text)
+
     def test_it_names_the_room_the_asker_and_the_question(self):
         """A gate that says only "you owe something" makes the agent go
         looking, and the looking is where the turn gets abandoned."""

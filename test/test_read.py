@@ -16,7 +16,7 @@ import unittest
 from contextlib import redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from support import FakeServer, load  # noqa: E402
+from support import FakeServer, load, parsed  # noqa: E402
 
 cli = load("llm_chat")
 
@@ -432,13 +432,19 @@ class ExitContractTest(unittest.TestCase):
     def test_nothing_waiting_is_an_empty_LIST_and_success(self):
         state, out, _ = self.read_json()
         self.assertEqual(state, "ok")
-        self.assertEqual(json.loads(out), [])
+        # `parsed`, not `json.loads`: when --json is broken into printing
+        # prose, loads() RAISES and this test errors, so the comparison that
+        # would have named the defect never runs and the sweep can only say
+        # something exploded. None != [] is a measurement.
+        self.assertEqual(parsed(out), [],
+                         "--json printed something that is not JSON")
 
     def test_messages_waiting_are_a_populated_list_and_success(self):
         self.server.message("room", 1, "someone", "hi")
         state, out, _ = self.read_json()
         self.assertEqual(state, "ok")
-        self.assertEqual(len(json.loads(out)), 1)
+        self.assertEqual(len(parsed(out) or []), 1,
+                         "--json printed something that is not JSON")
 
     def test_could_not_look_REFUSES_and_emits_no_json(self):
         """The case that matters. A caller parsing stdout must not be handed

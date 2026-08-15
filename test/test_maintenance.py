@@ -96,11 +96,25 @@ class QuietTest(unittest.TestCase):
         would otherwise look like an hour of perfect quiet — absence read as a
         clean bill of health, which is the exact inversion that has cost this
         project a day at a time. None means CANNOT TELL and nothing may run on
-        it."""
+        it.
+
+        THE TOOL MARK IS PRESENT ON PURPOSE, and this test was worthless
+        without it. Reverting the `return None` leaves the function falling
+        through to the tool-mark branch — which, in a project with no mark,
+        also yields None. Both paths gave the same answer, the assertion could
+        not tell them apart, and this mutation SURVIVED the first honest sweep
+        while reading as defended.
+
+        wcs's rule, exactly: when a derived value combines two quantities, the
+        fixture has to give them DIFFERENT values."""
+        self.tool_ran(ago=30)
         def dead(*a, **kw):
             raise SystemExit("no llm_chat server")
         cli.call = dead
-        self.assertIsNone(self.quiet())
+        self.assertIsNone(
+            self.quiet(),
+            "a failed message lookup fell through to the tool mark and "
+            "reported a number, which is 'could not look' read as activity")
 
     def test_an_empty_server_with_no_agent_is_CANNOT_TELL_too(self):
         """Nothing has ever happened, so there is no last-activity to measure
@@ -602,6 +616,14 @@ class VacuumTest(unittest.TestCase):
             os.makedirs(data)
             store = os.path.join(data, "zonai.sqlite")
             conn = sqlite3.connect(store)
+            # WAL, because that is the mode the real database runs in and the
+            # mode where the checkpoint is load-bearing. Built without it,
+            # this test passed whether or not `vacuum_store` checkpointed at
+            # all — VACUUM alone truncates under the default journal mode — so
+            # the mutation that removes the checkpoint SURVIVED while the bug
+            # it describes had already cost a live 853MB database a full
+            # reclaim.
+            conn.execute("pragma journal_mode=wal")
             conn.execute("create table junk (id integer, body text)")
             conn.executemany("insert into junk values (?, ?)",
                              [(i, "x" * 2000) for i in range(4000)])
@@ -689,6 +711,52 @@ class VacuumTest(unittest.TestCase):
             self.assertTrue(ok, detail)
             on_disk = os.path.getsize(store) / 1e6
             self.assertIn("-> %.1f MB" % on_disk, detail)
+
+    def test_THE_CHECKPOINT_IS_WHAT_TRUNCATES_WHILE_A_SERVER_IS_ATTACHED(self):
+        """The case the live 853MB database was in, and the only fixture where
+        the checkpoint is load-bearing.
+
+        With nothing else attached, closing the last connection checkpoints
+        anyway and the file shrinks whether or not `vacuum_store` asked — so a
+        test built that way passed with the checkpoint removed, and the
+        mutation SURVIVED. An IDLE second connection reproduces the server:
+        attached, so the close-time checkpoint does not truncate, but holding
+        no snapshot, so an explicit TRUNCATE can still complete.
+
+        (Distinct from the locked case below, where a reader holds a snapshot
+        and the truncate must be refused rather than forced.)"""
+        import sqlite3
+        with tempfile.TemporaryDirectory() as tmp:
+            data = os.path.join(tmp, ".zonai", "data")
+            os.makedirs(data)
+            store = os.path.join(data, "zonai.sqlite")
+            conn = sqlite3.connect(store)
+            conn.execute("pragma journal_mode=wal")
+            conn.execute("create table junk (id integer, body text)")
+            conn.executemany("insert into junk values (?, ?)",
+                             [(i, "x" * 2000) for i in range(5000)])
+            conn.commit()
+            conn.execute("delete from junk")
+            conn.commit()
+            conn.close()
+            before = os.path.getsize(store)
+
+            attached = sqlite3.connect(store)
+            attached.execute("select count(*) from junk").fetchone()
+            attached.commit()          # idle, but still holding the file open
+            real = cli.ROOT
+            cli.ROOT = tmp
+            try:
+                ok, detail = cli.vacuum_store("http://127.0.0.1:1", tmp)
+            finally:
+                cli.ROOT = real
+                attached.close()
+            self.assertTrue(ok, detail)
+            self.assertLess(
+                os.path.getsize(store), before / 2,
+                "the file was not truncated while a connection was attached — "
+                "VACUUM alone rebuilds into the WAL and leaves every freed "
+                "byte on disk")
 
     def test_A_LOCKED_DATABASE_IS_A_REASON_NOT_A_CRASH(self):
         """VACUUM needs an exclusive lock and the zonai server holds this file

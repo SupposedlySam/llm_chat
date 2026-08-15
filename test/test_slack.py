@@ -514,7 +514,23 @@ class CliSeamTest(unittest.TestCase):
         Measured shape of the real failure: the identity had never joined, so
         the CLI printed prose on stdout and exited 1. Folding that into `[]`
         made "I could not look" indistinguishable from "nobody has said
-        anything" — on the one path where the cost is a person waiting."""
+        anything" — on the one path where the cost is a person waiting.
+
+        THE STDOUT HERE IS VALID JSON ON PURPOSE, and the test was worthless
+        without that. With prose on stdout, deleting the exit-code check still
+        yields None — the JSON parse fails and returns None one line further
+        down. Two routes to the same answer, so the assertion could not tell
+        them apart, and this mutation SURVIVED the first sweep that actually
+        ran tests. Valid JSON with a non-zero exit is the only fixture where
+        the check is the thing being measured."""
+        self.stub("[]\n", returncode=1)
+        self.assertIsNone(
+            self.mod.waiting_for_human("human", "me"),
+            "a non-zero exit with parseable output was read as an empty room")
+
+    def test_a_failed_read_that_printed_PROSE_is_also_not_empty(self):
+        """The realistic shape, kept beside the discriminating one: this is
+        what the live bridge actually produced for a whole session."""
         self.stub("me has not joined human\n", returncode=1)
         self.assertIsNone(self.mod.waiting_for_human("human", "me"))
 
@@ -651,7 +667,7 @@ class LoopTest(unittest.TestCase):
         reads, and the one line that matters is in it somewhere."""
         self.mod.pump_out = lambda c, s: 0
         self.mod.pump_in = lambda c, s: 0
-        self.mod.time = self.Clock(stop_after=3)
+        self.mod.time = LoopTest.Clock(stop_after=3)
         out = io.StringIO()
         with redirect_stdout(out):
             with self.assertRaises(KeyboardInterrupt):
@@ -1234,10 +1250,18 @@ class RoomGoneTest(BridgeTest):
         self.mod.load_config = lambda: self.config
         self.mod.Slack = lambda *a, **kw: FakeSlack()
         self.mod.room_is_gone = lambda config: True
+        # A FUSE ON THE LOOP. The only thing stopping `main` here is the
+        # room-gone check, so with that check removed this test ran forever —
+        # a mutation sweep sat on it for 46 minutes, and a sweep that never
+        # finishes measures nothing. Bounded, a loop that fails to stop fails
+        # the assertion below instead of hanging the run.
+        self.mod.time = LoopTest.Clock(stop_after=3)
         argv = sys.argv
         sys.argv = ["llm-chat-slack"]
         try:
             _, text = self.quiet(self.mod.main)
+        except KeyboardInterrupt:
+            text = ""          # the fuse blew: the loop never stopped
         finally:
             sys.argv = argv
         self.assertIn("no longer exists", text)
@@ -1251,10 +1275,13 @@ class RoomGoneTest(BridgeTest):
         self.mod.load_config = lambda: self.config
         self.mod.Slack = lambda *a, **kw: FakeSlack()
         self.mod.room_is_gone = lambda config: True
+        self.mod.time = LoopTest.Clock(stop_after=3)   # same fuse, same reason
         argv = sys.argv
         sys.argv = ["llm-chat-slack"]
         try:
             code, _ = self.quiet(self.mod.main)
+        except KeyboardInterrupt:
+            code = "the loop never stopped"
         finally:
             sys.argv = argv
         self.assertEqual(code, 0)

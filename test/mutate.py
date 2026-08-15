@@ -22,12 +22,123 @@ import argparse
 import ast
 import fcntl
 import os
+import re
+import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 LOCK = os.path.join(HERE, ".mutate.lock")
+
+
+# HOW MANY MUTATIONS ARE STILL KILLED BY AN EXCEPTION RATHER THAN MEASURED.
+#
+# The first sweep that actually ran tests found thirteen. Two were fixed
+# immediately — both were a test calling `json.loads` on output the code under
+# test produced, so a verb broken into printing prose made the test ERROR
+# before the comparison that would have named the defect ever ran. `support.
+# parsed` is the remedy and the pattern to copy.
+#
+# The rest are real debt and are listed by name in every sweep. This number is
+# a ratchet: it may be lowered, never raised. Raising it is how a measured gap
+# becomes a permanent one.
+CRASHED_CEILING = 11
+
+# Long enough for the suite plus a heavily loaded machine — eight shards
+# compete for the cores — and short enough that a hang is reported rather than
+# waited on. The suite takes about 40s alone; two shards once sat at 46
+# MINUTES because a mutation made it block forever, which is how this number
+# came to exist.
+SUITE_DEADLINE = 600
+
+# Set in the child so the copy does not copy itself forever.
+IN_COPY = "LLM_CHAT_SWEEP_ISOLATED"
+# "<index>/<total>" — which slice of the mutation list this copy owns.
+SHARD = "LLM_CHAT_SWEEP_SHARD"
+
+
+def my_share(mutations):
+    """The slice of the list this copy is responsible for.
+
+    Strided rather than chunked, so a run of slow mutations in one part of the
+    list does not land entirely on one worker while the others finish early.
+    """
+    where = os.environ.get(SHARD)
+    if not where:
+        return list(mutations)
+    try:
+        index, total = (int(part) for part in where.split("/", 1))
+    except ValueError:
+        return list(mutations)
+    if total < 1 or not 0 <= index < total:
+        return list(mutations)
+    return list(mutations)[index::total]
+
+
+def sweep_in_a_copy():
+    """Run the whole sweep against a COPY of this repo, and return its code.
+
+    A SWEEP MUTATES A TREE OTHER AGENTS ARE RUNNING. `bin/llm_chat` and
+    `bin/llm-chat-wake` are invoked by ABSOLUTE PATH from every other repo on
+    this machine, so for as long as each mutation is applied, those agents are
+    running a deliberately broken program. That is not hypothetical: it is how
+    `chan_count_placeholder is not defined` reached a neighbour and retired its
+    waker.
+
+    It was survivable while each mutation lasted about a second, because the
+    stranded-mutation check was refusing to run the suite and the sweep was
+    measuring nothing. Making the sweep real made each mutation last a full
+    test run — forty times the exposure, on a machine with five live agents.
+
+    So the honest sweep and the safe sweep are the same change. This is the fix
+    the module docstring has described as "written, never verified, and
+    reverted rather than shipped unmeasured" — verified now, because it is no
+    longer optional.
+
+    The copy carries .git deliberately: `discover_sources` asks git what this
+    repo ships, and a copy without it would silently measure a different set.
+    """
+    # HOW MANY COPIES. A full test run per mutation makes a serial sweep about
+    # an hour and a half, and a gate that takes that long is a gate people
+    # skip — which is the same failure as the one this sweep was just found to
+    # have: a check that does not really run. Splitting the list across
+    # independent copies is the only lever, since each mutation genuinely
+    # needs the whole suite.
+    workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+    parent = tempfile.mkdtemp(prefix="llm_chat-sweep-")
+    try:
+        copies = []
+        for shard in range(workers):
+            copy = os.path.join(parent, "repo%d" % shard)
+            done = subprocess.run(["cp", "-R", ROOT, copy],
+                                  capture_output=True, text=True)
+            if done.returncode != 0:
+                print("could not copy the tree to sweep it: %s"
+                      % (done.stderr or "").strip()[:300])
+                return 1
+            copies.append(copy)
+        print("sweeping %d copies under %s — the live tree is not touched,\n"
+              "because other agents run bin/llm_chat out of it by absolute "
+              "path.\n" % (workers, parent))
+        running = []
+        for shard, copy in enumerate(copies):
+            env = dict(os.environ)
+            env[IN_COPY] = "1"
+            env[SHARD] = "%d/%d" % (shard, workers)
+            # -u because a long run's progress is the only sign it is alive;
+            # buffered, it is indistinguishable from a hang.
+            running.append(subprocess.Popen(
+                [sys.executable, "-u",
+                 os.path.join(copy, "test", "mutate.py")] + sys.argv[1:],
+                cwd=copy, env=env))
+        # Every shard is waited on before any verdict is returned. Returning
+        # early would leave copies mutating files in the background and report
+        # a result that had not finished being measured.
+        return max(child.wait() for child in running)
+    finally:
+        shutil.rmtree(parent, ignore_errors=True)
 
 
 def sole_sweep():
@@ -130,9 +241,18 @@ MUTATIONS = [
      "a discovery tool asking for a machine format gets prose and goes back "
      "to parsing a rendering, which is the defect this exists to remove"),
 
+    # `    if as_json:` appears three times in this file — owed, read and one
+    # more — and the sweep mutates the FIRST match. So this spent its life
+    # neutering `owed --json` while claiming to measure `read --json`, and
+    # reported caught about a behaviour it never touched. The following line
+    # is what makes it name its own site.
     ("read --json emits JSON and nothing else", "bin/llm_chat",
-     '    if as_json:\n',
-     '    if False:\n',
+     "    if as_json:\n"
+     "        # ONE RECORD PER MESSAGE, because the rendered transcript is "
+     "not a\n",
+     "    if False:\n"
+     "        # ONE RECORD PER MESSAGE, because the rendered transcript is "
+     "not a\n",
      "a consumer asking for a machine format gets prose, so it goes back to "
      "parsing a rendering — the defect this exists to remove"),
 
@@ -162,8 +282,10 @@ MUTATIONS = [
      "including the wake hook that delivers the message saying it broke"),
 
     ("a mode change needs --yes", "bin/llm_chat",
-     '    if not yes:',
-     '    if False:',
+     "    if not yes:\n"
+     '        harm = ("every message will start waking all "',
+     "    if False:\n"
+     '        harm = ("every message will start waking all "',
      "one agent silently changes whether every other agent in the room is "
      "interrupted, in a direction that can stall a live conversation"),
 
@@ -341,8 +463,12 @@ MUTATIONS = [
      "transcript that is usually the only record a decision was made"),
 
     ("delete requires membership", "bin/llm_chat",
-     '    if get_membership(server, name, identity) is None:',
-     '    if False:',
+     "    if get_membership(server, name, identity) is None:\n"
+     "        raise SystemExit(\n"
+     '            f"{identity} has not joined {name}, so cannot delete it.\\n"',
+     "    if False:\n"
+     "        raise SystemExit(\n"
+     '            f"{identity} has not joined {name}, so cannot delete it.\\n"',
      "an agent that was never in a room can destroy somebody else's "
      "conversation without ever having been party to it"),
 
@@ -466,11 +592,35 @@ MUTATIONS = [
      "a message lands in a shared transcript under another agent's name, "
      "unattributable to every reader and impossible to edit afterwards"),
 
+    # THE PROBE IS THE GUARD, not the `return None` that follows it. The first
+    # version of this mutation deleted that return — and the sweep reported it
+    # SURVIVED, correctly: without it the code simply falls through to
+    # `bell.bind(path)`, which fails with EADDRINUSE on a live socket and
+    # returns None anyway. Same answer by a different road, so no test could
+    # ever have told the difference. An equivalent mutant, dressed as a gap.
+    #
+    # What would actually steal a healthy doorbell is unlinking without
+    # asking, so that is what this reverts to.
     ("a healthy doorbell is never stolen", "bin/llm-chat-wake",
-     '            probe.connect(path)\n            probe.close()\n            return None',
-     '            probe.connect(path)\n            probe.close()',
-     "a second waker takes the socket from a live listener, so the first "
-     "agent goes deaf while the second believes it is covering"),
+     "        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)\n"
+     "        probe.settimeout(1)\n"
+     "        try:\n"
+     "            probe.connect(path)\n"
+     "            probe.close()\n"
+     "            return None          # somebody healthy already holds it\n"
+     "        except OSError:\n"
+     "            probe.close()\n"
+     "            try:\n"
+     "                os.unlink(path)  # stale; its owner is gone\n"
+     "            except OSError:\n"
+     "                return None",
+     "        try:\n"
+     "            os.unlink(path)\n"
+     "        except OSError:\n"
+     "            return None",
+     "a second waker unlinks a LIVE listener's socket and binds its own, so "
+     "the first agent goes deaf holding a socket nobody can reach while the "
+     "second believes it is covering the room"),
 
     ("a failing CLI never reads as 'every room is closed'", "bin/llm-chat-wake",
      '        if done.returncode != 0:',
@@ -504,8 +654,12 @@ MUTATIONS = [
      "turn and a human has to prod them — the gap the waker was built to close"),
 
     ("a mention that names a non-member is refused", "bin/llm_chat",
-     '    if missing:',
-     '    if False:',
+     "    if missing:\n"
+     "        raise SystemExit(\n"
+     "            f\"no {', '.join(repr(n) for n in missing)} in #{channel} — \"",
+     "    if False:\n"
+     "        raise SystemExit(\n"
+     "            f\"no {', '.join(repr(n) for n in missing)} in #{channel} — \"",
      "a typo'd mention silently wakes nobody while reporting the send "
      "succeeded, so the sender waits for an answer that cannot come"),
 
@@ -681,6 +835,21 @@ MUTATIONS = [
      "a vacuum refused because the server holds the database open is recorded "
      "as finished, so the work never happens and the queue reports success"),
 
+    # The REPLACEMENT has to be a string that could not occur naturally.
+    # The first version of this mutation replaced the line with `        "",`
+    # — which appears all over the file — so the stranded-mutation detector,
+    # whose test is `find absent and replace present`, reported a stranding
+    # every time and refused to run the suite at all. A mutation's replace
+    # text is a MARKER as well as a change.
+    ("the answer gate offers an exit that wakes nobody",
+     "triggers/answer-when-asked",
+     '        "    llm_chat say %s \\"done: <what you found>\\" --to-none"',
+     '        "    (mutation: no non-waking exit offered)"',
+     "the gate demands an answer, the etiquette forbids trivial ones because "
+     "every message wakes the room, and the only remedy left on offer is "
+     "`leave` — which stands down a headless agent's waker and made a "
+     "Crawler's verdict recoverable only from its transcript (#15)"),
+
     ("a 429 is retried instead of handed to the caller", "bin/llm_chat",
      "            if e.code == 429 and wait is not None:",
      "            if False:",
@@ -717,9 +886,13 @@ MUTATIONS = [
      "cannot see inside it, and one-session-per-repo is exactly the setup "
      "where this goes unnoticed until it does not"),
 
+    # Anchor moved when the spawn was lifted out of `wake` into main() — it
+    # was forking a real detached process every time a test asserted the
+    # exit-2 contract. A stale anchor is reported as ANCHOR MISSING rather
+    # than passing quietly, which is the only reason this was noticed.
     ("a missed wake is NOTICED at all", "bin/llm-chat-wake",
-     "    note_rewake()\n    watch_for_a_missed_wake()\n    sys.exit(2)",
-     "    note_rewake()\n    sys.exit(2)",
+     "    note_rewake()\n    watch_for_a_missed_wake()\n    wake(blocks)",
+     "    note_rewake()\n    wake(blocks)",
      "nothing outlives the exit, so a wake the harness ignores is never seen "
      "by anything: no turn means no Stop, no Stop means no waker, no waker "
      "means nobody looks — the circularity that lets an idle session go deaf "
@@ -764,9 +937,18 @@ MUTATIONS = [
      "confirmed turn, which is every marker anybody already has — the bug "
      "preserved for exactly the people upgrading to the fix for it"),
 
+    # THE ANCHOR CARRIES ITS NEXT LINE, and that is not decoration.
+    # `    if done.returncode != 0:` appears THREE times in this file, and the
+    # sweep replaces the first match — so this mutation spent its life
+    # neutering `read`'s check instead of `say`'s, was defended by read's
+    # tests, and reported `caught` about a behaviour it never touched. It
+    # showed up as a SURVIVOR the moment the sweep started running tests,
+    # which is the only reason anybody looked.
     ("say checks the exit code", "bin/llm-chat-slack",
-     "    if done.returncode != 0:",
-     "    if False:",
+     "    if done.returncode != 0:\n"
+     "        why = (done.stderr or done.stdout or \"\").strip().splitlines()",
+     "    if False:\n"
+     "        why = (done.stderr or done.stdout or \"\").strip().splitlines()",
      "a relay refused by the CLI — a closed room, the message cap, a server "
      "that went away — reports success, the caller counts it, and the cursor "
      "moves past a message that never left. subprocess.run does not raise on "
@@ -920,7 +1102,9 @@ MUTATIONS = [
      "the question being asked"),
 
     ("one corrupt lock does not hide every other window", "bin/llm_chat",
+     "                found = json.load(f)\n"
      "        except (OSError, ValueError):\n            continue",
+     "                found = json.load(f)\n"
      "        except (OSError, ValueError):\n            return None",
      "a single unreadable ~/.claude/ide lock file hides every window after it "
      "in the listing, so the address is reported as absent for projects that "
@@ -1243,6 +1427,34 @@ NOT_SWEPT = {
         "and that the switch says what it will and will not do. Reached "
         "through the real parser, which asserts it short-circuits before "
         "do_reload — otherwise turning the opt-in on would reload the window",
+    # ── what this tool cannot measure about ITSELF ──────────────────────────
+    #
+    # Both of these are asserted directly in test_gate.py and deliberately not
+    # swept, because sweeping them is self-referential in a way that produces
+    # a verdict about the sweep rather than about the behaviour.
+    #
+    # `sweep_in_progress` is what allows the suite to run at all while a
+    # mutation is applied. Disabling it during a sweep means no test executes
+    # — the exact failure it exists to prevent — so the sweep would report
+    # CRASHED and learn nothing about whether anything defends it.
+    #
+    # `sweep_in_a_copy` is checked in main(), and the mutated copy's main() is
+    # already past that line by the time anything could observe it. The test
+    # that calls main() would, with the guard removed, start a real nested
+    # sweep inside the outer one.
+    #
+    # Stated here rather than left as two absences, because a mutation list
+    # that quietly omits the things hardest to test is the failure this file
+    # exists to name.
+    "test/run.py:sweep_in_progress": "asserted directly in both directions — "
+        "lock held means a mutation is expected, lock free means the stranded "
+        "check still runs. NOT swept: disabling it stops the suite executing "
+        "during a sweep, so the sweep could only report a crash about itself",
+    "test/mutate.py:sweep_in_a_copy": "asserted directly by stubbing it and "
+        "checking main() calls it before touching a source file. NOT swept: "
+        "the copy's main() is past that branch before anything could observe "
+        "it, and removing the guard would start a nested sweep inside the "
+        "test",
     "bin/llm_chat:__init__": "Store's three fetches — the whole point of it — "
         "are swept as a REQUEST COUNT: five rooms must cost at most four "
         "calls, asserted by counting them rather than by timing, because a "
@@ -1256,6 +1468,13 @@ NOT_SWEPT = {
     "bin/llm_chat:in_channel": "a dict lookup returning [] for a room with no "
         "messages, which is asserted directly — a quiet room must report no "
         "debt rather than raise",
+    "bin/llm_chat:do_owed": "its three exit codes are the contract other "
+        "things gate on and all three are asserted directly — nothing owed, "
+        "something owed, and COULD NOT LOOK outranking a debt. The batching "
+        "it grew is swept in owed_in as a request COUNT; the per-server "
+        "grouping and the surviving 429 text are asserted with two servers "
+        "and a throttled one, because a reason replaced by 'could not reach' "
+        "is what made a throttle read as an outage",
     "bin/llm_chat:host_sessions": "every way of not getting an answer is "
         "asserted directly and they all return None: a `claude` that is not "
         "installed, a non-zero exit, unparseable output and two wrong shapes. "
@@ -1705,11 +1924,80 @@ def report_unaccounted():
     return False
 
 
+# unittest's own summary line: `FAILED (failures=2, errors=1)`, either half
+# optional. Parsed rather than recounted, because it is the runner's own
+# arithmetic and a second implementation of it would be a second thing to be
+# wrong.
+VERDICT = re.compile(r"(failures|errors)=(\d+)")
+
+
 def run_suite():
-    done = subprocess.run([sys.executable, os.path.join(HERE, "run.py"),
-                           "--tests-only"],
-                          cwd=ROOT, capture_output=True, text=True)
-    return done.returncode == 0
+    """(green, failures, errors) — not just green.
+
+    A MUTANT KILLED BY AN EXCEPTION IS NOT A MEASUREMENT. Reading only the
+    exit code says a reverted fix "turned the suite red" when all that
+    happened was a crash: the assertions meant to measure the behaviour never
+    ran, and a crash proves the line is load-bearing, not that anything
+    watches what it does.
+
+    Proved against this harness before it was changed — a mutation whose whole
+    body was `raise RuntimeError` was reported CAUGHT — something already
+    defends this. Nothing did.
+
+    showrunner's finding, arriving in #learnings; their version took down a
+    whole test group and read as thin coverage. Same root, different symptom,
+    and their remedy is the one adopted: refuse to print a verdict beside a
+    run that crashed.
+    """
+    # A DEADLINE, because a mutation can make the suite HANG rather than fail
+    # — a socket that never gets its ring, a retry loop with no ceiling — and
+    # a hung shard stalls the whole sweep forever. Two shards sat at 46
+    # minutes on a run whose others finished in twelve. Reported as its own
+    # verdict below: a hang measures nothing, exactly like a crash, and
+    # waiting for it measures nothing either.
+    try:
+        done = subprocess.run([sys.executable, os.path.join(HERE, "run.py"),
+                               "--tests-only"],
+                              cwd=ROOT, capture_output=True, text=True,
+                              timeout=SUITE_DEADLINE)
+    except subprocess.TimeoutExpired:
+        return None, 0, 0
+    counts = {"failures": 0, "errors": 0}
+    for kind, n in VERDICT.findall((done.stdout or "") + (done.stderr or "")):
+        counts[kind] = int(n)
+    return done.returncode == 0, counts["failures"], counts["errors"]
+
+
+def killed_by_measurement(before, after):
+    """Did the mutation turn the suite red by being SEEN, or by crashing?
+
+    (verdict, why) where verdict is "measured", "crashed" or "survived".
+
+    New FAILURES mean an assertion looked at the behaviour and disagreed —
+    that is a measurement. New ERRORS with no new failures mean something blew
+    up on the way, and whatever was going to check the behaviour may never
+    have run. The second is not a pass and is not a fail; it is an unmeasured
+    result, and printing a kill count beside it is the lie this exists to
+    stop.
+    """
+    _, failures_before, errors_before = before
+    green, failures, errors = after
+    if green is None:
+        return "hung", ("the suite did not finish within %ds — a mutation "
+                        "that HANGS measures nothing, and waiting for it "
+                        "measures nothing either" % SUITE_DEADLINE)
+    if green:
+        return "survived", "the suite stayed green"
+    if failures > failures_before:
+        return "measured", "%d assertion(s) disagreed" % (
+            failures - failures_before)
+    if errors > errors_before:
+        return "crashed", (
+            "%d test(s) ERRORED and none FAILED — the suite went red by "
+            "raising, not by measuring, so whatever was going to check this "
+            "may never have run" % (errors - errors_before))
+    return "crashed", ("the suite went red without a new failure or error "
+                       "this could attribute")
 
 
 def probe(relative, old, new):
@@ -1753,22 +2041,48 @@ def probe(relative, old, new):
               "  Be more specific, or the mutation is not the one you meant."
               % (old[:60], original.count(old), relative))
         return 2
+    # HELD FOR THE SAME REASON THE SWEEP HOLDS IT: while this lock is taken,
+    # run.py knows a mutation in the tree is expected rather than stranded.
+    # Without it the stranded check refuses to run the suite, returns 1, and
+    # this reads that as CAUGHT — which is how the sweep came to report 133
+    # defended behaviours while executing no tests at all.
+    _held = sole_sweep()
     stat = os.stat(path)
+    # THE CLEAN RUN IS THE CONTROL. Without it a suite that already has a
+    # failure would make every mutation look measured, and this tool would be
+    # confidently wrong in the direction of "do not build".
+    before = run_suite()
     try:
         with open(path, "w") as f:
             f.write(original.replace(old, new, 1))
-        still_green = run_suite()
+        after = run_suite()
     finally:
         with open(path, "w") as f:
             f.write(original)
         os.utime(path, (stat.st_atime, stat.st_mtime))
-    if still_green:
+    if not before[0]:
+        print("CANNOT TELL — the suite was ALREADY red before this mutation "
+              "(%d failed, %d errored).\n  Nothing here can be attributed. "
+              "Fix the suite first." % (before[1], before[2]))
+        return 2
+    verdict, why = killed_by_measurement(before, after)
+    if verdict == "survived":
         print("SURVIVED — nothing defends this. Build the guard, then add a "
               "mutation\n  so it stays defended.")
         return 1
-    print("CAUGHT — something already defends this. Find out WHAT before "
-          "building\n  anything; a second rail for a rule that has one is a "
-          "risky refactor for nothing.")
+    if verdict == "crashed":
+        print("CRASHED, NOT MEASURED — %s.\n"
+              "  The suite went red, so the old version of this tool would "
+              "have said CAUGHT.\n  It is not: a crash proves the line is "
+              "load-bearing, not that anything\n  watches what it DOES. "
+              "Whatever was going to check it may never have run.\n\n"
+              "  Write the assertion so it FAILS rather than raises — "
+              "`(x or {}).get(\"k\")`\n  instead of `x[\"k\"]` — then probe "
+              "again. Until then this told you nothing." % why)
+        return 2
+    print("CAUGHT — something already defends this, and %s. Find out WHAT "
+          "before\n  building anything; a second rail for a rule that has one "
+          "is a risky\n  refactor for nothing." % why)
     return 0
 
 
@@ -1781,14 +2095,46 @@ def main():
         args = ap.parse_args()
         return probe(args.probe, args.old, args.new)
 
+    # ISOLATE FIRST. Everything below mutates source files, and until this
+    # returns we are standing in a tree five other agents execute.
+    if os.environ.get(IN_COPY) != "1":
+        return sweep_in_a_copy()
+
     _lock = sole_sweep()   # held for the life of the process
-    print("Reverting %d shipped fixes; each must turn the suite RED.\n"
-          % len(MUTATIONS))
-    survivors = []
-    for name, relative, find, replace, consequence in MUTATIONS:
+    mine = my_share(MUTATIONS)
+    share = os.environ.get(SHARD)
+    print("Reverting %d shipped fixes%s; each must turn the suite red BY "
+          "FAILING AN\nASSERTION. A crash is not a measurement.\n"
+          % (len(mine), "" if not share else " (shard %s of %d total)"
+             % (share, len(MUTATIONS))))
+    # THE CONTROL, taken once. Every verdict below is a diff against it, so a
+    # suite that is already red cannot make every mutation look measured.
+    baseline = run_suite()
+    if not baseline[0]:
+        print("REFUSING TO SWEEP: the suite is already red (%d failed, %d "
+              "errored).\nNothing measured against it could be attributed to "
+              "a mutation." % (baseline[1], baseline[2]))
+        return 1
+    survivors, crashed = [], []
+    for name, relative, find, replace, consequence in mine:
         path = os.path.join(ROOT, relative)
         with open(path) as f:
             original = f.read()
+        # AMBIGUOUS IS NOT ACCEPTABLE HERE EITHER, and only `probe` used to
+        # say so. The sweep replaced the FIRST match, so a mutation whose
+        # anchor appeared three times quietly neutered a different function
+        # than the one it named — and then reported `caught`, because the
+        # place it actually hit was well defended. That is a mutation lying
+        # about which behaviour it measured, which is worse than one that
+        # fails to find its anchor at all.
+        if original.count(find) > 1:
+            print("  ?? %-38s AMBIGUOUS in %s (%d matches)"
+                  % (name, relative, original.count(find)))
+            survivors.append(
+                (name, "anchor matches %d places — the sweep would mutate the "
+                       "first, which may not be the one this names"
+                 % original.count(find)))
+            continue
         if find not in original:
             print("  ?? %-38s ANCHOR MISSING in %s" % (name, relative))
             survivors.append((name, "anchor no longer present — mutation stale"))
@@ -1804,26 +2150,80 @@ def main():
         try:
             with open(path, "w") as f:
                 f.write(original.replace(find, replace, 1))
-            still_green = run_suite()
+            after = run_suite()
         finally:
             with open(path, "w") as f:
                 f.write(original)
             os.utime(path, (stat.st_atime, stat.st_mtime))
-        if still_green:
+        verdict, why = killed_by_measurement(baseline, after)
+        if verdict == "survived":
             print("  !! %-38s SURVIVED" % name)
             print("     %s" % consequence)
             survivors.append((name, consequence))
+        elif verdict == "hung":
+            # A HANG IS A SURVIVOR, not a crash. Nothing measured the
+            # behaviour AND the sweep cannot finish, so it fails the run
+            # rather than counting against the crash ceiling — the ceiling is
+            # for known debt, and a hang is a new defect every time.
+            print("  !! %-38s HUNG" % name)
+            print("     %s" % why)
+            survivors.append((name, why))
+        elif verdict == "crashed":
+            # NOT counted as caught. The suite went red, which the old version
+            # read as proof; it is not. A crash says the line is load-bearing,
+            # never that anything watches what it does.
+            print("  ?? %-38s CRASHED, not measured" % name)
+            print("     %s" % why)
+            crashed.append((name, why))
         else:
             print("  ok %-38s caught" % name)
 
     print()
+    if crashed:
+        print("%d mutation(s) CRASHED rather than being measured. The suite "
+              "went red,\nso this used to print `caught` beside them — it is "
+              "not the same claim.\nThe assertions meant to see the behaviour "
+              "may never have run:" % len(crashed))
+        for name, why in crashed:
+            print("  ? %s: %s" % (name, why))
+        print("\n  Remedy: make the assertion FAIL rather than raise — "
+              "`(x or {}).get(\"k\")`\n  instead of `x[\"k\"]` — so a "
+              "neutered producer flips it instead of\n  killing the test that "
+              "was going to check it.")
     if survivors:
         print("%d mutation(s) SURVIVED — those behaviours are covered but not "
               "defended:" % len(survivors))
         for name, why in survivors:
             print("  - %s: %s" % (name, why))
+    if crashed and not share:
+        # A CEILING, NOT A PASS. Thirteen mutations were killing their tests
+        # by raising rather than by being measured — a debt that existed
+        # invisibly for as long as the sweep was reporting `caught` about a
+        # suite it never ran. Blocking every commit until all of them are
+        # rewritten would be a gate nobody can satisfy, and a gate nobody can
+        # satisfy gets switched off; letting them pass silently is how they
+        # got here.
+        #
+        # So: they are named, they do not count as caught, and the number may
+        # only go DOWN. A new one fails this immediately.
+        if len(crashed) > CRASHED_CEILING:
+            print("\n%d mutations CRASHED, and the ceiling is %d. A NEW "
+                  "behaviour is being\nmeasured by an exception rather than "
+                  "by an assertion — fix it here rather\nthan raising the "
+                  "number." % (len(crashed), CRASHED_CEILING))
+            return 1
+        print("\n(%d of a permitted %d — this number may only go down.)"
+              % (len(crashed), CRASHED_CEILING))
+    if survivors:
         return 1
-    print("Every reverted fix was caught.")
+    print("Every reverted fix in this share was caught BY A FAILING "
+          "ASSERTION.")
+    # THE ACCOUNTING IS A PROPERTY OF THE WHOLE LIST, not of a share, so one
+    # worker owns it. Printed by every shard it would be eight identical
+    # reports of the same set, and eight chances to read a repeat as a
+    # confirmation.
+    if share and not share.startswith("0/"):
+        return 0
     return 1 if report_unaccounted() else 0
 
 

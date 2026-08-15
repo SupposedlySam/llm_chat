@@ -77,6 +77,99 @@ class RepoDamageTest(unittest.TestCase):
                 self.assertFalse(
                     gate.report_repo_damage(before, gate.fingerprint_repo()))
 
+    def test_A_SWEEP_IN_PROGRESS_IS_NOT_A_STRANDING(self):
+        """The interaction that emptied this repo's mutation gate.
+
+        The stranded check runs before anything else and returns 1 when it
+        finds mutation text in the tree. A sweep's whole method is to put
+        mutation text in the tree and then run the suite — so the check fired
+        every time, the suite never executed, and the sweep read a non-zero
+        exit as "the behaviour is defended". 130 of 133 came back `caught`
+        having run no tests at all.
+
+        Asked of the sweep's own lock rather than an environment variable,
+        because a variable can be inherited by accident or set to silence the
+        check."""
+        real = gate.sweep_in_progress
+        gate.sweep_in_progress = lambda: True
+        try:
+            self.assertEqual(gate.stranded_mutations(), [])
+        finally:
+            gate.sweep_in_progress = real
+
+    def test_with_NO_sweep_running_the_check_actually_SCANS(self):
+        """Paired, and the half that matters: this guard exists because four
+        mutations were left applied by a sweep killed with -9, and a
+        neighbouring agent ran the broken tree by absolute path until its
+        waker died. Silencing it during a sweep must not silence it after
+        one, so the no-sweep path has to reach the files."""
+        import mutate
+        # A mutation that WOULD look stranded: its `find` is absent from the
+        # file and its `replace` is present, which is exactly the shape of a
+        # sweep killed before it restored.
+        #
+        # Written into gate.ROOT, which setUp has pointed at a temp directory
+        # — the first version named a real repo file and found nothing,
+        # because stranded_mutations resolves paths against that ROOT.
+        with open(os.path.join(gate.ROOT, "planted.txt"), "w") as f:
+            f.write("A-STRANDED-MARKER\n")
+        planted = ("planted", "planted.txt", "ZZ-not-in-this-file-ZZ",
+                   "A-STRANDED-MARKER", "a fixture")
+        real_muts, real_sweep = mutate.MUTATIONS, gate.sweep_in_progress
+        mutate.MUTATIONS = [planted]
+        try:
+            gate.sweep_in_progress = lambda: False
+            self.assertEqual(gate.stranded_mutations(),
+                             [("planted", "planted.txt")],
+                             "the no-sweep path did not scan")
+            gate.sweep_in_progress = lambda: True
+            self.assertEqual(gate.stranded_mutations(), [],
+                             "a sweep in progress must silence it")
+        finally:
+            mutate.MUTATIONS, gate.sweep_in_progress = real_muts, real_sweep
+
+    def test_sweep_in_progress_READS_THE_LOCK_not_an_env_var(self):
+        """Against a temp lock, so the answer does not depend on whether this
+        suite happens to be running inside a sweep — which it does, whenever
+        the sweep runs it. The first version asserted the ambient state and so
+        failed for real during the very sweep it was written for."""
+        import fcntl
+        import mutate
+        with tempfile.TemporaryDirectory() as tmp:
+            spare = os.path.join(tmp, ".mutate.lock")
+            real = mutate.LOCK
+            mutate.LOCK = spare
+            try:
+                self.assertFalse(gate.sweep_in_progress())
+                holder = open(spare, "a")
+                fcntl.flock(holder, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    self.assertTrue(gate.sweep_in_progress())
+                finally:
+                    holder.close()
+                self.assertFalse(gate.sweep_in_progress())
+            finally:
+                mutate.LOCK = real
+
+    def test_the_sweep_isolates_itself_from_the_LIVE_tree(self):
+        """A sweep mutates files five other agents execute by absolute path.
+        It was survivable while each mutation lasted about a second because
+        nothing was running; making the sweep real made each one last a full
+        test run."""
+        import mutate
+        seen = []
+        real = mutate.sweep_in_a_copy
+        mutate.sweep_in_a_copy = lambda: seen.append(True) or 0
+        env = os.environ.pop(mutate.IN_COPY, None)
+        try:
+            mutate.main()
+        finally:
+            mutate.sweep_in_a_copy = real
+            if env is not None:
+                os.environ[mutate.IN_COPY] = env
+        self.assertEqual(seen, [True],
+                         "the sweep ran without isolating itself first")
+
     def test_every_LIVE_WRITTEN_path_is_excluded(self):
         """The anti-drift rule, after getting this wrong three times.
 

@@ -26,6 +26,30 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "bin")
 
 
+def parsed(text):
+    """`json.loads`, but unparseable input FAILS a comparison instead of
+    raising.
+
+    A MUTANT KILLED BY AN EXCEPTION IS NOT A MEASUREMENT — showrunner's
+    finding, and this repo had thirteen instances of it. When a mutation makes
+    a `--json` verb print prose, a test that calls `json.loads(out)` directly
+    ERRORS: the assertion that was going to compare the value never runs, the
+    suite goes red for the wrong reason, and the sweep can only report that
+    something exploded.
+
+    Returning None instead turns the same mutation into `None != []`, which is
+    an assertion disagreeing — a measurement, and one whose message names the
+    behaviour rather than the traceback.
+
+    Use this wherever a test parses output the code under test produced.
+    Parsing a FIXTURE the test itself wrote needs no such care.
+    """
+    try:
+        return json.loads(text)
+    except (TypeError, ValueError):
+        return None
+
+
 def load(script, name=None):
     """Load one of this repo's scripts as a module.
 

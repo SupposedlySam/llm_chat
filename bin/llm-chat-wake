@@ -647,14 +647,6 @@ def wake(blocks):
         f"  {CLI} leave <channel>",
         file=sys.stderr,
     )
-    # CLAIM THE REWAKE BEFORE MAKING IT. Exiting 2 is a REQUEST that the
-    # harness wake the model; whether it lands is invisible from here, because
-    # this process is about to end either way. If the harness honours it a new
-    # turn begins, which ends, which arms the next waker — and that waker
-    # finding this note fresh is the only evidence available that anything
-    # happened. See wake_landing() for why it is evidence rather than proof.
-    note_rewake()
-    watch_for_a_missed_wake()
     sys.exit(2)
 
 
@@ -665,6 +657,24 @@ AUTO_RELOAD_PATH = os.path.join(STATE, "wake-by-reload")
 # `wake_landing` already uses to decide a turn is attributable, plus enough
 # margin that a slow host is not called a failure.
 WATCH_MARGIN = 20
+
+
+def announce(blocks):
+    """Claim the rewake, arm the watcher, then wake. In that order.
+
+    A FUNCTION SO THE ORDER CAN BE ASSERTED. These three lines used to sit
+    inline in main()'s loop, where the only way to exercise them was to run
+    the whole loop — so every test called the parts directly, and all of them
+    passed with the watcher's call site deleted. The mutation for it survived
+    a sweep, which is how this got noticed.
+
+    The order is the content: `note_rewake` writes the note, the watcher reads
+    that note to know which request it is waiting on, and `wake` never
+    returns.
+    """
+    note_rewake()
+    watch_for_a_missed_wake()
+    wake(blocks)          # exits 2
 
 
 def watch_for_a_missed_wake():
@@ -925,7 +935,7 @@ def main() -> int:
                               + "\n".join(f"  {ln}" for ln in out.splitlines()))
         if blocks:
             record_exit("woke the session (healthy)")
-            wake(blocks)  # exits 2
+            announce(blocks)  # claims the rewake, arms the watcher, exits 2
         # THE POLL IS GONE. This blocks on the doorbell at zero cost — no
         # request, no CPU — and returns the instant somebody rings. The
         # timeout is a heartbeat so supersession and orphaning get rechecked;

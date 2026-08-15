@@ -406,6 +406,52 @@ class OwedTest(RoomTest):
         self.arrange(mine=[], theirs=[1])
         self.assertEqual(self.owed()[0], 1)
 
+    def test_A_NON_WAKING_REPLY_DISCHARGES_THE_DEBT(self):
+        """Issue #15's squeeze, and the way out of it.
+
+        A finished leaf is caught between three rules: the gate demands an
+        answer, the etiquette forbids trivial "ack" messages because every
+        message WAKES the room, and `leave` — the remedy the gate actually
+        prints — stands down its own waker, so a headless session that leaves
+        and then stops becomes unreachable. The reporter lost a Crawler's
+        verdict to exactly that.
+
+        `--to-none` is the missing move: it says the thing, wakes nobody, and
+        the debt clears because the debt is "somebody spoke after I last did",
+        which is audience-independent. Asserted here because the refusal text
+        is about to recommend it, and a remedy that did not work would be
+        worse than the trap."""
+        self.arrange(mine=[1], theirs=[2])
+        self.seq_counter_at(2)
+        self.assertEqual(self.owed()[0], 1)
+        with redirect_stdout(io.StringIO()):
+            cli.do_say(self.SERVER, "room", "me", "done: refuted, report "
+                       "filed", audience=cli.audience_for(None, False, True))
+        self.assertEqual(self.owed()[0], 0,
+                         "a --to-none reply must clear the debt")
+
+    def seq_counter_at(self, n):
+        """`arrange` writes message rows straight into the table, so the
+        channel's own counter — which `say` reads to number the next message —
+        is still zero. Without this a reply is numbered BELOW the question it
+        answers, and the debt survives for a reason that exists only in the
+        fixture."""
+        for chan in self.fake.tables["channels"]:
+            if chan["name"] == "room":
+                chan["message_count"] = n
+
+    def test_the_non_waking_reply_really_wakes_NOBODY(self):
+        """Paired. If it woke the room it would be the thing the etiquette
+        forbids, and recommending it would trade one trap for another."""
+        self.arrange(mine=[1], theirs=[2])
+        self.seq_counter_at(2)
+        with redirect_stdout(io.StringIO()):
+            cli.do_say(self.SERVER, "room", "me", "done",
+                       audience=cli.audience_for(None, False, True))
+        posted = [m for m in self.fake.tables["messages"]
+                  if m["from_identity"] == "me"][-1]
+        self.assertNotIn("everyone", (posted.get("audience") or ""))
+
     def test_THE_COST_DOES_NOT_SCALE_WITH_ROOMS_JOINED(self):
         """Issue #14, and the whole point of batching. `owed` cost three
         requests per room — channel, membership, messages — so an orchestrator

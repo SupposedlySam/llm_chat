@@ -15,7 +15,7 @@ import urllib.error
 from contextlib import redirect_stdout, redirect_stderr
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from support import FakeServer, load, write_settings  # noqa: E402
+from support import FakeServer, load, parsed, write_settings  # noqa: E402
 
 cli = load("llm_chat")
 
@@ -321,7 +321,12 @@ class ChannelsAndInviteTest(unittest.TestCase):
         out = io.StringIO()
         with redirect_stdout(out):
             cli.do_channels("http://127.0.0.1:1", show_closed, as_json=True)
-        return json.loads(out.getvalue())
+        # `parsed`, not `json.loads`: a --json verb broken into printing prose
+        # makes loads() RAISE, so every assertion below it errors instead of
+        # failing and the sweep can only report that something exploded.
+        # None flows into the comparisons and they disagree, which is a
+        # measurement.
+        return parsed(out.getvalue())
 
     def test_an_empty_server_says_so(self):
         self.assertIn("no channels yet", self.show())

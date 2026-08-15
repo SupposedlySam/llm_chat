@@ -23,9 +23,20 @@ class NoSleep:
     """Stands in for the whole `time` module: runs the loop at full speed and
     counts the passes. `time()` is real, because the probe marks stamp it."""
 
+    # A CEILING EVEN WHEN NOBODY ASKED FOR ONE. These tests drive a loop whose
+    # only exit is the very check a mutation removes — so with the
+    # supersession check gone, `stop_after=None` meant the suite ran forever.
+    # Two shards of a mutation sweep sat at 46 minutes on exactly that, and a
+    # sweep that never finishes measures nothing at all.
+    #
+    # Unbounded now means "many, then stop", so a loop that fails to exit
+    # FAILS the assertion that was going to read its exit reason instead of
+    # hanging the run.
+    FUSE = 500
+
     def __init__(self, stop_after=None):
         self.slept = 0
-        self.stop_after = stop_after
+        self.stop_after = stop_after if stop_after is not None else self.FUSE
 
     @staticmethod
     def time():
@@ -60,7 +71,24 @@ class WakeLoopTest(unittest.TestCase):
         # does not fail — it stops for five minutes. Same shape as the DNS
         # hang: the WAIT is what has to be faked, not the clock.
         self.mod.open_doorbells = lambda rooms: {}
-        self.mod.wait_for_ring = lambda bells, seconds: False
+        # BOUNDED, not just instant. Returning False immediately keeps the
+        # suite fast, but it also means the loop spins with no sleep in it at
+        # all — so a mutation that removes the loop's exit condition runs
+        # forever and the NoSleep fuse, which counts sleeps, never fires. A
+        # mutation sweep sat on exactly this for 46 minutes.
+        #
+        # The wait is where the loop pauses, so the wait is where the ceiling
+        # belongs. A loop that fails to exit now fails the assertion reading
+        # its exit reason.
+        self.rings = []
+
+        def wait_once(bells, seconds):
+            self.rings.append(seconds)
+            if len(self.rings) >= NoSleep.FUSE:
+                raise KeyboardInterrupt("the loop never exited")
+            return False
+
+        self.mod.wait_for_ring = wait_once
         # NOTHING here may reach a real subprocess. `http://x` is not a
         # refused connection — it is a DNS lookup that hangs, so a test that
         # slips through does not fail, it STOPS, and the child outlives the
@@ -74,11 +102,19 @@ class WakeLoopTest(unittest.TestCase):
         os.environ.pop("CLAUDE_PROJECT_DIR", None)
         self.tmp.cleanup()
 
-    def run_main(self, payload='{"hook_event_name": "Stop"}'):
+    def run_main(self, payload='{"hook_event_name": "Stop"}', catch_fuse=True):
         stdin = sys.stdin
         sys.stdin = io.StringIO(payload)
         try:
             return self.mod.main()
+        except KeyboardInterrupt:
+            if not catch_fuse:
+                raise
+            # The fuse in NoSleep, not a real interrupt. Swallowed so the
+            # assertion that was going to read the exit reason gets to run and
+            # DISAGREE — a loop that never terminated should fail a test, not
+            # hang the suite that is measuring it.
+            return None
         finally:
             sys.stdin = stdin
 
@@ -115,8 +151,13 @@ class WakeLoopTest(unittest.TestCase):
         self.mod.still_worth_listening = lambda rooms: True
         self.mod.wait_for_ring = wait
         self.mod.time = NoSleep()
+        # This one raises its OWN interrupt from `wait` after three passes and
+        # asserts it arrived, so it opts out of run_main's fuse-swallowing —
+        # otherwise the two mechanisms are indistinguishable and the assertion
+        # below would pass whether the loop waited three times or never
+        # waited at all.
         with self.assertRaises(KeyboardInterrupt):
-            self.run_main()
+            self.run_main(catch_fuse=False)
         self.assertEqual(len(waits), 3)
         self.assertTrue(all(s >= 60 for s in waits),
                         "the heartbeat must be long — it is not a poll")
@@ -603,6 +644,25 @@ class StillWorthListeningTest(unittest.TestCase):
         """The defect, as a test. Non-zero exit, empty stdout — previously
         indistinguishable from 'every room closed'."""
         self.assertTrue(self.answer(returncode=1, stdout=""))
+
+    def test_a_failing_CLI_IS_NOT_BELIEVED_EVEN_WHEN_IT_PRINTS_CLOSED(self):
+        """The case that makes the exit-code check measurable, and the reason
+        the mutation for it SURVIVED the first sweep that ran tests.
+
+        Every other failing-CLI fixture here prints nothing or prints
+        rubbish — and each of those still returns True after the exit-code
+        check is deleted, by a later branch: an empty listing means the room
+        is 'not listed', and unparseable output is caught by the ValueError.
+        Four tests, one answer, none of them measuring this check.
+
+        A non-zero exit whose stdout happens to PARSE and say `closed` is the
+        only shape where believing it and refusing to believe it differ. The
+        cost of getting this wrong is a waker retiring permanently on a false
+        premise — which is exactly what this repo's own mutation sweep does to
+        the CLI for a few seconds at a time."""
+        self.assertTrue(
+            self.answer(returncode=1, stdout=self.listing(True)),
+            "a CLI that exited non-zero was believed about closure")
 
     def test_a_crashing_cli_that_prints_a_traceback_keeps_it_listening(self):
         self.assertTrue(self.answer(returncode=1, stdout="Traceback..."))

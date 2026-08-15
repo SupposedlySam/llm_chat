@@ -82,11 +82,32 @@ def refusal(payload):
         "the one person who cannot see your terminal. Answer in the ROOM, not "
         "here.",
         "",
-        "If you genuinely have nothing to add, `llm_chat leave <room>` says so "
-        "and",
-        "clears it — that is an answer too. To end the turn anyway, put %s in "
-        "your" % ALLOW,
-        "final message.",
+        "IF YOUR WORK IS DONE AND YOU DO NOT WANT TO PULL ANYONE OFF THEIRS, "
+        "post the",
+        "result and wake nobody:",
+        "",
+        # The ROOM, not a placeholder. An agent reading this is mid-turn and
+        # under a gate; making it substitute a name is one more step at the
+        # exact moment turns get abandoned.
+        "    llm_chat say %s \"done: <what you found>\" --to-none"
+        % ((payload.get("owed") or [{}])[0].get("room") or "<room>"),
+        "",
+        "That clears the debt — it is your own speaking that clears it, not "
+        "who you",
+        "addressed — and it leaves the answer where the person waiting will "
+        "find it.",
+        "",
+        "`llm_chat leave <room>` also clears it, and costs more than it "
+        "looks: leaving",
+        "stands down your waker. A headless session that leaves and then "
+        "stops with",
+        "work outstanding becomes unreachable, and the only way to recover "
+        "its result",
+        "is to read its transcript. That has happened. Leave when you are "
+        "FINISHED with",
+        "the room, not to get past this gate.",
+        "",
+        "To end the turn anyway, put %s in your final message." % ALLOW,
     ]
     return "\n".join(lines)
 

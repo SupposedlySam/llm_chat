@@ -494,6 +494,28 @@ class WakeTest(HookTestCase):
         self.assertIsNone(self.mod.poll("room", {"identity": None,
                                                  "server": "http://127.0.0.1:1"}))
 
+    def test_WAKING_DOES_NOT_FORK_A_REAL_PROCESS(self):
+        """`wake` prints and exits. Nothing else.
+
+        The missed-wake watcher used to be spawned from inside it, so this
+        very test — which calls `wake` directly to assert the exit-2 contract
+        — forked a detached process that outlived the suite. During a mutation
+        sweep, fourteen were alive at once, each sleeping out its grace window
+        inside a temp copy of the repo.
+
+        Asserted rather than remembered, because "no test forks a real
+        process" is exactly the kind of property that comes back."""
+        seen = []
+        real = self.mod.subprocess.Popen
+        self.mod.subprocess.Popen = lambda *a, **kw: seen.append(a)
+        try:
+            with redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    self.mod.wake(["#room (you are 'me')\n  [other] hello"])
+        finally:
+            self.mod.subprocess.Popen = real
+        self.assertEqual(seen, [], "wake() spawned a process")
+
     def test_waking_exits_two_with_the_message_on_stderr(self):
         """exit 2 + stderr is what asyncRewake converts into a wake-up; the
         stderr text IS the message the model receives."""

@@ -21,6 +21,7 @@ output, and the first real one then goes unread.
 """
 import argparse
 import ast
+import fcntl
 import hashlib
 import os
 import sys
@@ -45,6 +46,31 @@ import mutate
 from mutate import discover_sources  # noqa: E402
 
 
+def sweep_in_progress():
+    """Is a mutation sweep running right now?
+
+    Asked of the sweep's OWN lock rather than an environment variable a child
+    could inherit by accident or a caller could set to silence the check. If
+    the lock is free, nothing is sweeping and a mutation in the tree is
+    genuinely stranded.
+
+    Fails CLOSED: if the lock cannot be examined at all, this says no sweep,
+    which leaves the stranded check running. A guard that switches itself off
+    when it cannot tell is not a guard.
+    """
+    try:
+        handle = open(mutate.LOCK, "a")
+    except OSError:
+        return False
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return True            # somebody holds it: a sweep is mid-measurement
+    finally:
+        handle.close()         # releases the lock we just took, if we got it
+    return False
+
+
 def stranded_mutations():
     """Mutations left applied in the working tree by a sweep that was killed.
 
@@ -63,6 +89,20 @@ def stranded_mutations():
     Checked here because this runs on every verify and every commit, so the
     window between stranding and screaming is one check rather than hours.
     """
+    # A SWEEP IN PROGRESS IS NOT A STRANDING, and failing to say so made this
+    # guard silently destroy the one it sits beside.
+    #
+    # The sweep writes a mutation and then runs this suite to see whether
+    # anything notices. This check saw the mutation, refused to run at all,
+    # and returned 1 — which the sweep read as "the suite went red, so the
+    # behaviour is defended". Every mutation came back `caught` because the
+    # tests never executed. 130 of 133 in the run that found this.
+    #
+    # Two guards, each right alone, and the newer one silently emptied the
+    # older. Asking whether a sweep holds its lock is the difference between
+    # "this tree is broken" and "this tree is mid-measurement".
+    if sweep_in_progress():
+        return []
     stranded = []
     for name, relative, find, replace, _ in mutate.MUTATIONS:
         path = os.path.join(ROOT, relative)
