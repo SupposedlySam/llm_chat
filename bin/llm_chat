@@ -451,26 +451,62 @@ def and_(*conditions):
     return {"type": "and", "conditions": list(conditions)}
 
 
+# A 429 is the server saying "later", not "no". Retried here rather than
+# handed to the caller, because the caller that most needs it is `leave` —
+# and issue #15 is that the exit from a rate-limited state was itself rate
+# limited, which makes the state absorbing: the only way out was the override,
+# and an override typed routinely stops being read.
+#
+# Small and bounded on purpose. `call` runs inside hooks with their own
+# deadlines, so this may add at most ~1.4s; a retry policy generous enough to
+# outlast a long window would turn a throttle into a hang, which is worse than
+# the error it replaces.
+RETRY_WAITS = (0.4, 1.0)
+
+
 def call(server, method, path, body=None, query=None, timeout=10):
     url = server.rstrip("/") + path
     if query is not None:
         url += "?body=" + urllib.parse.quote(json.dumps(query))
-    req = urllib.request.Request(
-        url, data=json.dumps(body).encode() if body is not None else None, method=method
-    )
-    req.add_header("content-type", "application/json")
-    try:
-        with urllib.request.urlopen(req, timeout=timeout) as res:
-            raw = res.read().decode()
-            return json.loads(raw) if raw else {}
-    except urllib.error.HTTPError as e:
-        return {"error": f"HTTP {e.code}", "body": e.read().decode()[:300]}
-    except urllib.error.URLError:
-        return {"error": f"no llm_chat server at {server} — start one with "
-                         f"`cd {ROOT} && ./zonai serve --port 7717`.\n"
-                         f"  If it IS running, check the address: zonai binds "
-                         f"[::1] only on macOS, so use localhost, not 127.0.0.1 "
-                         f"(zonai#16)."}
+    for attempt, wait in enumerate((RETRY_WAITS + (None,))):
+        req = urllib.request.Request(
+            url, data=json.dumps(body).encode() if body is not None else None,
+            method=method
+        )
+        req.add_header("content-type", "application/json")
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as res:
+                raw = res.read().decode()
+                return json.loads(raw) if raw else {}
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and wait is not None:
+                # Retry-After is the server's own number and beats a guess,
+                # but only while it is shorter than giving up — a 60s window
+                # honoured literally inside a Stop hook is a hang.
+                try:
+                    offered = float(e.headers.get("Retry-After") or 0)
+                except (TypeError, ValueError):
+                    offered = 0
+                time.sleep(min(offered, wait) if offered else wait)
+                continue
+            found = {"error": f"HTTP {e.code}",
+                     "body": e.read().decode()[:300]}
+            if e.code == 429:
+                # NAMED, because the operator's response to a throttle and to
+                # a dead server are opposite — wait versus stop — and issue
+                # #15 is that they were reported identically.
+                found["rate_limited"] = True
+                found["retry_after"] = e.headers.get("Retry-After")
+            return found
+        except urllib.error.URLError:
+            # AFTER HTTPError, which subclasses it. Not retried: nothing is
+            # listening, and waiting will not change that.
+            return {"error": f"no llm_chat server at {server} — start one "
+                             f"with `cd {ROOT} && ./zonai serve --port "
+                             f"7717`.\n"
+                             f"  If it IS running, check the address: zonai "
+                             f"binds [::1] only on macOS, so use localhost, "
+                             f"not 127.0.0.1 (zonai#16)."}
 
 
 def rows(server, table, where=None):
@@ -1241,17 +1277,68 @@ def do_pending(server, name, identity):
     }))
 
 
-def owed_in(server, name, entry, identity):
+class Store:
+    """Every row this server holds, fetched once.
+
+    ISSUE #14: `owed` cost THREE requests per room — the channel, the
+    membership, the messages — so an orchestrator holding eight rooms spent
+    twenty-four on a single turn-end check, and the agent that holds the most
+    rooms is by construction the one coordinating everybody. The reporter
+    measured the limit being hit while checking, and mitigated it by leaving
+    rooms, which is the wrong direction: it treats the count of conversations
+    you are in as the thing to reduce.
+
+    Three requests, whatever the room count. The tables are small and already
+    fetched whole elsewhere, and one pass over them in memory answers every
+    room at once.
+
+    WHERE THIS STOPS SCALING, said out loud rather than discovered later: it
+    pulls every message on the server, so the cost is the size of the
+    transcript rather than the number of rooms. That is the right trade at a
+    few thousand messages and the wrong one at a million. A `channel IN (...)`
+    filter would bound it, and is deliberately not used — `In` was broken on
+    every zonai released before 0.7.1, so it would work here and fail on
+    somebody else's older server, which is a worse failure than being slow.
+    """
+
+    def __init__(self, server):
+        self.channels = {c["name"]: c for c in rows(server, "channels")}
+        self.members = {}
+        for m in rows(server, "memberships"):
+            self.members.setdefault(m["channel"], {})[m["identity"]] = m
+        self.messages = {}
+        for m in rows(server, "messages"):
+            self.messages.setdefault(m["channel"], []).append(m)
+
+    def channel(self, name):
+        return self.channels.get(name)
+
+    def membership(self, name, identity):
+        return self.members.get(name, {}).get(identity)
+
+    def in_channel(self, name):
+        return self.messages.get(name, [])
+
+
+def owed_in(server, name, entry, identity, store=None):
     """The unanswered question in one room, or None.
 
     "Owed" is the relationship between two facts the store already holds:
     somebody addressed me at seq N, and my own last message here is at a seq
     below N. That is answerable now and nothing exposed it.
+
+    `store` is a pre-fetched Store when the caller is checking several rooms.
+    Without one this does its own three lookups, which is correct and is what
+    a single-room caller wants.
     """
-    chan = get_channel(server, name)
+    if store is not None:
+        chan = store.channel(name)
+        member = store.membership(name, identity) if chan else None
+    else:
+        chan = get_channel(server, name)
+        member = get_membership(server, name, identity) if chan else None
     if chan is None or chan.get("closed"):
         return None
-    member = get_membership(server, name, identity)
     if member is None:
         return None
     # A ROOM YOU HAVE LEFT OWES NOTHING. `leave` is the documented way to say
@@ -1261,7 +1348,8 @@ def owed_in(server, name, entry, identity):
     if member.get("done"):
         return None
 
-    messages = rows(server, "messages", eq("channel", name))
+    messages = (store.in_channel(name) if store is not None
+                else rows(server, "messages", eq("channel", name)))
     mine = [m["seq"] for m in messages if m["from_identity"] == identity]
     last_spoke = max(mine) if mine else 0
     asks = [m for m in messages
@@ -1309,15 +1397,46 @@ def do_owed(server, identity, as_json=False):
     except Exception as problem:
         raise SystemExit(f"could not read joined rooms: {problem}")
 
-    debts, unreachable = [], []
+    # ONE FETCH PER SERVER, not three per room. Grouped rather than assumed
+    # to be one server, because a room carries its own and a project can hold
+    # rooms on more than one.
+    debts, unreachable, stores, refused = [], [], {}, {}
     for name, entry in sorted(joined.items()):
         who = entry.get("identity") or identity
         if not who:
             continue
+        where = entry.get("server") or server
+        if where not in stores:
+            try:
+                stores[where] = Store(where)
+            except SystemExit as problem:
+                # THE REASON IS KEPT, not replaced with "could not reach".
+                # "HTTP 429 Rate limit exceeded" and "no llm_chat server" call
+                # for opposite responses — wait versus stop — and issue #15 is
+                # that they read identically at the point of decision.
+                stores[where] = None
+                refused[where] = str(problem)
+        if stores[where] is None:
+            # Named per room rather than once: a caller gating on this needs
+            # to know WHICH conversations it is blind to, not just that it is.
+            unreachable.append((name, refused[where]))
+            continue
         try:
-            found = owed_in(entry.get("server") or server, name, entry, who)
-        except SystemExit as problem:
-            unreachable.append((name, str(problem)))
+            found = owed_in(where, name, entry, who, store=stores[where])
+        except Exception as problem:
+            # BATCHING WIDENED THE BLAST RADIUS, and this is the price of it.
+            # Per-room, a room whose rows were malformed failed alone. Sharing
+            # one fetch means an exception raised while interpreting ONE room
+            # would otherwise abandon the whole check — every other room
+            # unreported, and a gate that gets no answer at all.
+            #
+            # `Exception` rather than SystemExit: with a store this does no
+            # I/O, so the failure it can still have is a bad row, not an
+            # unreachable server. Keeping the narrower catch would have been
+            # the old path's handler surviving into a path that cannot
+            # produce what it caught.
+            unreachable.append((name, "%s: %s" % (type(problem).__name__,
+                                                  problem)))
             continue
         if found:
             found["as"] = who

@@ -681,6 +681,33 @@ MUTATIONS = [
      "a vacuum refused because the server holds the database open is recorded "
      "as finished, so the work never happens and the queue reports success"),
 
+    ("a 429 is retried instead of handed to the caller", "bin/llm_chat",
+     "            if e.code == 429 and wait is not None:",
+     "            if False:",
+     "the exit from a rate-limited state is itself rate limited, so the state "
+     "is absorbing: `leave` — the documented remedy — returns 429 too, and "
+     "the only way out is the override, which typed routinely stops being "
+     "read (#15)"),
+
+    ("the retry gives up rather than hanging", "bin/llm_chat",
+     "                time.sleep(min(offered, wait) if offered else wait)",
+     "                time.sleep(offered or wait)",
+     "a Retry-After of 60 is honoured literally inside a Stop hook, so a "
+     "throttle becomes a hang — worse than the error it replaces, and "
+     "invisible because the hook simply never returns"),
+
+    ("owed costs the same whatever the room count", "bin/llm_chat",
+     "    if store is not None:\n"
+     "        chan = store.channel(name)\n"
+     "        member = store.membership(name, identity) if chan else None",
+     "    if False:\n"
+     "        chan = store.channel(name)\n"
+     "        member = store.membership(name, identity) if chan else None",
+     "every room costs three requests again, so an orchestrator holding eight "
+     "spends twenty-four on one turn-end check and rate-limits the server it "
+     "is gating on — and the agent in the most rooms is by construction the "
+     "one coordinating everybody (#14)"),
+
     ("a reload refuses when a window holds MORE THAN ONE session",
      "bin/llm_chat",
      "    if here is not None and len(here) > 1 and not i_know:",
@@ -1216,6 +1243,19 @@ NOT_SWEPT = {
         "and that the switch says what it will and will not do. Reached "
         "through the real parser, which asserts it short-circuits before "
         "do_reload — otherwise turning the opt-in on would reload the window",
+    "bin/llm_chat:__init__": "Store's three fetches — the whole point of it — "
+        "are swept as a REQUEST COUNT: five rooms must cost at most four "
+        "calls, asserted by counting them rather than by timing, because a "
+        "timing test passes on a fast machine while the count creeps back",
+    "bin/llm_chat:channel": "a dict lookup, and its answer is asserted "
+        "equal to the unbatched path's in the same test — speed that changed "
+        "the verdict is worth nothing",
+    "bin/llm_chat:membership": "a dict lookup; the membership rules it feeds "
+        "(a room you have left owes nothing, a room you never joined owes "
+        "nothing) are swept where they are decided, in owed_in",
+    "bin/llm_chat:in_channel": "a dict lookup returning [] for a room with no "
+        "messages, which is asserted directly — a quiet room must report no "
+        "debt rather than raise",
     "bin/llm_chat:host_sessions": "every way of not getting an answer is "
         "asserted directly and they all return None: a `claude` that is not "
         "installed, a non-zero exit, unparseable output and two wrong shapes. "

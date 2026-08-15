@@ -95,6 +95,93 @@ class CallTest(unittest.TestCase):
         self.assertEqual(result["error"], "HTTP 500")
         self.assertIn("details", result["body"])
 
+    def throttle(self, times, retry_after=None, then=b'{"data": {"ok": true}}'):
+        """A server that 429s `times` times and then answers."""
+        state = {"n": 0}
+        self.slept = []
+        real_sleep = cli.time.sleep
+        cli.time.sleep = lambda s: self.slept.append(s)
+        self.addCleanup(lambda: setattr(cli.time, "sleep", real_sleep))
+
+        class Response:
+            def read(self):
+                return then
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def maybe(*a, **kw):
+            state["n"] += 1
+            if state["n"] <= times:
+                body = io.BytesIO(b"Rate limit exceeded")
+                headers = {"Retry-After": retry_after} if retry_after else {}
+                raise urllib.error.HTTPError("u", 429, "slow down", headers,
+                                             body)
+            return Response()
+        cli.urllib.request.urlopen = maybe
+        self.attempts = state
+
+    def test_A_429_IS_RETRIED_rather_than_handed_to_the_caller(self):
+        """Issue #15: the exit from a rate-limited state was itself rate
+        limited, which makes the state absorbing — the only way out was the
+        override, and an override typed routinely stops being read. `leave` is
+        the caller that most needs this."""
+        self.throttle(times=1)
+        self.assertEqual(cli.call("http://127.0.0.1:1", "GET", "/p"),
+                         {"data": {"ok": True}})
+        self.assertEqual(self.attempts["n"], 2)
+
+    def test_it_gives_up_rather_than_retrying_forever(self):
+        """A retry policy generous enough to outlast a long window turns a
+        throttle into a hang, which is worse than the error it replaces —
+        `call` runs inside hooks with their own deadlines."""
+        self.throttle(times=99)
+        found = cli.call("http://127.0.0.1:1", "GET", "/p")
+        self.assertEqual(found["error"], "HTTP 429")
+        self.assertEqual(self.attempts["n"], len(cli.RETRY_WAITS) + 1)
+
+    def test_a_429_that_survives_is_NAMED_as_a_rate_limit(self):
+        """The operator's response to a throttle and to a dead server are
+        opposite — wait versus stop — and issue #15 is that they read
+        identically."""
+        self.throttle(times=99)
+        found = cli.call("http://127.0.0.1:1", "GET", "/p")
+        self.assertTrue(found.get("rate_limited"))
+
+    def test_RETRY_AFTER_is_honoured_but_capped(self):
+        """The server's own number beats a guess, but a 60s window honoured
+        literally inside a Stop hook is a hang."""
+        self.throttle(times=1, retry_after="60")
+        cli.call("http://127.0.0.1:1", "GET", "/p")
+        self.assertEqual(self.slept, [cli.RETRY_WAITS[0]])
+
+    def test_a_SHORTER_retry_after_is_taken_at_its_word(self):
+        self.throttle(times=1, retry_after="0.1")
+        cli.call("http://127.0.0.1:1", "GET", "/p")
+        self.assertEqual(self.slept, [0.1])
+
+    def test_a_nonsense_retry_after_falls_back_to_the_default(self):
+        self.throttle(times=1, retry_after="soon")
+        cli.call("http://127.0.0.1:1", "GET", "/p")
+        self.assertEqual(self.slept, [cli.RETRY_WAITS[0]])
+
+    def test_a_NON_429_error_is_not_retried(self):
+        """Retrying a 500 or a 404 buys nothing and doubles the wait before
+        the caller learns."""
+        state = {"n": 0}
+
+        def always_500(*a, **kw):
+            state["n"] += 1
+            raise urllib.error.HTTPError("u", 500, "boom", {},
+                                         io.BytesIO(b"details"))
+        cli.urllib.request.urlopen = always_500
+        found = cli.call("http://127.0.0.1:1", "GET", "/p")
+        self.assertEqual(found["error"], "HTTP 500")
+        self.assertEqual(state["n"], 1)
+
     def test_an_unreachable_server_explains_the_localhost_trap(self):
         """zonai binds [::1] only on macOS, so 127.0.0.1 refuses against a
         server that is plainly running (zonai#16). That half hour is worth one

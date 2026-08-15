@@ -406,41 +406,136 @@ class OwedTest(RoomTest):
         self.arrange(mine=[], theirs=[1])
         self.assertEqual(self.owed()[0], 1)
 
+    def test_THE_COST_DOES_NOT_SCALE_WITH_ROOMS_JOINED(self):
+        """Issue #14, and the whole point of batching. `owed` cost three
+        requests per room — channel, membership, messages — so an orchestrator
+        holding eight rooms spent twenty-four on one turn-end check, and the
+        agent in the most rooms is by construction the one coordinating
+        everybody. The reporter hit the server's rate limit and mitigated it
+        by LEAVING rooms, which treats the number of conversations you are in
+        as the thing to reduce.
+
+        Asserted as a count rather than a duration, because a timing test
+        would pass on a fast machine while the request count crept back."""
+        self.arrange(mine=[1], theirs=[2])
+        for extra in ("two", "three", "four", "five"):
+            self.fake.channel(extra)
+            self.fake.tables["memberships"].append(
+                {"id": "m-" + extra, "channel": extra, "identity": "me",
+                 "done": 0, "seen_seq": 0})
+            cli.remember(extra, "me", self.SERVER)
+
+        seen = []
+        real = cli.call
+        cli.call = lambda *a, **kw: (seen.append(a[2]) or real(*a, **kw))
+        try:
+            self.owed()
+        finally:
+            cli.call = real
+        self.assertLessEqual(
+            len(seen), 4,
+            "five rooms cost %d requests: %s" % (len(seen), seen))
+
+    def test_the_batch_gives_THE_SAME_ANSWER_as_the_per_room_path(self):
+        """Speed is worthless if it changed the verdict. The debt found across
+        five rooms must be the one the unbatched lookup finds in the room it
+        is in."""
+        self.arrange(mine=[1], theirs=[2])
+        self.fake.channel("quiet")
+        self.fake.tables["memberships"].append(
+            {"id": "mq", "channel": "quiet", "identity": "me", "done": 0,
+             "seen_seq": 0})
+        cli.remember("quiet", "me", self.SERVER)
+        code, text = self.owed()
+        self.assertEqual(code, 1)
+        self.assertIn("room", text)
+        self.assertNotIn("#quiet", text)
+        # And the single-room path, with no store, agrees.
+        alone = cli.owed_in(self.SERVER, "room", {}, "me")
+        self.assertIsNotNone(alone)
+        self.assertEqual(alone["seq"], 2)
+
+    def test_ONE_BAD_ROOM_DOES_NOT_ABANDON_THE_WHOLE_CHECK(self):
+        """The risk batching introduced. Per-room, a room whose rows were
+        malformed failed alone; sharing one fetch means an exception while
+        interpreting ONE room would abandon every other room and leave the
+        gate with no answer at all.
+
+        The bad room is reported as unchecked — which is exit 2, not a
+        silently smaller answer."""
+        self.arrange(mine=[1], theirs=[2])
+        self.fake.channel("bad")
+        self.fake.tables["memberships"].append(
+            {"id": "mb", "channel": "bad", "identity": "me", "done": 0,
+             "seen_seq": 0})
+        cli.remember("bad", "me", self.SERVER)
+        real = cli.owed_in
+        cli.owed_in = lambda server, name, entry, who, store=None: (
+            (_ for _ in ()).throw(KeyError("from_identity")) if name == "bad"
+            else real(server, name, entry, who, store=store))
+        try:
+            code, text = self.owed()
+        finally:
+            cli.owed_in = real
+        self.assertEqual(code, 2, "a bad room must not read as 'nothing owed'")
+        self.assertIn("bad", text)
+        self.assertIn("KeyError", text)
+
     def test_COULD_NOT_LOOK_IS_ITS_OWN_EXIT_CODE(self):
         """The whole reason this is safe to gate on. A check that folds its
         own failure into 'nothing owed' fails open in silence, which is issue
         #1 in this repo."""
         self.arrange(mine=[1], theirs=[2])
-        real = cli.get_channel
+        real = cli.Store
 
-        def unreachable(server, name):
+        def unreachable(server):
             raise SystemExit("no llm_chat server at %s" % server)
-        cli.get_channel = unreachable
+        cli.Store = unreachable
         try:
             code, text = self.owed()
         finally:
-            cli.get_channel = real
+            cli.Store = real
         self.assertEqual(code, 2)
         self.assertIn("COULD NOT CHECK", text)
 
+    def test_THE_REASON_SURVIVES_so_a_throttle_is_not_an_outage(self):
+        """A 429 and a dead server call for opposite responses — wait versus
+        stop — and issue #15 is that they read identically at the point of
+        decision. The message the server gave has to reach the operator."""
+        self.arrange(mine=[1], theirs=[2])
+        real = cli.Store
+
+        def throttled(server):
+            raise SystemExit("HTTP 429  Rate limit exceeded")
+        cli.Store = throttled
+        try:
+            _, text = self.owed()
+        finally:
+            cli.Store = real
+        self.assertIn("429", text)
+
     def test_unreachable_OUTRANKS_owed(self):
         """A gate seeing one debt and one failure would act on the debt and
-        never learn a second room could not be read at all."""
+        never learn a second room could not be read at all.
+
+        TWO SERVERS, because that is now the only way a room can be
+        unreachable while another is fine: one fetch covers a whole server, so
+        per-room failure within one server no longer exists. The old version
+        of this test made one room's `get_channel` raise, which batching stopped
+        calling — it passed by construction and then stopped meaning
+        anything."""
         self.arrange(mine=[1], theirs=[2])
-        self.fake.channel("other")
-        self.fake.tables["memberships"].append(
-            {"id": "m2", "channel": "other", "identity": "me", "done": 0,
-             "seen_seq": 0})
-        cli.remember("other", "me", self.SERVER)
-        real = cli.get_channel
-        cli.get_channel = lambda server, name: (
-            real(server, name) if name == "room" else
-            (_ for _ in ()).throw(SystemExit("unreachable")))
+        cli.remember("other", "me", "http://127.0.0.1:9")
+        real = cli.Store
+        cli.Store = lambda server: (
+            real(server) if server == self.SERVER else
+            (_ for _ in ()).throw(SystemExit("no llm_chat server at " + server)))
         try:
-            code, _ = self.owed()
+            code, text = self.owed()
         finally:
-            cli.get_channel = real
+            cli.Store = real
         self.assertEqual(code, 2)
+        self.assertIn("other", text)
 
     def test_a_room_this_identity_never_joined_owes_nothing(self):
         """joined.json can name a room the server no longer has us in — a
