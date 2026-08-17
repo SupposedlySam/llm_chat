@@ -1,0 +1,163 @@
+#!/usr/bin/env python3
+"""PostToolUse hook: a publish that left consumers behind is a thing to SAY.
+
+Wired in `.claude/settings.local.json` against the `Bash` tool.
+
+THE DEFECT, three times in three days, each time noticed by me and then not
+acted on. A publish reports which checkouts are now running an older copy:
+
+    4 lamp consumer(s) are now behind:
+      /path/to/game_loop  #OLD → #NEW
+      /path/to/showrunner  #OLD → #NEW
+
+(The versions are spelled #OLD and #NEW rather than numbers ON PURPOSE: this
+file would otherwise contain a complete, well-formed report, and `cat`-ing it
+— or grepping it — would set the trigger off. The sibling guard shipped that
+exact false positive by quoting the pipelines it refuses, and its lesson is
+one file over.)
+
+I read that, wrote "four consumers are behind" in my summary to the human, and
+moved on — three separate times, across releases that included message LOSS
+fixes. The agents in those checkouts had no way to learn any of it. They are
+reachable: they are in rooms on this server, and telling them costs one
+message.
+
+The gap is not knowledge, it is that noticing and acting were separate steps
+and only the first was reliable. That is what a trigger is for.
+
+WHAT IT WATCHES. `tool_response.stdout` and `.stderr` — VERIFIED to exist
+rather than assumed. A throwaway hook was registered to dump one real
+PostToolUse payload before this file was written, because "the hook can see
+the command's output" is exactly the kind of belief that ships an inert
+watcher. The payload carries session_id, tool_input, and a `tool_response`
+with `stdout`, `stderr`, `interrupted` and `noOutputExpected`.
+
+WHAT IT REFUSES TO FIRE ON, because a nudge on every run is one you stop
+seeing — lamp-owner's learning, applied to the thing it warned about:
+
+  1. Prose that merely contains the phrase. Reading a publish log with `grep`
+     prints the same sentence, and this trigger's own source contains it
+     twice. So a bare phrase match is not enough: the report's SHAPE is a
+     count line followed by at least one checkout with a version arrow, and
+     both halves are required.
+  2. The same news twice. The set of behind checkouts is recorded, and an
+     identical set is not announced again. Publishing twice with nobody
+     upgrading in between is not new information.
+  3. Zero. "0 consumers are now behind" is the good outcome and says nothing.
+
+WHAT IT DOES NOT KNOW. Which room each consumer is in — that is a live
+question and the answer is in `llm_chat channels`. It names the checkouts and
+points at the lookup rather than guessing a channel per repo, because a
+confidently wrong room name would send the message somewhere nobody is
+listening, which is this project's oldest failure mode.
+"""
+import json
+import os
+import re
+import sys
+
+# The report's own shape. A count line, then at least one checkout with a
+# version arrow — the second half is what separates a real publish from prose
+# quoting one.
+COUNT = re.compile(
+    r"(\d+)\s+[\w-]*\s*consumer\(s\)\s+are\s+now\s+behind", re.IGNORECASE)
+BEHIND = re.compile(r"^\s*(\S+?)\s+#(\d+)\s*(?:→|->)\s*#(\d+)\s*$", re.M)
+
+STATE = os.path.join(
+    os.environ.get("CLAUDE_PROJECT_DIR") or os.getcwd(),
+    ".llm_chat", "probe", "consumers-told")
+
+
+def output_of(payload):
+    """Everything the command printed, or "" — never None.
+
+    Both streams, because a publisher may report this on either and which one
+    is not worth a claim.
+    """
+    response = payload.get("tool_response")
+    if not isinstance(response, dict):
+        return ""
+    return "%s\n%s" % (response.get("stdout") or "",
+                       response.get("stderr") or "")
+
+
+def left_behind(text):
+    """[(checkout, from, to)] a publish just stranded, or [].
+
+    Both halves required. The count line alone appears in prose — in a summary
+    I wrote, in a commit message, in this docstring — and firing on that would
+    make the trigger noise within a day.
+    """
+    if not text:
+        return []
+    found = COUNT.search(text)
+    if not found or int(found.group(1)) < 1:
+        return []
+    return [(path, was, now)
+            for path, was, now in BEHIND.findall(text[found.end():])]
+
+
+def already_told(behind):
+    """True if this exact set has been announced before.
+
+    A nudge printed on every run is the one you stop seeing, and the more
+    disciplined you are about reading output the faster that happens —
+    lamp-owner's learning, which arrived in #learnings while this was being
+    written.
+    """
+    key = json.dumps(sorted(behind))
+    try:
+        with open(STATE) as f:
+            if f.read().strip() == key:
+                return True
+    except OSError:
+        pass
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open("%s.tmp.%d" % (STATE, os.getpid()), "w") as f:
+            f.write(key)
+        os.replace("%s.tmp.%d" % (STATE, os.getpid()), STATE)
+    except OSError:
+        pass          # never let bookkeeping suppress the message itself
+    return False
+
+
+def notice(behind):
+    who = "\n".join("    %s  (#%s → #%s)" % (os.path.basename(p.rstrip("/")),
+                                             was, now)
+                    for p, was, now in behind)
+    return (
+        "You just published and left %d checkout(s) on an older copy:\n\n%s\n\n"
+        "THEY CANNOT LEARN THIS ON THEIR OWN. Their agents are running the old "
+        "code and\nnothing tells them; you are the only party that knows. "
+        "Saying so in your summary\nto the human is not telling them — that "
+        "has now happened three times across\nreleases that fixed message "
+        "LOSS.\n\n"
+        "Post it in the room each one is in. `llm_chat channels --json` shows "
+        "membership,\nso the room is a lookup rather than a guess:\n\n"
+        "    llm_chat say <room> \"<what changed and why it matters to you>\" "
+        "--to <them>\n\n"
+        "Lead with what breaks for THEM, not the version numbers. If nothing "
+        "in this\nrelease affects them, that is a fine answer and worth one "
+        "line rather than\nsilence." % (len(behind), who)
+    )
+
+
+def main(argv=None):
+    try:
+        payload = json.loads(sys.stdin.read() or "{}")
+    except ValueError:
+        return 0
+    if payload.get("tool_name") != "Bash":
+        return 0
+    behind = left_behind(output_of(payload))
+    if not behind or already_told(behind):
+        return 0
+    print(json.dumps({"hookSpecificOutput": {
+        "hookEventName": "PostToolUse",
+        "additionalContext": notice(behind)}}))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

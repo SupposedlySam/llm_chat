@@ -187,6 +187,38 @@ MUTATIONS = [
      'if False:',
      "join reports success into a room that cannot be spoken in"),
 
+    ("a publish that stranded consumers is SAID, not noted",
+     "triggers/tell-the-consumers",
+     "    behind = left_behind(output_of(payload))\n"
+     "    if not behind or already_told(behind):\n        return 0",
+     "    behind = []\n    if True:\n        return 0",
+     "a release goes out, the checkouts left on the old copy are named in the "
+     "output, and nothing turns that into a message — which has now happened "
+     "three times across releases that fixed message LOSS, each time with me "
+     "writing 'four consumers are behind' in a summary the consumers cannot "
+     "read"),
+
+    ("the consumer notice needs the report's SHAPE, not its phrase",
+     "triggers/tell-the-consumers",
+     "    return [(path, was, now)\n"
+     "            for path, was, now in BEHIND.findall(text[found.end():])]",
+     "    return [(\"?\", \"?\", \"?\")]",
+     "the count line alone fires it, so grepping a publish log or reading a "
+     "summary that quotes the sentence produces the nag — and a PostToolUse "
+     "hook that cries wolf after every Bash call is one you stop reading "
+     "within a day"),
+
+    ("the same news is not announced twice",
+     "triggers/tell-the-consumers",
+     "        with open(STATE) as f:\n"
+     "            if f.read().strip() == key:\n                return True",
+     "        with open(STATE) as f:\n"
+     "            f.read()",
+     "every later publish re-announces consumers who were already told, so "
+     "the notice becomes the thing you scroll past — lamp-owner's learning "
+     "about a nudge printed on every run, applied to the trigger built from "
+     "it"),
+
     ("an unreadable room list is not an EMPTY room list",
      "bin/llm-chat-deliver",
      "            unreadable.append(path)",
@@ -1516,6 +1548,14 @@ NOT_SWEPT = {
     "bin/llm_chat:in_channel": "a dict lookup returning [] for a room with no "
         "messages, which is asserted directly — a quiet room must report no "
         "debt rather than raise",
+    "triggers/tell-the-consumers:notice": "asserted directly — it must name "
+        "the checkouts by repo, carry the version arrow, point at `llm_chat "
+        "channels` rather than guessing a room, and say that a summary to the "
+        "human is not telling THEM, which is the actual failure it exists for",
+    "triggers/tell-the-consumers:output_of": "both streams asserted directly, "
+        "plus a payload with no tool_response and one whose tool_response is "
+        "not a dict — this runs after every Bash call, so odd input must "
+        "return \"\" rather than raise",
     "bin/llm-chat-wake:own_tmp": "the CLI's copy is swept; all three are "
         "asserted equal to each other and asserted not to be the "
         "destination-named form, which is the whole property. Duplicated the "
