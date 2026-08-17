@@ -103,6 +103,27 @@ class DeliverTest(HookTestCase):
         self.assertEqual(code, 0)
         self.assertEqual(out, "")
 
+    def test_AN_UNREADABLE_ROOM_LIST_IS_REPORTED_not_rendered_as_silence(self):
+        """The agent is the only party left who can act on it.
+
+        This hook's silence means "nothing waiting", and it runs after every
+        tool call — so a resolver that folds "could not read" into "no rooms"
+        makes the session DEAF while every sender sees delivery succeed, every
+        room still lists them, and `doctor` agrees with the silence because it
+        shares the resolver. Nothing downstream is positioned to notice, which
+        is why this one refuses out loud instead.
+
+        Reported by showrunner, confirmed from source, sharpened by wcs — and
+        it reached me only because I rejoined the room I had left."""
+        path = os.path.join(self.project, ".llm_chat", "joined.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("{not json")
+        code, out = self.run_hook()
+        self.assertEqual(code, 0, "it must not take the turn down with it")
+        self.assertIn("could not read", out)
+        self.assertIn("NOT 'nothing waiting'", out)
+
     def test_it_marks_that_it_fired_even_with_nothing_to_deliver(self):
         """The mark's ABSENCE is the only readable evidence that a registered
         hook has never run, so it has to be written before any early return."""

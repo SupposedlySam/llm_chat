@@ -206,9 +206,25 @@ def read_cursor():
         return None
 
 
+def own_tmp(path):
+    """A scratch path no other process will write, for write-then-replace.
+
+    `path + ".tmp"` is named after the DESTINATION, so two writers share one
+    temp file: the loud failure is a FileNotFoundError on the second replace,
+    the quiet one is a complete, valid, silently stale file. Reported by
+    lamp-owner, who lost three wishes to it under fan-out with every publish
+    printing "granted".
+
+    This bridge is a long-lived loop writing four state files while commands
+    run beside it, so the same-session concurrency they scoped it to is
+    exactly this process's normal condition.
+    """
+    return "%s.tmp.%d" % (path, os.getpid())
+
+
 def write_cursor(ts):
     os.makedirs(os.path.dirname(CURSOR), exist_ok=True)
-    tmp = CURSOR + ".tmp"
+    tmp = own_tmp(CURSOR)
     with open(tmp, "w") as f:
         json.dump({"oldest": ts}, f)
     os.replace(tmp, CURSOR)
@@ -283,7 +299,7 @@ def write_asked(asked):
         for old in list(asked)[:len(asked) - MAX_THREADS]:
             del asked[old]
     os.makedirs(os.path.dirname(ASKED), exist_ok=True)
-    tmp = ASKED + ".tmp"
+    tmp = own_tmp(ASKED)
     with open(tmp, "w") as f:
         json.dump(asked, f)
     os.replace(tmp, ASKED)
@@ -361,7 +377,7 @@ def write_reply_state(state):
         for old in list(state)[:len(state) - MAX_THREADS]:
             del state[old]
     os.makedirs(os.path.dirname(REPLIES), exist_ok=True)
-    tmp = REPLIES + ".tmp"
+    tmp = own_tmp(REPLIES)
     with open(tmp, "w") as f:
         json.dump(state, f)
     os.replace(tmp, REPLIES)
@@ -395,7 +411,7 @@ def remember_thread(ts, sender):
         for old in list(threads)[:len(threads) - MAX_THREADS]:
             del threads[old]
     os.makedirs(os.path.dirname(THREADS), exist_ok=True)
-    tmp = THREADS + ".tmp"
+    tmp = own_tmp(THREADS)
     with open(tmp, "w") as f:
         json.dump(threads, f)
     os.replace(tmp, THREADS)

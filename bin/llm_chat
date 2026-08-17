@@ -172,7 +172,7 @@ def do_identify(server, identity, shared=False):
         raise SystemExit("identity must be 1-64 chars of [a-z0-9._-]")
     path = identity_path(shared=shared)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = own_tmp(path)
     with open(tmp, "w") as f:
         json.dump({"identity": identity}, f, indent=2)
     os.replace(tmp, path)
@@ -573,6 +573,36 @@ def read_joined() -> dict:
     return {}
 
 
+def own_tmp(path):
+    """A scratch path no other process will write, for write-then-replace.
+
+    `path + ".tmp"` is named after the DESTINATION, so two writers do not make
+    two temp files — they make ONE, and both replace from it. Two outcomes: the
+    loud one is FileNotFoundError when the second replace finds the temp
+    already moved, and the quiet one is A's bytes overwritten by B's before A
+    replaces, leaving a complete, valid, silently stale file. On a
+    read-modify-write like joined.json that loses an entry outright.
+
+    Reported by lamp-owner after spending an evening on the same defect in
+    lamp, where it was worse: their registry is one file per MACHINE, so
+    concurrent publishes lost three wishes, each having printed "granted".
+    They also scoped it honestly for here — joined.json and the default
+    identity file are session-scoped, so what is left is same-session
+    concurrency, a hook writing while a command runs. Latent rather than
+    urgent, and one line to remove.
+
+    Their two dead ends are worth keeping: an optimistic check comparing the
+    file on disk against what was loaded does not see this at all, because it
+    guards the DESTINATION and the collision is on the source. And
+    check-then-replace is a compare-and-swap made of two syscalls, which is
+    not one — it shrinks the race rather than closing it.
+
+    The reference implementation is showrunner's `lib/showrunner/util.py`,
+    which had this right before either of us.
+    """
+    return "%s.tmp.%d" % (path, os.getpid())
+
+
 def remember(channel, identity, server, broadcast=False):
     path = joined_path()
     joined = read_joined()
@@ -581,7 +611,7 @@ def remember(channel, identity, server, broadcast=False):
         # Recorded locally so the waker can skip it without a query per poll.
         joined[channel]["broadcast"] = True
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = own_tmp(path)
     with open(tmp, "w") as f:
         json.dump(joined, f, indent=2)
     os.replace(tmp, path)
@@ -599,7 +629,7 @@ def forget(channel):
     if joined.pop(channel, None) is None:
         return False
     path = joined_path()
-    tmp = path + ".tmp"
+    tmp = own_tmp(path)
     with open(tmp, "w") as f:
         json.dump(joined, f, indent=2)
     os.replace(tmp, path)
@@ -1794,6 +1824,35 @@ def do_leave(server, name, identity, ask=False):
     if member is None:
         raise SystemExit(f"{identity} has not joined {name}")
 
+    # YOU CANNOT WALK OUT OF YOUR OWN HELP DESK AND LEAVE IT OPEN.
+    #
+    # A room named after a project is where people bring that project's
+    # problems. Its creator leaving does not close it — the room stays open,
+    # accepts messages, and wakes nobody, so a question arrives and sits.
+    # That is not hypothetical: showrunner filed a reproducible lockout in
+    # #llm_chat_owner and it sat for three hours because I had left the room I
+    # created. `owed` could not see it either, by design — a room you are done
+    # with owes nothing.
+    #
+    # An owner has two honest exits and this is neither of them: `close` ends
+    # the room and says so to anyone who tries, and `delete` destroys it. Both
+    # leave the asker with an answer. Leaving leaves them with silence.
+    chan = get_channel(server, name)
+    if not ask and chan is not None and chan.get("created_by") == identity \
+            and not chan.get("closed"):
+        raise SystemExit(
+            f"refusing: {identity} CREATED #{name}, so leaving would keep the "
+            f"room open\n  with nobody home. Questions would land here and "
+            f"wake no one.\n\n"
+            f"  Ending it:      llm_chat close {name} --reason \"...\"\n"
+            f"  Destroying it:  llm_chat delete {name} --yes\n"
+            f"  Stepping back:  llm_chat leave {name} --ask   "
+            f"(stays a member, asks the room)\n\n"
+            f"  If the room genuinely has another owner now, close it and let "
+            f"them open\n  one — ownership is the creator and this project has "
+            f"no way to hand it over."
+        )
+
     if ask:
         # THE NEGOTIATION STEP. Still a member afterward — not done, not
         # forgotten locally, still polled and still addressable — so this is
@@ -1823,7 +1882,24 @@ def do_leave(server, name, identity, ask=False):
     # room on every cycle — so a finished conversation costs a request per poll
     # forever. Rejoining re-remembers, and `read <channel> --all --as <you>`
     # still reaches the transcript afterwards.
-    forget(name)
+    #
+    # ONLY IF THE LOCAL RECORD IS YOURS. A project can hold several identities
+    # and joined.json keeps ONE per room, so `leave --as owner` used to delete
+    # a record that said `showrunner` — leaving a live server-side membership
+    # the client would no longer use. Reported by showrunner as a reproducible
+    # lockout: `channels` showed them a member, every call answered "you have
+    # not joined", and `join` reporting success each time.
+    #
+    # Two stores disagreeing, with the client trusting the wrong one — the
+    # same shape as every other defect this week, and this one was written by
+    # a departing identity on behalf of one that had not departed.
+    recorded = read_joined().get(name)
+    if recorded is None or recorded.get("identity") == identity:
+        forget(name)
+    else:
+        print(f"  (this project's local record for #{name} belongs to "
+              f"{recorded['identity']}, not\n  {identity} — left it alone, so "
+              f"they keep their membership)")
 
     members = rows(server, "memberships", eq("channel", name))
     # A room where everyone has said they are finished closes itself, so a
@@ -2442,7 +2518,7 @@ def read_maintenance(project=None):
 def write_maintenance(entries, project=None):
     path = maintenance_path(project)
     os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = path + ".tmp"
+    tmp = own_tmp(path)
     with open(tmp, "w") as f:
         json.dump(entries, f, indent=1)
     os.replace(tmp, path)

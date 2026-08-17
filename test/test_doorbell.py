@@ -29,6 +29,7 @@ from support import load  # noqa: E402
 
 cli = load("llm_chat")
 waker = load("llm-chat-wake")
+bridge = load("llm-chat-slack")
 
 
 class ConventionTest(unittest.TestCase):
@@ -43,6 +44,35 @@ class ConventionTest(unittest.TestCase):
     def test_both_sides_agree_on_the_name(self):
         self.assertEqual(cli.doorbell_name("room", "me"),
                          waker.doorbell_name("room", "me"))
+
+    def test_A_TEMP_FILE_IS_NAMED_AFTER_ITS_WRITER(self):
+        """`path + ".tmp"` is named after the DESTINATION, so two processes
+        writing the same state file do not make two temps — they make ONE, and
+        both replace from it. The loud failure is FileNotFoundError on the
+        second replace; the quiet one is A's bytes overwritten by B's before A
+        replaces, leaving a complete, valid, silently stale file. On a
+        read-modify-write like joined.json that loses an entry outright.
+
+        Reported by lamp-owner after an evening on the same defect in lamp,
+        where six concurrent publishes lost three wishes and every one printed
+        "granted". They scoped it honestly for here — session-scoped state
+        means what is left is same-session concurrency, a hook writing while a
+        command runs, which is the bridge's and the waker's normal condition.
+
+        Asserted as "not the destination-named one" rather than a string
+        match, because the property is that two writers cannot collide."""
+        for mod in (cli, waker, bridge):
+            with self.subTest(module=mod.__name__):
+                made = mod.own_tmp("/tmp/state.json")
+                self.assertNotEqual(made, "/tmp/state.json.tmp")
+                self.assertIn(str(os.getpid()), made)
+                self.assertTrue(made.startswith("/tmp/state.json"))
+
+    def test_all_three_copies_of_the_rule_agree(self):
+        """Three standalone scripts, one naming rule, no shared module — the
+        same duplication as doorbell_dir and the same failure if it drifts."""
+        self.assertEqual(cli.own_tmp("/x/y.json"), waker.own_tmp("/x/y.json"))
+        self.assertEqual(cli.own_tmp("/x/y.json"), bridge.own_tmp("/x/y.json"))
 
     def test_the_SAME_identity_in_DIFFERENT_rooms_gets_different_bells(self):
         """The collision that made this a membership key. Four projects here

@@ -187,6 +187,54 @@ MUTATIONS = [
      'if False:',
      "join reports success into a room that cannot be spoken in"),
 
+    ("an unreadable room list is not an EMPTY room list",
+     "bin/llm-chat-deliver",
+     "            unreadable.append(path)",
+     "            pass",
+     "a corrupt joined.json makes the agent DEAF while every sender sees "
+     "delivery succeed, every room still lists them, and doctor agrees with "
+     "the silence because it shares the resolver — no party in the system is "
+     "positioned to notice"),
+
+    ("the TERMINAL case is not empty either", "bin/llm-chat-deliver",
+     "    if unreadable:",
+     "    if False:",
+     "an agent whose only joined.json is a corrupt SESSION file runs off the "
+     "end of the candidate loop and gets {} — deaf by the same mechanism the "
+     "fallthrough was supposed to fix, and it is the agent least likely to "
+     "have anyone checking on it (wcs)"),
+
+    ("a temp file is named after its WRITER, not its destination",
+     "bin/llm_chat",
+     '    return "%s.tmp.%d" % (path, os.getpid())',
+     '    return path + ".tmp"',
+     "two processes writing the same state file share ONE temp file, so the "
+     "loser's bytes survive in a complete, valid, silently stale file — on a "
+     "read-modify-write like joined.json that loses an entry outright "
+     "(lamp-owner, who lost three wishes to it with every publish printing "
+     "granted)"),
+
+    ("an owner cannot abandon an open room they created", "bin/llm_chat",
+     '    if not ask and chan is not None and chan.get("created_by") == '
+     "identity \\\n            and not chan.get(\"closed\"):",
+     "    if False:",
+     "the creator of a help channel walks out and the room stays OPEN — "
+     "questions land there, wake nobody, and `owed` cannot see them because a "
+     "room you are done with owes nothing. showrunner's lockout report sat "
+     "three hours in #llm_chat_owner for exactly this reason"),
+
+    ("leaving does not clobber another identity's local record",
+     "bin/llm_chat",
+     "    recorded = read_joined().get(name)\n"
+     "    if recorded is None or recorded.get(\"identity\") == identity:\n"
+     "        forget(name)",
+     "    forget(name)",
+     "`leave --as owner` deletes a joined.json record that says `showrunner`, "
+     "so a live server-side membership exists that the client will not use — "
+     "`channels` shows you a member while every call answers 'you have not "
+     "joined', and the write was made by a departing identity on behalf of "
+     "one that had not departed"),
+
     ("leaving or deleting forgets the room", "bin/llm_chat",
      '    if joined.pop(channel, None) is None:',
      '    if True:',
@@ -1468,6 +1516,14 @@ NOT_SWEPT = {
     "bin/llm_chat:in_channel": "a dict lookup returning [] for a room with no "
         "messages, which is asserted directly — a quiet room must report no "
         "debt rather than raise",
+    "bin/llm-chat-wake:own_tmp": "the CLI's copy is swept; all three are "
+        "asserted equal to each other and asserted not to be the "
+        "destination-named form, which is the whole property. Duplicated the "
+        "same way doorbell_dir is, and pinned the same way — three standalone "
+        "scripts with no shared module",
+    "bin/llm-chat-slack:own_tmp": "as above; this file's four state writes "
+        "are the ones most exposed, since the bridge is a long-lived loop "
+        "writing while commands run beside it",
     "bin/llm_chat:do_owed": "its three exit codes are the contract other "
         "things gate on and all three are asserted directly — nothing owed, "
         "something owed, and COULD NOT LOOK outranking a debt. The batching "

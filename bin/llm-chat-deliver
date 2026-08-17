@@ -73,14 +73,40 @@ def joined_for(session_id):
         candidates.append(os.path.join(PROJECT, ".llm_chat", "sessions", sid,
                                        "joined.json"))
     candidates.append(JOINED)
+    unreadable = []
     for path in candidates:
         if not os.path.isfile(path):
-            continue
+            continue          # ABSENT — try the next candidate
         try:
             with open(path) as f:
                 return json.load(f) or {}
         except (OSError, ValueError):
-            return {}
+            # UNREADABLE is not ABSENT, and this line used to `return {}` —
+            # the correct behaviour was already three lines up, in the same
+            # loop, for the missing case. Reported by showrunner, confirmed
+            # from source, and it outranks everything else found this week for
+            # one reason: a resolver that reads empty makes an agent DEAF
+            # while every sender sees delivery succeed, every room still lists
+            # them, and `doctor` agrees with the silence because it shares the
+            # resolver. Nothing in the system is positioned to notice.
+            unreadable.append(path)
+    if unreadable:
+        # AND NOT `{}` AT THE END EITHER — wcs's refinement, which is the half
+        # that `continue` alone misses. With only a `continue`, a corrupt
+        # SESSION file falls through to the project file and an agent that has
+        # one is rescued; an agent that has only ever joined in-session has no
+        # project file, the loop runs off the end, and it is deaf again by the
+        # same mechanism. That is the agent least likely to have anyone
+        # checking on it.
+        #
+        # None is "could not look" and is NOT a room list. The caller refuses
+        # on it, because a reader cannot recover the distinction once it has
+        # been folded into an empty dict.
+        print("llm_chat: cannot read %s — refusing to report 'no rooms', "
+              "which would\n  look exactly like having nothing waiting. "
+              "Repair or delete it."
+              % ", ".join(unreadable), file=sys.stderr)
+        return None
     return {}
 
 # A single delivery must never be big enough to derail a turn. Two agents that
@@ -319,6 +345,20 @@ def main() -> int:
 
     # In no rooms is fine — a wiring notice still has to get out.
     joined = joined_for(session_id)
+    if joined is None:
+        # COULD NOT LOOK. Reported to the agent rather than rendered as
+        # silence: it is the only party left that can act on it, and the
+        # alternative is a session that believes it is in no rooms while
+        # senders watch their messages succeed.
+        print(json.dumps({"hookSpecificOutput": {
+            "hookEventName": "PostToolUse",
+            "additionalContext":
+                "llm_chat could not read this project's joined rooms, so it "
+                "cannot say whether anything is waiting. This is NOT 'nothing "
+                "waiting' — messages may be arriving and going nowhere. "
+                "Repair or delete the unreadable file named on stderr, then "
+                "run `llm_chat doctor`."}}))
+        return 0
 
     blocks = []
     for channel, entry in joined.items():

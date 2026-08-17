@@ -15,7 +15,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from support import FakeServer, load  # noqa: E402
@@ -218,13 +218,57 @@ class DeliverScopeTest(unittest.TestCase):
         """A wiring notice still has to get out when nothing is joined."""
         self.assertEqual(deliver.joined_for(A), {})
 
-    def test_corrupt_state_is_empty_rather_than_fatal(self):
+    def test_CORRUPT_STATE_IS_NOT_AN_EMPTY_ROOM_LIST(self):
+        """This test previously asserted the defect, under the name
+        `test_corrupt_state_is_empty_rather_than_fatal`. Not fatal was the
+        right instinct; EMPTY was the wrong value, and writing it down as the
+        expected answer is what kept it alive.
+
+        Reported by showrunner and confirmed from source. It outranks
+        everything else found this week for one reason: a resolver that reads
+        empty makes an agent DEAF while every sender sees delivery succeed,
+        every room still lists them, and `doctor` agrees with the silence
+        because it shares the resolver. No party in the system is positioned
+        to notice."""
         path = os.path.join(self.tmp.name, ".llm_chat", "sessions", A,
                             "joined.json")
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write("{not json")
-        self.assertEqual(deliver.joined_for(A), {})
+        with redirect_stderr(io.StringIO()):
+            self.assertIsNone(deliver.joined_for(A),
+                              "unreadable state reported as 'no rooms'")
+
+    def test_a_corrupt_SESSION_file_falls_back_to_a_healthy_project_file(self):
+        """The `continue` half. An agent with a project store is rescued."""
+        path = os.path.join(self.tmp.name, ".llm_chat", "sessions", A,
+                            "joined.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("{not json")
+        with open(os.path.join(self.tmp.name, ".llm_chat",
+                               "joined.json"), "w") as f:
+            json.dump({"shared": {"identity": "me", "server": "s"}}, f)
+        with redirect_stderr(io.StringIO()):
+            self.assertEqual(list(deliver.joined_for(A) or {}), ["shared"])
+
+    def test_the_TERMINAL_case_is_not_empty_either(self):
+        """wcs's refinement, and the half a bare `continue` misses.
+
+        With only the fallthrough, a corrupt session file plus NO project file
+        runs off the end of the loop and returns {} — deaf again by the same
+        mechanism. That is the agent that has only ever joined in-session,
+        which is the one least likely to have anyone checking on it."""
+        path = os.path.join(self.tmp.name, ".llm_chat", "sessions", A,
+                            "joined.json")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("{not json")
+        self.assertFalse(os.path.exists(os.path.join(
+            self.tmp.name, ".llm_chat", "joined.json")),
+            "this test is only meaningful with no project file to fall back to")
+        with redirect_stderr(io.StringIO()):
+            self.assertIsNone(deliver.joined_for(A))
 
 
 if __name__ == "__main__":

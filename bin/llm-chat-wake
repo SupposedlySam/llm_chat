@@ -124,6 +124,23 @@ HEARTBEAT_SEC = int(os.environ.get("LLM_CHAT_HEARTBEAT_SEC")
                     or HEARTBEAT_SEC_DEFAULT)
 
 
+def own_tmp(path):
+    """A scratch path no other process will write. See the CLI's copy for the
+    full reasoning; the short version is that `path + ".tmp"` is named after
+    the DESTINATION, so two writers share one temp file and the loser's bytes
+    survive in a complete, valid, stale file.
+
+    This file has five such writes and they are the ones most exposed to it:
+    the waker runs concurrently with commands by construction, and the missed-
+    wake watcher is a SECOND waker process writing the same state directory.
+
+    Duplicated rather than imported because these are standalone scripts with
+    no shared module, the same way doorbell_dir is — and pinned by a test that
+    asserts the two copies agree.
+    """
+    return "%s.tmp.%d" % (path, os.getpid())
+
+
 def record_exit(reason):
     """Leave WHY this waker stopped, so its absence can be interrogated.
 
@@ -179,7 +196,7 @@ def record_exit(reason):
     try:
         os.makedirs(os.path.dirname(EXIT_PATH), exist_ok=True)
         history = read_exits() + [record]
-        tmp = EXIT_PATH + ".tmp"
+        tmp = own_tmp(EXIT_PATH)
         with open(tmp, "w") as f:
             json.dump(history[-KEEP_EXITS:], f)
         os.replace(tmp, EXIT_PATH)
@@ -218,7 +235,7 @@ def record_alive(server=None):
             record["session"] = _SID
         if server:
             record["server"] = server
-        tmp = ALIVE_PATH + ".tmp"
+        tmp = own_tmp(ALIVE_PATH)
         with open(tmp, "w") as f:
             json.dump(record, f)
         os.replace(tmp, ALIVE_PATH)
@@ -735,7 +752,7 @@ def watch(at):
             record["said"] = str(problem)[:300]
     try:
         os.makedirs(STATE, exist_ok=True)
-        tmp = MISSED_PATH + ".tmp"
+        tmp = own_tmp(MISSED_PATH)
         with open(tmp, "w") as f:
             json.dump(record, f)
         os.replace(tmp, MISSED_PATH)
@@ -747,7 +764,7 @@ def watch(at):
 def note_rewake():
     try:
         os.makedirs(STATE, exist_ok=True)
-        tmp = REWAKE_PATH + ".tmp"
+        tmp = own_tmp(REWAKE_PATH)
         with open(tmp, "w") as f:
             json.dump({"at": time.time(), "pid": os.getpid()}, f)
         os.replace(tmp, REWAKE_PATH)
@@ -808,7 +825,7 @@ def wake_landing(event="unknown"):
     if time.time() - float(pending.get("at") or 0) > REWAKE_GRACE:
         return                      # too late to attribute this turn to it
     try:
-        tmp = LANDED_PATH + ".tmp"
+        tmp = own_tmp(LANDED_PATH)
         with open(tmp, "w") as f:
             json.dump({"at": time.time(), "event": event,
                        "host": os.environ.get("CLAUDE_CODE_ENTRYPOINT")}, f)

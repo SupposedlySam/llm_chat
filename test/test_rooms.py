@@ -90,6 +90,79 @@ class RoomTest(unittest.TestCase):
         self.quiet(cli.do_leave, "http://127.0.0.1:1", "room", "me")
         self.assertNotIn("room", cli.read_joined())
 
+    def test_AN_OWNER_CANNOT_WALK_OUT_AND_LEAVE_THE_ROOM_OPEN(self):
+        """A room named after a project is where people bring that project's
+        problems. Its creator leaving does not close it — the room stays open,
+        accepts messages and wakes nobody, so a question arrives and sits.
+
+        Measured: showrunner filed a reproducible lockout in #llm_chat_owner
+        and it sat for three hours, because the owner had left the room they
+        created. `owed` could not see it either — a room you are done with
+        owes nothing, by design."""
+        self.fake.channel("llm_chat_owner", created_by="owner")
+        self.fake.membership("llm_chat_owner", "owner", done=0)
+        cli.remember("llm_chat_owner", "owner", "http://127.0.0.1:1")
+        with self.assertRaises(SystemExit) as caught:
+            self.quiet(cli.do_leave, "http://127.0.0.1:1", "llm_chat_owner",
+                       "owner")
+        said = str(caught.exception)
+        self.assertIn("CREATED", said)
+        self.assertIn("close", said)
+        self.assertIn("delete", said)
+        self.assertIn("llm_chat_owner", cli.read_joined(),
+                      "the refusal must not half-apply")
+
+    def test_a_NON_owner_may_still_leave(self):
+        """Paired. The rule is about abandoning a help desk you opened, not
+        about making rooms impossible to exit."""
+        self.fake.channel("llm_chat_owner", created_by="owner")
+        self.fake.membership("llm_chat_owner", "visitor", done=0)
+        cli.remember("llm_chat_owner", "visitor", "http://127.0.0.1:1")
+        self.quiet(cli.do_leave, "http://127.0.0.1:1", "llm_chat_owner",
+                   "visitor")
+        self.assertNotIn("llm_chat_owner", cli.read_joined())
+
+    def test_an_owner_may_leave_a_room_they_already_CLOSED(self):
+        """Closing is the honest exit: it ends the room and says so to anyone
+        who tries. Once closed there is no open door to abandon."""
+        self.fake.channel("llm_chat_owner", created_by="owner", closed=1)
+        self.fake.membership("llm_chat_owner", "owner", done=0)
+        cli.remember("llm_chat_owner", "owner", "http://127.0.0.1:1")
+        self.quiet(cli.do_leave, "http://127.0.0.1:1", "llm_chat_owner",
+                   "owner")
+        self.assertNotIn("llm_chat_owner", cli.read_joined())
+
+    def test_an_owner_may_still_ASK_the_room(self):
+        """`--ask` keeps the membership and puts the question to the room,
+        which is the negotiation an owner SHOULD be able to start."""
+        self.fake.channel("llm_chat_owner", created_by="owner")
+        self.fake.membership("llm_chat_owner", "owner", done=0)
+        cli.remember("llm_chat_owner", "owner", "http://127.0.0.1:1")
+        self.quiet(cli.do_leave, "http://127.0.0.1:1", "llm_chat_owner",
+                   "owner", ask=True)
+        self.assertIn("llm_chat_owner", cli.read_joined())
+
+    def test_LEAVING_DOES_NOT_CLOBBER_ANOTHER_IDENTITYS_LOCAL_RECORD(self):
+        """showrunner's lockout, as a test.
+
+        A project can hold several identities and joined.json keeps ONE record
+        per room. `leave --as owner` deleted a record that said `showrunner` —
+        so a live server-side membership existed that the client would no
+        longer use. `channels` showed them a member, every call answered "you
+        have not joined", and `join` reported success each time.
+
+        Two stores disagreeing with the client trusting the wrong one, and the
+        write was made by a departing identity on behalf of one that had not
+        departed."""
+        self.fake.channel("room")
+        self.fake.membership("room", "owner", done=0)
+        self.fake.membership("room", "showrunner", done=0)
+        cli.remember("room", "showrunner", "http://127.0.0.1:1")
+        self.quiet(cli.do_leave, "http://127.0.0.1:1", "room", "owner")
+        self.assertEqual(cli.read_joined().get("room", {}).get("identity"),
+                         "showrunner",
+                         "owner leaving deleted showrunner's local record")
+
     def test_room_closes_only_once_every_member_is_done(self):
         self.fake.channel("room")
         self.fake.membership("room", "me", done=0)
