@@ -41,6 +41,7 @@ what is well tested.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -196,6 +197,60 @@ def owed(files, mapping):
     return hits
 
 
+def ci_commands(root):
+    """Commands CI runs, from .github/workflows/*.yml — ([], "no workflows") when there are none.
+
+    Deliberately not a YAML parse: stdlib has no yaml, and a dependency for this would be a poor
+    trade. It reads `run:` steps, inline and block-scalar, which is where a workflow's commands live.
+    A miss here under-reports and is stated as such, rather than being presented as coverage.
+    """
+    import glob as _glob
+    out, files = [], []
+    for pat in ("*.yml", "*.yaml"):
+        files += sorted(_glob.glob(os.path.join(root, ".github", "workflows", pat)))
+    if not files:
+        return [], "no .github/workflows/ — nothing to compare against"
+    for fp in files:
+        try:
+            lines = open(fp).read().split("\n")
+        except OSError:
+            continue
+        i = 0
+        while i < len(lines):
+            ln = lines[i]
+            m = re.match(r"^(\s*)-?\s*run:\s*(\|[-+]?|>[-+]?)?\s*(.*)$", ln)
+            if m:
+                indent, block, inline = len(m.group(1)), m.group(2), m.group(3).strip()
+                if block:
+                    i += 1
+                    while i < len(lines) and (not lines[i].strip()
+                                              or len(lines[i]) - len(lines[i].lstrip()) > indent):
+                        if lines[i].strip():
+                            out.append((os.path.basename(fp), lines[i].strip()))
+                        i += 1
+                    continue
+                if inline:
+                    out.append((os.path.basename(fp), inline))
+            i += 1
+    return out, ""
+
+
+def ci_gap(root, mapping):
+    """CI commands whose leading words appear in NO gate. A DIFFERENCE, never a verdict."""
+    cmds, why = ci_commands(root)
+    if why:
+        return [], why
+    gates = " \n".join(c for cs in mapping.values() for c in cs)
+    missing = []
+    for fname, cmd in cmds:
+        head = " ".join(cmd.split()[:2])
+        if not head or head.startswith("#"):
+            continue
+        if head not in gates and cmd.split()[0] not in gates:
+            missing.append((fname, cmd))
+    return missing, ""
+
+
 def coverage(files, mapping, exclusions):
     """(checked, excluded, unchecked) — the inversion this whole flag exists for.
 
@@ -270,6 +325,28 @@ def report_coverage(staged=False, porcelain=False):
         print('        - "<glob>"')
     else:
         print("\n  Every path above is claimed by a rule or excluded on purpose.")
+
+    # #72: A GATE CAN BE A PLAUSIBLE LOCAL APPROXIMATION OF CI AND REPORT THE SAME GREEN. A
+    # consumer ran `flutter analyze lib` for a year against a CI running `dart analyze
+    # --fatal-infos` over the whole tree — different scope, different severity, neither visible by
+    # reading the rule. The CI definition is usually right there in the repo, so this compares them.
+    _gap, _why = ci_gap(REPO, mapping)
+    if _why:
+        print(f"\nCI CROSS-CHECK: {_why}.")
+    elif _gap:
+        print(f"\nCI RUNS {len(_gap)} COMMAND(S) NO GATE RUNS — a gate that approximates CI reports")
+        print("green where CI would not, which is the check-that-cannot-fail one level up:")
+        for _f, _c in _gap[:8]:
+            print(f"    {_f}: {_c[:88]}")
+        if len(_gap) > 8:
+            print(f"    ...and {len(_gap) - 8} more")
+        print("  Paste CI's command into the rule, or write the difference above it — what it")
+        print("  covers, and what it treats as fatal.")
+    else:
+        print("\nCI CROSS-CHECK: every command your workflows run appears in some gate.")
+    print("  IT COMPARES COMMAND TEXT, NOT BEHAVIOUR: two spellings of one check read as a")
+    print("  difference, and two different checks that share a prefix read as a match. It reports")
+    print("  a difference for you to judge, never a verdict.")
 
     print("\nThis is a REPORT, never a block: a manifest that ships empty must not refuse a "
           "project's\nfirst commit. WHAT IT CANNOT TELL YOU: whether a listed command is a real "

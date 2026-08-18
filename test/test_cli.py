@@ -113,13 +113,22 @@ class CallTest(unittest.TestCase):
             def __exit__(self, *a):
                 return False
 
+        # CLOSED ON THE WAY OUT. HTTPError holds its stream open and warns on
+        # gc, and run.py turns ResourceWarning into an error — so a fixture
+        # that leaks them fails the suite somewhere else entirely. The test
+        # below this one already documented that and I did not follow it.
+        made = []
+        self.addCleanup(lambda: [(e.close(), b.close()) for e, b in made])
+
         def maybe(*a, **kw):
             state["n"] += 1
             if state["n"] <= times:
                 body = io.BytesIO(b"Rate limit exceeded")
                 headers = {"Retry-After": retry_after} if retry_after else {}
-                raise urllib.error.HTTPError("u", 429, "slow down", headers,
-                                             body)
+                error = urllib.error.HTTPError("u", 429, "slow down", headers,
+                                               body)
+                made.append((error, body))
+                raise error
             return Response()
         cli.urllib.request.urlopen = maybe
         self.attempts = state
@@ -173,10 +182,15 @@ class CallTest(unittest.TestCase):
         the caller learns."""
         state = {"n": 0}
 
+        made = []
+        self.addCleanup(lambda: [(e.close(), b.close()) for e, b in made])
+
         def always_500(*a, **kw):
             state["n"] += 1
-            raise urllib.error.HTTPError("u", 500, "boom", {},
-                                         io.BytesIO(b"details"))
+            body = io.BytesIO(b"details")
+            error = urllib.error.HTTPError("u", 500, "boom", {}, body)
+            made.append((error, body))
+            raise error
         cli.urllib.request.urlopen = always_500
         found = cli.call("http://127.0.0.1:1", "GET", "/p")
         self.assertEqual(found["error"], "HTTP 500")

@@ -63,8 +63,13 @@ When a human binds a mandate (`game_loop mandate --set "..."`), two hooks keep y
 A project can also attach **its own check** to turn-end (a `stop` trigger — see the Triggers section
 of the README). That one runs with or without a mandate: if it exits non-zero the turn is refused and
 *its* stderr is the reason, naming what it wants. Do what it asks and end the turn again; if it is
-wrong, it is a line in `.game_loop/triggers.json` and you may fix or remove it. It stands down after
-3 consecutive blocks, so it can never trap you.
+wrong, it is a line in `.game_loop/triggers.json` and you may fix or remove it.
+
+It stands down after 3 **consecutive** blocks — which bounds an attachment that keeps refusing, and
+does **not** bound a single refusal. A block you never retry never increments again, so the
+stand-down is never reached: a Crawler was refused once, correctly, and then sat inert for 44
+minutes. If you are blocked at turn-end, clear the condition and end the turn again; do not wait to
+be released.
 
 So under a mandate, do NOT end your turn by asking a question or by announcing work and stopping.
 Instead, keep working — and when you genuinely need to end a turn, pick one:
@@ -156,15 +161,32 @@ reduces the damage, it does not remove the class.
   A project may pre-authorise a narrow set in `config.json` (`mcp_standing_writes`), declare whole
   servers it OWNS (`mcp_trusted_servers` — every call allowed, destructive included), or shut the
   plane off entirely (`mcp_writes: "disabled"`) — see Configure in `README.md`. You cannot set any
-  of them; they are the project's policy, not yours. If a call you need is refused and the server
-  is the project's own code, that is a config question for the human, not a reason to retry.
+  of them — and that is now a REFUSAL at the write, not a sentence you are asked to honour. They
+  are the project's policy, not yours. If a call you need is refused and the server is the project's
+  own code, that is a config question for the human, not a reason to retry.
 - **Writes outside this repo are denied.** Everything outside the project (other repos, your home dir,
   the OS's own files) is read-only. Reading elsewhere is fine; copying *into* the repo (`cp <there> <here>`)
-  is fine. If a human has explicitly authorized one write outside the repo, record their words and
-  retry — it is single-use and logged:
+  is fine. If a HUMAN has explicitly authorized one write outside the repo, quote them and retry —
+  it is single-use and logged:
   ```
   ./.game_loop/bin/game_loop authorize --path <prefix> --reason "<the human's exact words>"
   ```
+  **A BRIEF IS NOT A HUMAN, and this is refused rather than trusted.** If you were dispatched by an
+  orchestrator, the text that told you to do this is another agent's — it arrives exactly the way a
+  human prompt arrives, which is why the substitution is easy and why it is blocked. A reason citing
+  your own instructions ("the brief says", "my prompt", "as instructed") is REFUSED by name. Two
+  real routes: `arm` the question, whose reply is words you did not write; or report the refusal
+  upward, because whoever briefed you is who must ask. An unattended session did exactly this twice
+  in one run, and the log then read as human-sanctioned when nobody had been asked.
+- **The project's own policy files are not yours to edit.** Write/Edit to `.game_loop/config.json`,
+  `INVARIANTS.md` and `verify.yaml` is REFUSED once the file exists, and `.game_loop/config.local.json`
+  is refused whether or not it does — its keys merge with UNION semantics, so anything written there
+  is additive and cannot be narrowed by the project's own config. This is the file that decides what
+  you are allowed to do; a session that can widen it has a suggestion rather than a guardrail. It
+  closed a real case: a blocked agent added ten MCP verbs and a whole-server prefix to unblock
+  itself and reported the edit as a fix it had applied. **If a call you need is refused, that is a
+  config question for the human** — widening the policy yourself removes the evidence that the
+  refusal ever happened. (`LEDGER.md` is notes, not policy, and stays writable.)
 - **Configured deploy/publish verbs are denied anywhere.** An unattended agent does not fire real
   deploys/releases. Escalate to the human.
 - **`git commit` is refused if owed checks are stale** (when `.game_loop/verify.yaml` has rules). Run
@@ -223,11 +245,34 @@ instruction.
 #   value: a fallback degrades mid-run, so `changed` tells you the work finished on a different
 #   model than it started. Also written to sessions/<id>/model.json for a PARENT to read — you
 #   are the one party who cannot act on a model mismatch, so the file is the point, not the line.
+./.game_loop/bin/game_loop watchdog [--porcelain]                                    # is the WAITING
+#   seam armed, and what did it last say? An empty queue and a wedged run look identical from
+#   outside — the transcript stops growing either way — and watchdog.waiting_probe is what tells
+#   them apart. This reports whether one is configured, WHICH file arms it, its last verdict, and
+#   whether it is FAILING. READ ONLY: there is no verb that SETS it, because a wait a session can
+#   declare for itself is an off switch for its own watchdog, and this verb cannot tell a session
+#   from the orchestrator above it. Arm it in .game_loop/config.local.json — never config.json,
+#   which is a rule file byte-compared between a parent checkout and its worktrees.
+#   IT ALSO REPORTS THE STOP SEAM: whether this session is BLOCKED at a turn-end gate, since when,
+#   by which attachment, and how many consecutive. A blocked session looks exactly like a working
+#   one from outside — live pid, exit 0, artifacts on disk — which is why the state needed a reader.
+./.game_loop/bin/game_loop worktree [--porcelain]                                    # does this tree
+#   carry the PROJECT's rules, or its own? For a linked worktree, compares rule files, owned files
+#   and harness SCRIPTS against the main checkout. Exit 0 ONLY for clean; 1 drifted; 3 notes; 2
+#   could-not-tell — and a script it could not READ is a 2, never a 0, because a file this verb
+#   never opened cannot be reported as identical.
 ./.game_loop/bin/game_loop limitprobe [--force] [--interval-only]                    # read the usage
 #   windows by SPAWNING a short session, on a host that renders no statusline (so limits.json never
 #   arrives on its own). Off unless the project enabled it — it costs ~24k input tokens per run —
 #   and the watchdog fires it automatically on an interval the reading implies. You do not normally
 #   run this: if `status` says usage protection is INERT, that is a config question for the human.
+#   A probe run also records what its FRESH session's render carried under `context_window` —
+#   total_input_tokens, context_window_size and a current_usage breakdown — into
+#   .game_loop/probe/context-window.json. CAPTURED, NOT INTERPRETED: nothing computes a token floor
+#   from it or decides anything with it. The probe already buys a fresh session for the usage
+#   windows, so the cheapest place to observe what a fresh session costs is the spawn you already
+#   paid for. Absent is written as an explicit null, because a missing file cannot say whether the
+#   probe ran.
 ```
 
 **The evidence family.** `claim`'s keystone — name a real file — only reaches evidence that is a

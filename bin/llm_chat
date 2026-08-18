@@ -2188,6 +2188,28 @@ def do_auto_reload(setting):
     """Turn the opt-in on or off, and say what it means either way."""
     path = auto_reload_path()
     if setting == "on":
+        # SAY WHEN IT CAN NEVER FIRE, rather than letting it sit there looking
+        # armed. Auto-reload declines whenever the project holds more than one
+        # live session — so on a machine that runs several conversations per
+        # repo it can only fire in exactly the configuration where a manual
+        # reload was already cheap, and it would do that silently, forever.
+        #
+        # Reported as issue #17, and it is the same defect as the two triggers
+        # that read CONFIGURED BUT NEVER FIRED for four days: a mechanism that
+        # cannot operate is indistinguishable from one that is fine. Turning a
+        # silent never-fires into a visible one is the whole fix.
+        here = live_here()
+        if here is not None and len(here) > 1:
+            print("WARNING: %d live sessions in this project right now, and "
+                  "auto-reload\n  DECLINES whenever there is more than one — "
+                  "a reload takes the whole window.\n  So switching this on "
+                  "here arms something that will never fire.\n\n"
+                  "  It is still recorded, because your session count "
+                  "changes. But if this\n  project normally runs several "
+                  "conversations at once, the honest answer is\n  that this "
+                  "feature is not for that setup, and a NEW session picks up "
+                  "rewired\n  hooks without ending anything.\n"
+                  % len(here))
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w") as f:
             f.write("a missed wake may reload this window\n")
@@ -2290,12 +2312,22 @@ def do_reload(force=False, i_know=False):
         raise SystemExit(
             "refusing: the host reports %d live sessions in this project, and "
             "a reload\n  takes the whole WINDOW — every conversation in it, "
-            "not just yours.\n%s\n  Reload by hand if you mean all of them, "
-            "or `--i-know` to accept it."
+            "not just yours.\n%s\n\n"
+            "  YOU PROBABLY DO NOT NEED ONE. Hooks are read at session start, "
+            "so a NEW\n  conversation in this same window comes up with the "
+            "rewired hooks while every\n  session above keeps its context. "
+            "`install.sh` says the same thing on the way\n  out: \"It is live "
+            "for NEW sessions there.\"\n\n"
+            "  That is the first option because it costs nothing. Reloading "
+            "is the one that\n  ends %d conversations, and `--i-know` accepts "
+            "that blast radius rather than\n  reducing it — which is a "
+            "worse trade than it looks when two of those sessions\n  have "
+            "been running for days."
             % (len(here),
                "\n".join("    %s  %s" % ((s.get("sessionId") or "?")[:8],
                                          s.get("name") or "unnamed")
-                         for s in here)))
+                         for s in here),
+               len(here)))
 
     # Target THIS project's window explicitly. The first version activated
     # VSCode and drove whatever was frontmost, which on a machine running seven

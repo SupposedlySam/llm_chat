@@ -387,6 +387,61 @@ class ReloadTest(unittest.TestCase):
             cli.do_auto_reload("off")
         self.assertIn("OFF", out.getvalue())
 
+    def test_THE_REFUSAL_OFFERS_THE_FREE_OPTION_FIRST(self):
+        """Issue #17. The refusal presented a binary — reload by hand, or
+        `--i-know` — and both cost every session in the window, two of which
+        had been running for days. The cheap answer was missing from the one
+        place somebody is standing when they need it: hooks are read at
+        session start, so a NEW conversation in the same window comes up
+        rewired while the long-running siblings keep their context.
+
+        `install.sh` already says exactly this on the way out. The gap was
+        never knowledge; it was that the sentence lived somewhere else."""
+        self.stub()
+        real = cli.live_here
+        cli.live_here = lambda project=None: [
+            {"sessionId": "aaaaaaaa", "name": "one"},
+            {"sessionId": "bbbbbbbb", "name": "two"}]
+        self.addCleanup(lambda: setattr(cli, "live_here", real))
+        with self.assertRaises(SystemExit) as caught:
+            with redirect_stdout(io.StringIO()):
+                cli.do_reload(force=True)
+        said = str(caught.exception)
+        self.assertIn("NEW\n  conversation", said)
+        self.assertIn("keeps its context", said)
+        # And the destructive options must not come first.
+        self.assertLess(said.index("NEW\n  conversation"),
+                        said.index("--i-know"))
+
+    def test_TURNING_AUTO_ON_SAYS_WHEN_IT_CAN_NEVER_FIRE(self):
+        """The sharper half of #17. Auto-reload declines whenever the project
+        holds more than one live session, so on a machine running several
+        conversations per repo it can only fire in the configuration where a
+        manual reload was already cheap — silently, forever.
+
+        Same defect as the two triggers that read CONFIGURED BUT NEVER FIRED
+        for four days: a mechanism that cannot operate looks exactly like one
+        that is fine. Making it say so is the fix."""
+        real = cli.live_here
+        cli.live_here = lambda project=None: [
+            {"sessionId": "a", "name": "one"}, {"sessionId": "b", "name": "2"}]
+        self.addCleanup(lambda: setattr(cli, "live_here", real))
+        with redirect_stdout(io.StringIO()) as out:
+            cli.do_auto_reload("on")
+        said = out.getvalue()
+        self.assertIn("never fire", said)
+        self.assertTrue(cli.auto_reload_allowed(self.project),
+                        "it warns, but still records the choice")
+
+    def test_a_SINGLE_session_gets_no_such_warning(self):
+        """Paired. A warning printed always is one nobody reads."""
+        real = cli.live_here
+        cli.live_here = lambda project=None: [{"sessionId": "a"}]
+        self.addCleanup(lambda: setattr(cli, "live_here", real))
+        with redirect_stdout(io.StringIO()) as out:
+            cli.do_auto_reload("on")
+        self.assertNotIn("never fire", out.getvalue())
+
     def test_the_switch_says_what_it_will_and_will_not_do(self):
         with redirect_stdout(io.StringIO()) as out:
             cli.do_auto_reload("on")

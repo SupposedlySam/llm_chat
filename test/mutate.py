@@ -246,6 +246,32 @@ MUTATIONS = [
      "(lamp-owner, who lost three wishes to it with every publish printing "
      "granted)"),
 
+    ("auto-reload SAYS when it can never fire", "bin/llm_chat",
+     "        here = live_here()\n"
+     "        if here is not None and len(here) > 1:",
+     "        here = None\n        if False:",
+     "a feature that declines whenever the project holds more than one live "
+     "session is switched on, looks armed, and can only fire in the "
+     "configuration where the manual version was already cheap — silently, "
+     "forever, which is indistinguishable from working (#17)"),
+
+    # ANCHORED ON THE FRAGMENT THE TEST READS. The first version removed only
+    # the opening string literal of a concatenated message — and the text the
+    # assertion looks for lived in the NEXT fragment, so the mutation changed
+    # the message and the test could not tell. It SURVIVED, which is the third
+    # time today a fixture answered the same for both branches.
+    ("the reload refusal offers the free option FIRST", "bin/llm_chat",
+     '            "  YOU PROBABLY DO NOT NEED ONE. Hooks are read at session '
+     'start, "\n'
+     '            "so a NEW\\n  conversation in this same window comes up '
+     'with the "\n'
+     '            "rewired hooks while every\\n  session above keeps its '
+     'context. "',
+     '            "  "',
+     "the refusal presents a binary — reload by hand or --i-know — and both "
+     "end every conversation in the window, when a NEW session in the same "
+     "window picks up the rewired hooks and costs nothing (#17)"),
+
     ("an owner cannot abandon an open room they created", "bin/llm_chat",
      '    if not ask and chan is not None and chan.get("created_by") == '
      "identity \\\n            and not chan.get(\"closed\"):",

@@ -108,8 +108,53 @@
       "verb": "stopgate (turn-end)",
       "notice": true,
       "change": "turn-end can now be REFUSED by something other than the mandate gate. A `stop` key in .game_loop/triggers.json attaches a command to turn-end: a NON-ZERO exit blocks the turn and its stderr goes back to the model. Previously `stop` was not a moment at all, so such a key ran nothing and status called it THERE IS NO SUCH MOMENT. It is bounded in three ways that are part of the contract, not implementation detail: a timeout, an unrunnable command or a crash FAILS OPEN loudly (the turn ends UNCHECKED, which is not a pass); after 3 CONSECUTIVE blocks the attachment STANDS DOWN with a notice and the turn ends, resetting the moment it passes once; and it runs only where turn-end would otherwise be allowed, before any checkpoint/arm/park is consumed. Its default timeout is 10s, not the usual 20, because it runs on every turn-end.",
-      "consequence": "if you already had a `stop` key in triggers.json it was INERT and is now LIVE — a command that used to run never now runs on every turn-end and can block it. That is the silent-pass-became-a-denial shape, and it is the one group here who changed nothing. For everyone else the moment is opt-in and nothing changes. If you attach one: do not design around the stand-down bound (it is there for the case where your check is RIGHT and the thing it wants is impossible), exit 0 when you cannot tell rather than blocking on an unanswered question, and expect its timeout on every turn you take.",
+      "consequence": "if you already had a `stop` key in triggers.json it was INERT and is now LIVE \u2014 a command that used to run never now runs on every turn-end and can block it. That is the silent-pass-became-a-denial shape, and it is the one group here who changed nothing. For everyone else the moment is opt-in and nothing changes. If you attach one: do not design around the stand-down bound (it is there for the case where your check is RIGHT and the thing it wants is impossible), exit 0 when you cannot tell rather than blocking on an unanswered question, and expect its timeout on every turn you take.",
       "why_it_qualifies": "a new way for an existing verb to refuse. An install with no `stop` attachment is byte-identical, but an install that already carried the key gets a live gate it never enabled, and every attachment inherits a bound and a fail-open that decide what happens when its condition cannot be cleared."
+    },
+    {
+      "seq": 9,
+      "sha": "54a78bf",
+      "verb": "worktree --porcelain",
+      "notice": true,
+      "change": "two exit codes moved. A harness SCRIPT that could not be compared now reports status 'unreadable' at exit 2 \u2014 it previously fell through every branch to 'clean' at exit 0, with a detail sentence claiming every script was byte-identical. And 'code-drifted' now exits 1 rather than falling to the default 2: the scripts were read and they differ, which is a determined finding, not an inability to tell.",
+      "consequence": "if you branch on this verb's exit code you will see trees you were told were clean now reported as undetermined. That is the point: the old answer was wrong. An orchestrator refusing to integrate on drifted-or-undetermined was walked through by a false clean, putting a drifted worktree's branch on trunk. The JSON now carries false_clean_before_fix:true exactly when the old code would have said clean, so a consumer can scan trees and find what was mis-certified \u2014 nothing else records it, and it cannot be re-derived after a merge.",
+      "why_it_qualifies": "a consumer who changed nothing gets different exit codes from the same verb on the same tree, and at least one consumer's merge gate branches on exactly those codes. The behaviour gate did NOT fire \u2014 no refusal line matched its regex \u2014 so this entry is a judgement rather than a forced one, on the file's own test: would somebody who changed nothing notice?"
+    },
+    {
+      "seq": 10,
+      "sha": "cd2fd70",
+      "verb": "Write/Edit on the project's rule files",
+      "notice": true,
+      "change": "the write guard now REFUSES Write/Edit to .game_loop/config.json, INVARIANTS.md and verify.yaml when the file already exists. LEDGER.md is unaffected \u2014 it is notes, not policy. Seeding a rule file that does NOT exist is still allowed, which is what keeps installers and worktree provisioning working.",
+      "consequence": "a session can no longer edit the policy that governs it. If you have anything that rewrites config.json from inside a run \u2014 widening mcp_* lists, adding an allow_write_root, adjusting deploy_verbs \u2014 it now needs `game_loop authorize --path <the file> --reason \"<the human's words>\"`, which is single-use and logged. Provisioning that CREATES these files is untouched, deliberately: an orchestrator that provisions worktrees by running install.sh keeps working.",
+      "why_it_qualifies": "a write that used to succeed now returns permissionDecision deny. It closes the case where a stuck agent widened its own MCP policy to unblock itself and reported the edit as a fix \u2014 the rule against that was a sentence in llms.txt, which is INV1's own example of what does not hold."
+    },
+    {
+      "seq": 11,
+      "sha": "a0a234a",
+      "notice": true,
+      "verb": "Write/Edit on config.local.json \u00b7 worktree --porcelain",
+      "change": "seq 10 denied the RULE files and left config.local.json open. A session could widen its own effective policy through it, because its keys merge with UNION semantics \u2014 read_roots, allow_write_roots, deploy_verbs, generated_globs and every mcp_* grant are additive there and cannot be narrowed by the project's own config. It is now denied too, whether or not the file exists. Separately, `worktree --porcelain` now COMPARES config.local.json and reports notes-drifted (exit 3) when both trees carry one and they disagree.",
+      "consequence": "a session can no longer author the local override; a human editing it, or a layer above writing it into a tree from its own process, never passes through the hook and is unaffected. For the compare: a worktree that simply has no local wiring while its parent does still reports clean \u2014 only a real disagreement is drift, and it warns at exit 3 rather than blocking.",
+      "why_it_qualifies": "a write that succeeded under seq 10 now returns deny, and a tree that certified clean can now report notes-drifted. Found by a consumer who verified seq 10 before depending on it and walked through the second door I had recommended to them for arming a waiting probe."
+    },
+    {
+      "seq": 12,
+      "sha": "0ac5e25",
+      "notice": true,
+      "verb": "authorize",
+      "change": "`authorize --reason` now REFUSES a narrow, named class of reason: one citing the agent's own instructions (\"brief instructs\", \"the brief\", \"my prompt\", \"task says\", \"as instructed\", and similar). The refusal names the two real routes \u2014 ask via `arm`, or report upward if you were dispatched. The record and the log also now carry asked_via_arm, saying whether a question was armed in this session.",
+      "consequence": "if anything you run authorises from a dispatched brief rather than a human's words, it now fails instead of recording. A human's actual sentence still authorises unchanged \u2014 only self-citation is refused, and a human who happens to say \"the brief says to\" loses a rephrase. asked_via_arm does not gate anything; it makes a hatch spent with nobody asked readable as different from one spent after asking.",
+      "why_it_qualifies": "an authorize call that succeeded before now returns non-zero. It closes a case observed in the wild: an unattended Crawler spent the human's hatch twice on its own brief, and the log then read as human-sanctioned when nobody had been asked \u2014 which destroys the property single-use-and-logged exists for."
+    },
+    {
+      "seq": 13,
+      "sha": "a63005e",
+      "notice": true,
+      "verb": "the commit gate, on a tree with no harness",
+      "change": "the refusal now prints a PASTEABLE install command for the exact unharnessed tree, and records itself in the PARENT's log as kind commit_gate_unharnessed_tree. The refusal itself is unchanged in what it refuses.",
+      "consequence": "if you grep your log for how often this gate fires, you will now find entries where before there were none \u2014 the commit tree has no .game_loop/ and therefore no log of its own, so every one of these was previously invisible in the only place a reviewer would look. Nothing is refused that was permitted before.",
+      "why_it_qualifies": "a consumer who changed nothing sees different refusal text and new log lines. Reported after four --no-verify commits in one day: the honest remedies were a manual step and an impossibility, so the escape hatch won every time and left no trace of the gate that prompted it. The behaviour gate did NOT fire \u2014 no refusal line matched its regex \u2014 so this entry is a judgement."
     }
   ],
   "schema": 1
