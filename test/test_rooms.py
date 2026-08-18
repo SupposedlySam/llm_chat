@@ -617,6 +617,40 @@ class OwedTest(RoomTest):
         self.assertEqual(code, 2)
         self.assertIn("COULD NOT CHECK", text)
 
+    def test_A_429_IS_MARKED_RATE_LIMITED_IN_THE_PAYLOAD(self):
+        """Issue #18, at the producing end.
+
+        `call` already works out that a failure was a rate limit; `rows` then
+        flattened it into a string and the flag was gone one line later. So a
+        transient and an outage reached the turn-end gate as the same thing,
+        with only prose to tell them apart — and the gate blocked on a 429
+        that cleared twenty seconds later.
+
+        Exercised through the REAL path — call → rows → Throttled → payload —
+        because the gate's own tests feed a hand-built payload and would pass
+        with the flag never produced at all. That is how this mutation
+        survived a sweep."""
+        self.arrange(mine=[1], theirs=[2])
+        cli.call = lambda *a, **kw: {"error": "HTTP 429",
+                                     "body": "Rate limit exceeded",
+                                     "rate_limited": True}
+        code, text = self.owed(as_json=True)
+        self.assertEqual(code, 2)
+        payload = json.loads(text)
+        self.assertTrue(payload["unreachable"][0]["rate_limited"],
+                        "a 429 reached the gate indistinguishable from an "
+                        "outage")
+
+    def test_an_OUTAGE_is_not_marked_rate_limited(self):
+        """Paired, and the half that keeps the flag meaningful: if everything
+        were marked retryable the gate would wait on a server that is not
+        there."""
+        self.arrange(mine=[1], theirs=[2])
+        cli.call = lambda *a, **kw: {"error": "no llm_chat server at x"}
+        code, text = self.owed(as_json=True)
+        self.assertEqual(code, 2)
+        self.assertFalse(json.loads(text)["unreachable"][0]["rate_limited"])
+
     def test_THE_REASON_SURVIVES_so_a_throttle_is_not_an_outage(self):
         """A 429 and a dead server call for opposite responses — wait versus
         stop — and issue #15 is that they read identically at the point of

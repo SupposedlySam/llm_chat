@@ -1002,6 +1002,32 @@ MUTATIONS = [
      "`leave` — which stands down a headless agent's waker and made a "
      "Crawler's verdict recoverable only from its transcript (#15)"),
 
+    ("a transient 429 does not block a turn-end",
+     "triggers/answer-when-asked",
+     "    while (code == 2 and tried < RETRIES\n"
+     "           and all_throttled(payload.get(\"unreachable\"))):",
+     "    while False:",
+     "a rate limit that clears in seconds ends the turn instead, and the only "
+     "exit on offer is the bypass — so typing it becomes the cheapest way to "
+     "clear a transient, and an agent that types it for a transient will type "
+     "it for a real outage (#18)"),
+
+    ("an outage is NOT retried", "triggers/answer-when-asked",
+     "    return bool(rooms) and all(r.get(\"rate_limited\") for r in rooms)",
+     "    return True",
+     "a refused connection is waited on three times before the gate reports "
+     "it — waiting does not start a server, and an empty unreachable list "
+     "(which `all()` calls true) would retry a failure that named no rooms"),
+
+    ("the rate-limit KIND survives to the caller", "bin/llm_chat",
+     "        raise (Throttled if res.get(\"rate_limited\") else "
+     "SystemExit)(problem)",
+     "        raise SystemExit(problem)",
+     "the flag `call` already determined is thrown away one line later, so a "
+     "transient and an outage reach the turn-end gate as the same thing with "
+     "only prose to tell them apart — which is why #18 blocked on a 429 that "
+     "cleared twenty seconds later"),
+
     ("a 429 is retried instead of handed to the caller", "bin/llm_chat",
      "            if e.code == 429 and wait is not None:",
      "            if False:",

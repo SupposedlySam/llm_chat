@@ -37,6 +37,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CLI = os.path.join(os.path.dirname(HERE), "bin", "llm_chat")
@@ -45,6 +46,28 @@ CLI = os.path.join(os.path.dirname(HERE), "bin", "llm_chat")
 # exception was taken. An environment variable would belong to this process
 # rather than to the turn being judged.
 ALLOW = "llm_chat:allow-unanswered"
+
+
+# Two extra attempts, five seconds apart, inside the 20s the caller allows.
+# The reported case cleared on the first retry after twenty seconds; this is
+# sized to fit the budget rather than to outlast every possible window, and it
+# still BLOCKS if the limit persists.
+RETRIES = 3
+RETRY_WAIT = 5
+
+
+def all_throttled(unreachable):
+    """True only if every failure was a rate limit — and never for an empty
+    list.
+
+    ONE REFUSED CONNECTION AMONG THEM MEANS WAITING WILL NOT HELP, so the
+    retry is reserved for the case where every room said the same "later".
+    An empty list is not "all of them are transient"; it is nothing to reason
+    about, and `all()` says True for it — which would retry a failure that
+    reported no rooms at all.
+    """
+    rooms = unreachable or []
+    return bool(rooms) and all(r.get("rate_limited") for r in rooms)
 
 
 def owed(argv=None):
@@ -120,16 +143,48 @@ def main(argv=None):
         return 0
 
     code, payload = owed(argv)
+    tried = 1
+    # A 429 IS "LOOK AGAIN IN A MOMENT", NOT "COULD NOT LOOK".
+    #
+    # The gate's reasoning — folding could-not-look into nothing-owed fails
+    # open in silence — is right and unchanged. But a transient is not an
+    # outage, and treating them alike produced a block no action by the agent
+    # could clear, plus a message telling the reader to go diagnose a server
+    # that was fine. Reported as #18: every room 429'd, and the identical
+    # check returned "nothing owed" twenty seconds later.
+    #
+    # The cost of getting this wrong is not one wasted turn. The only exit on
+    # offer was the bypass, so the cheapest way to clear a transient becomes
+    # typing it — and an agent that has typed it for a transient will type it
+    # for a real outage. A gate that cries wolf teaches its own bypass, which
+    # is the failure this trigger's docstring guards against from the other
+    # side.
+    #
+    # Retries stay inside the caller's timeout budget (20s by default), and
+    # only when EVERY failure is a rate limit: one refused connection among
+    # them means waiting will not help.
+    while (code == 2 and tried < RETRIES
+           and all_throttled(payload.get("unreachable"))):
+        time.sleep(RETRY_WAIT)
+        tried += 1
+        code, payload = owed(argv)
     if code == 0:
         return 0
     if code == 2:
         rooms = ", ".join(r.get("room", "?")
                           for r in (payload.get("unreachable") or [])) or "?"
+        # NAMING THE RETRIES, so a reader can tell a transient that persisted
+        # from a server that was never there. Those call for opposite
+        # responses and the old message assumed the second.
+        waited = ("  Retried %d times over %ds and it did not clear, so this "
+                  "is not a\n  passing spike.\n" % (tried - 1,
+                                                    (tried - 1) * RETRY_WAIT)
+                  if tried > 1 else "")
         print("COULD NOT CHECK whether anyone is waiting on you (%s).\n"
               "  Not the same as nobody waiting. If the server is down, say "
               "so and stop;\n  do not end a turn on an unanswered check.\n"
-              "  Put %s in your final message to end anyway."
-              % (rooms, ALLOW), file=sys.stderr)
+              "%s  Put %s in your final message to end anyway."
+              % (rooms, waited, ALLOW), file=sys.stderr)
         return 2
     print(refusal(payload), file=sys.stderr)
     return 2

@@ -59,6 +59,72 @@ class GateTest(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertIn("ANSWER FIRST", text)
 
+    def throttled(self, rooms=("ops",)):
+        return {"owed": [], "unreachable": [
+            {"room": r, "why": "HTTP 429  Rate limit exceeded",
+             "rate_limited": True} for r in rooms]}
+
+    def answers(self, *results):
+        """Successive `owed` results, so a retry can be observed."""
+        seen = iter(results)
+        self.slept = []
+        real = gate.time.sleep
+        gate.time.sleep = lambda s: self.slept.append(s)
+        self.addCleanup(lambda: setattr(gate.time, "sleep", real))
+        gate.owed = lambda argv=None: next(seen)
+
+    def test_A_TRANSIENT_429_IS_RETRIED_rather_than_blocking(self):
+        """Issue #18. Every room 429'd and the identical check returned
+        "nothing owed" twenty seconds later — so the correct answer was
+        available the whole time, one retry away.
+
+        The block itself was not the expensive part. The only exit on offer
+        was the bypass, which makes typing it the cheapest way to clear a
+        transient — and an agent that has typed it for a transient will type
+        it for a real outage. A gate that cries wolf teaches its own
+        bypass."""
+        self.answers((2, self.throttled()), (0, {"owed": []}))
+        code, text = self.run_gate()
+        self.assertEqual(code, 0, "a transient must not end the turn")
+        self.assertEqual(text, "")
+        self.assertEqual(self.slept, [gate.RETRY_WAIT])
+
+    def test_a_429_THAT_PERSISTS_still_blocks_and_says_it_retried(self):
+        """The half that keeps the gate a gate. If waiting did not help, this
+        is not a passing spike, and the reader needs to know the difference —
+        the responses are opposite."""
+        self.answers(*[(2, self.throttled())] * gate.RETRIES)
+        code, text = self.run_gate()
+        self.assertEqual(code, 2)
+        self.assertIn("Retried", text)
+        self.assertIn("did not clear", text)
+        self.assertEqual(len(self.slept), gate.RETRIES - 1)
+
+    def test_A_REFUSED_CONNECTION_IS_NOT_RETRIED(self):
+        """Waiting does not start a server. Retrying an outage would only
+        delay the turn-end that correctly refuses."""
+        self.answer(2, {"owed": [], "unreachable": [
+            {"room": "ops", "why": "no llm_chat server",
+             "rate_limited": False}]})
+        code, text = self.run_gate()
+        self.assertEqual(code, 2)
+        self.assertNotIn("Retried", text)
+
+    def test_a_MIXED_failure_is_not_retried_either(self):
+        """One refused connection among the 429s means waiting will not fix
+        it, so the retry is reserved for the case where every room said the
+        same 'later'."""
+        self.assertFalse(gate.all_throttled([
+            {"room": "a", "rate_limited": True},
+            {"room": "b", "rate_limited": False}]))
+
+    def test_an_EMPTY_unreachable_list_is_not_all_throttled(self):
+        """`all()` says True for an empty list, which would retry a failure
+        that named no rooms at all — nothing to reason about is not the same
+        as everything being transient."""
+        self.assertFalse(gate.all_throttled([]))
+        self.assertFalse(gate.all_throttled(None))
+
     def test_IT_OFFERS_A_WAY_OUT_THAT_DOES_NOT_WAKE_ANYBODY(self):
         """Issue #15. This gate used to print `leave` as the remedy for having
         nothing to add, which is the one move that costs a headless agent its

@@ -509,11 +509,29 @@ def call(server, method, path, body=None, query=None, timeout=10):
                              f"not 127.0.0.1 (zonai#16)."}
 
 
+class Throttled(SystemExit):
+    """The server said LATER, not no.
+
+    A SystemExit subclass on purpose: every existing `except SystemExit` keeps
+    working, and callers that care can ask. Before this, `rows` flattened the
+    error into a string and the `rate_limited` flag `call` had already
+    determined was thrown away one line later — so a transient and an outage
+    arrived at the turn-end gate as the same thing, with only prose to tell
+    them apart.
+
+    Reported as #18: a Stop gate blocked on a 429 that cleared 20 seconds
+    later, and the only way out on offer was the bypass. A gate that cries
+    wolf teaches its own bypass, and the cheapest way to clear a transient
+    must not be the habit you would rather nobody formed.
+    """
+
+
 def rows(server, table, where=None):
     res = call(server, "GET", "/db/list", query={"table": table, "where": where} if where
                else {"table": table})
     if "error" in res:
-        raise SystemExit(res["error"] + "  " + res.get("body", ""))
+        problem = res["error"] + "  " + res.get("body", "")
+        raise (Throttled if res.get("rate_limited") else SystemExit)(problem)
     return res.get("data", {}).get("items", [])
 
 
@@ -1445,11 +1463,16 @@ def do_owed(server, identity, as_json=False):
                 # for opposite responses — wait versus stop — and issue #15 is
                 # that they read identically at the point of decision.
                 stores[where] = None
-                refused[where] = str(problem)
+                # THE KIND, not just the sentence. A caller deciding whether
+                # to wait or to stop cannot do it from prose, and #18 is a
+                # turn-end gate that blocked on a transient because the only
+                # thing it had to reason about was a `why` string.
+                refused[where] = (str(problem),
+                                  isinstance(problem, Throttled))
         if stores[where] is None:
             # Named per room rather than once: a caller gating on this needs
             # to know WHICH conversations it is blind to, not just that it is.
-            unreachable.append((name, refused[where]))
+            unreachable.append((name,) + refused[where])
             continue
         try:
             found = owed_in(where, name, entry, who, store=stores[where])
@@ -1466,7 +1489,7 @@ def do_owed(server, identity, as_json=False):
             # the old path's handler surviving into a path that cannot
             # produce what it caught.
             unreachable.append((name, "%s: %s" % (type(problem).__name__,
-                                                  problem)))
+                                                  problem), False))
             continue
         if found:
             found["as"] = who
@@ -1474,15 +1497,18 @@ def do_owed(server, identity, as_json=False):
 
     if as_json:
         print(json.dumps({"owed": debts,
-                          "unreachable": [{"room": r, "why": w}
-                                          for r, w in unreachable]}))
+                          "unreachable": [{"room": r, "why": w,
+                                           "rate_limited": t}
+                                          for r, w, t in unreachable]}))
     else:
         for debt in debts:
             print(f"#{debt['room']}: {debt['from']} asked at seq "
                   f"{debt['seq']} and {debt['as']} has not answered")
             print(f"    {debt['text_preview']}")
-        for room, why in unreachable:
-            print(f"#{room}: COULD NOT CHECK — {why}")
+        for room, why, throttled in unreachable:
+            print(f"#{room}: COULD NOT CHECK — {why}"
+                  + ("  (rate limited — this one clears on its own)"
+                     if throttled else ""))
         if not debts and not unreachable:
             print("nothing owed")
 
