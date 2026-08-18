@@ -195,7 +195,8 @@ hooks.setdefault("SessionStart", []).append(copy.deepcopy(wake_entry))
 save(local_path, local)
 
 print(("updated" if replaced else "added"),
-      "llm_chat hooks (PostToolUse + Stop/SessionStart waker)"
+      "llm_chat hooks (deliver on PostToolUse+SessionStart, waker on "
+      "Stop+SessionStart)"
       + (" (migrated out of tracked settings.json)" if migrated else ""))
 PY
 
