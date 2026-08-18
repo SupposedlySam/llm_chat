@@ -70,6 +70,13 @@ class WakeLoopTest(unittest.TestCase):
         # patches `time` and cannot help with select(), so an unstubbed test
         # does not fail — it stops for five minutes. Same shape as the DNS
         # hang: the WAIT is what has to be faked, not the clock.
+        # The loop asks the CLI to run deferred work on every pass, which
+        # shells out with a 600s timeout. Harmless once; a test that drives
+        # the loop hundreds of times pays for a subprocess each pass, and this
+        # file went from 1s to 39s the moment one did. Its own behaviour is
+        # asserted in test_wake_landing.
+        self.real_run_maintenance = self.mod.run_maintenance
+        self.mod.run_maintenance = lambda: None
         self.mod.open_doorbells = lambda rooms: {}
         # BOUNDED, not just instant. Returning False immediately keeps the
         # suite fast, but it also means the loop spins with no sleep in it at
@@ -225,6 +232,32 @@ class WakeLoopTest(unittest.TestCase):
         self.mod.time = NoSleep()
         self.assertEqual(self.run_main(), 0)
         self.assertIn("closed", self.exit_record()["reason"])
+
+    def test_THE_LIVENESS_MARK_IS_REFRESHED_EVERY_PASS(self):
+        """It used to be written ONCE, before the loop — a birth certificate
+        rather than a heartbeat. So a waker that armed and then died (killed,
+        crashed, wedged after the machine slept) left a file identical to a
+        healthy one, and doctor's `polling now: yes` rested on a live pid.
+
+        gameloop asked for exactly this from the other side: a dead waker and
+        a quiet room are the same observation from in there, and a timestamp
+        the waker touches is worth more than the feature.
+
+        Asserting the WRITER, not the reader. doctor's three branches are
+        covered in test_cli, and every one of them passed while nothing
+        refreshed the stamp — which is how this mutation survived a sweep."""
+        beats = []
+        real = self.mod.record_alive
+        self.mod.record_alive = lambda server=None: beats.append(server)
+        self.mod.addressed = lambda channel, entry: None
+        self.mod.time = NoSleep(stop_after=3)
+        try:
+            self.run_main()
+        finally:
+            self.mod.record_alive = real
+        self.assertGreater(len(beats), 1,
+                           "the mark was written once and never refreshed — "
+                           "a birth certificate, not a heartbeat")
 
     def test_a_superseded_waker_says_it_was_superseded(self):
         """The healthy case, and the one most likely to be misread as a crash."""
@@ -382,7 +415,10 @@ class WakeLoopTest(unittest.TestCase):
         real = self.mod.subprocess.run
         self.mod.subprocess.run = lambda argv, **kw: seen.append(argv)
         try:
-            self.mod.run_maintenance()
+            # THE REAL ONE. setUp replaces run_maintenance with a no-op so the
+            # loop tests do not spawn a subprocess per pass — this is the test
+            # that asserts what it actually does, so it reaches past the stub.
+            self.real_run_maintenance()
         finally:
             self.mod.subprocess.run = real
         self.assertEqual(len(seen), 1)
@@ -394,7 +430,7 @@ class WakeLoopTest(unittest.TestCase):
         real = self.mod.subprocess.run
         self.mod.subprocess.run = lambda *a, **kw: self.fail("asked anyway")
         try:
-            self.mod.run_maintenance()      # must not raise or call
+            self.real_run_maintenance()     # the real one, past setUp's stub
         finally:
             self.mod.subprocess.run = real
 
@@ -408,7 +444,7 @@ class WakeLoopTest(unittest.TestCase):
 
         self.mod.subprocess.run = boom
         try:
-            self.mod.run_maintenance()      # must not raise
+            self.real_run_maintenance()     # the real one, past setUp's stub
         finally:
             self.mod.subprocess.run = real
 

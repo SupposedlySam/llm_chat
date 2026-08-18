@@ -737,6 +737,71 @@ class DoctorTest(unittest.TestCase):
         os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         self.assertIn("human at a terminal", self.report())
 
+    # ── a live pid is not a live waker ──────────────────────────────────────
+
+    def beat(self, ago):
+        path = os.path.join(self.project, ".llm_chat", "wake.alive")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"pid": 1, "at": int(cli.now_ms() / 1000) - ago}, f)
+
+    def test_a_FRESH_heartbeat_says_it_went_round_and_found_nothing(self):
+        """gameloop's ask, from the other side of the wire: "a dead waker and
+        a quiet room are the same observation from in here", and a timestamp
+        the waker touches is worth more than the feature.
+
+        It used to be written ONCE, before the loop — a birth certificate, not
+        a heartbeat — so a waker that armed and then died left a mark
+        identical to a healthy one."""
+        self.joined_with_waker(os.getpid())
+        self.beat(ago=30)
+        text = self.report()
+        # A RANGE, not an exact second: the fixture stamps the file and doctor
+        # reads the clock a moment later, so `30` was off by one the first
+        # time this ran. A test that pins a number it does not control fails
+        # for a reason that has nothing to do with the behaviour.
+        self.assertRegex(text, r"last heartbeat 3[0-9]s ago")
+        self.assertIn("different from not running", text)
+
+    def test_a_STALE_heartbeat_is_named_even_though_the_pid_is_alive(self):
+        """The case the stamp exists for. A process can be stopped, blocked on
+        a socket nobody will ring, or wedged after the machine slept — and
+        from outside every one of those looks like a quiet room."""
+        self.joined_with_waker(os.getpid())
+        self.beat(ago=4 * cli.WAKER_HEARTBEAT_SEC)
+        text = self.report()
+        self.assertIn("LAST HEARTBEAT", text)
+        self.assertIn("is NOT going", text)
+
+    def test_NO_heartbeat_is_cannot_say_rather_than_healthy(self):
+        """Absence of evidence was the thing being fixed, so it must not be
+        reported as evidence of health."""
+        self.joined_with_waker(os.getpid())
+        text = self.report()
+        self.assertIn("no heartbeat recorded", text)
+        self.assertIn("cannot say so", text)
+
+    def test_a_corrupt_alive_file_reads_as_no_heartbeat(self):
+        path = os.path.join(self.project, ".llm_chat", "wake.alive")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write("{not json")
+        self.assertIsNone(cli.heartbeat_age(self.project))
+
+    def test_an_alive_file_with_no_timestamp_is_no_heartbeat(self):
+        path = os.path.join(self.project, ".llm_chat", "wake.alive")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            json.dump({"pid": 1}, f)
+        self.assertIsNone(cli.heartbeat_age(self.project))
+
+    def test_the_two_copies_of_the_interval_agree(self):
+        """Duplicated across two standalone scripts the way doorbell_dir is —
+        and a duplicated constant that drifts makes the staleness threshold
+        wrong in exactly the direction that reports a dead waker as fine."""
+        waker = load("llm-chat-wake")
+        self.assertEqual(cli.WAKER_HEARTBEAT_SEC, waker.HEARTBEAT_SEC_DEFAULT)
+
     # ── is anybody actually here (the host's own answer) ────────────────────
 
     def hosts(self, sessions, returncode=0, stdout=None):

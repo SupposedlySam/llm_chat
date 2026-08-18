@@ -2792,6 +2792,30 @@ def _ago(at):
     return "%dm" % max(0, (now_ms() // 1000 - int(at)) // 60)
 
 
+# The waker's own interval, duplicated here the way doorbell_dir is — two
+# standalone scripts, no shared module — and pinned equal by a test.
+WAKER_HEARTBEAT_SEC = 300
+
+
+def heartbeat_age(project=None):
+    """Seconds since the waker last went round its loop, or None.
+
+    None means no stamp: a waker from before this existed, or one that has not
+    completed a cycle. Reported as "cannot say", never as healthy — the whole
+    point of the stamp is that a live pid is not a live waker, and absence of
+    evidence was the thing being fixed.
+    """
+    path = os.path.join(project or project_dir(), ".llm_chat", "wake.alive")
+    try:
+        with open(path) as f:
+            at = (json.load(f) or {}).get("at")
+    except (OSError, ValueError, AttributeError):
+        return None
+    if not at:
+        return None
+    return max(0, int(now_ms() / 1000.0 - float(at)))
+
+
 def server_is_current(server):
     """Does the server behind this URL know the columns this build writes?
 
@@ -3287,6 +3311,28 @@ def do_doctor(server):
         last = waker_exit(project)
         if alive:
             print(f"\npolling now: yes (waker pid {pid})")
+            beat = heartbeat_age(project)
+            if beat is None:
+                print("  no heartbeat recorded — this waker predates the "
+                      "stamp, or never\n  completed a cycle. It may be fine; "
+                      "it cannot say so.")
+            elif beat > 3 * WAKER_HEARTBEAT_SEC:
+                # A LIVE PID IS NOT A LIVE WAKER. A process can be stopped,
+                # blocked on a socket nobody will ring, or wedged after the
+                # machine slept — and from outside that is indistinguishable
+                # from a quiet room. gameloop named it from the other side:
+                # "a dead waker and a quiet room are the same observation from
+                # in here."
+                print("  BUT ITS LAST HEARTBEAT WAS %dm AGO, and it beats "
+                      "every %ds.\n  The process is alive and is NOT going "
+                      "round its loop — a stopped waker\n  and a quiet room "
+                      "look the same from here, which is why this is stamped."
+                      % (beat // 60, WAKER_HEARTBEAT_SEC))
+            else:
+                print("  last heartbeat %ds ago (it beats every %ds), so it "
+                      "is going round\n  its loop and finding nothing — "
+                      "which is different from not running."
+                      % (beat, WAKER_HEARTBEAT_SEC))
             # POLLING AND WAKING ARE TWO CLAIMS, and this line used to make
             # the second on the strength of the first. `asyncRewake` is the
             # one hook whose success is invisible: if the host ignores exit 2

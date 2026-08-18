@@ -112,8 +112,38 @@ def sweep_in_a_copy():
         copies = []
         for shard in range(workers):
             copy = os.path.join(parent, "repo%d" % shard)
-            done = subprocess.run(["cp", "-R", ROOT, copy],
-                                  capture_output=True, text=True)
+            # THE TREE IS LIVE WHILE THIS RUNS. `cp -R` failed here with
+            # "slack-asked.json.tmp: No such file or directory" — the bridge
+            # wrote a temp file, cp listed it, the bridge renamed it, cp went
+            # to read a name that no longer existed. A copier that walks a
+            # directory somebody else is writing has to tolerate that.
+            #
+            # rsync does, and the excludes make it moot as well as faster:
+            # nothing under .llm_chat/ or .zonai/data/ is read by the suite
+            # (tests use temp dirs and a fake server), and those are exactly
+            # the two directories live processes write.
+            #
+            # `.llm_chat/` IS COPIED, and excluding it was a wrong fix that
+            # broke every shard: run.py's damage guard fingerprints that
+            # directory, so a copy without it saw the suite CREATE it and
+            # reported the creation as damage — "already red (0 failed, 0
+            # errored)", which is the guard being right about a tree I had
+            # made wrong.
+            #
+            # rsync's exit 24 is "some source files vanished while copying",
+            # which is precisely the race and is benign: the vanished file was
+            # a temp nobody needs. Accepted rather than treated as failure.
+            done = subprocess.run(
+                ["rsync", "-a", "--exclude", ".zonai/data/",
+                 ROOT + "/", copy + "/"],
+                capture_output=True, text=True)
+            if done.returncode == 24:
+                done.returncode = 0
+            if done.returncode != 0:
+                # No rsync: fall back, and accept the race rather than
+                # refusing to sweep at all.
+                done = subprocess.run(["cp", "-R", ROOT, copy],
+                                      capture_output=True, text=True)
             if done.returncode != 0:
                 print("could not copy the tree to sweep it: %s"
                       % (done.stderr or "").strip()[:300])
@@ -245,6 +275,22 @@ MUTATIONS = [
      "read-modify-write like joined.json that loses an entry outright "
      "(lamp-owner, who lost three wishes to it with every publish printing "
      "granted)"),
+
+    ("the waker's liveness mark is a HEARTBEAT", "bin/llm-chat-wake",
+     "        record_alive(_polling_server())\n"
+     "        wait_for_ring(bells, HEARTBEAT_SEC)",
+     "        wait_for_ring(bells, HEARTBEAT_SEC)",
+     "the mark is written once before the loop, so a waker that armed and then "
+     "died — killed, crashed, or wedged after the machine slept — leaves a "
+     "file identical to a healthy one, and a dead waker becomes "
+     "indistinguishable from a quiet room (gameloop)"),
+
+    ("a stale heartbeat is named even though the pid is alive", "bin/llm_chat",
+     "            elif beat > 3 * WAKER_HEARTBEAT_SEC:",
+     "            elif False:",
+     "doctor reports `polling now: yes` on the strength of a live pid while "
+     "the process is stopped or blocked on a socket nobody will ring — the "
+     "exact claim the heartbeat exists to stop it making"),
 
     ("auto-reload SAYS when it can never fire", "bin/llm_chat",
      "        here = live_here()\n"
@@ -1158,10 +1204,17 @@ MUTATIONS = [
      "during the reload that came after the missed message, while the reason "
      "anybody wanted was gone"),
 
+    # ANCHORED WITH ITS COMMENT, because the heartbeat added a SECOND
+    # `record_alive(_polling_server())` inside the loop and the four-space
+    # form is a substring of the eight-space one. The sweep's ambiguity check
+    # caught it the moment it appeared, which is the check doing its job on
+    # the same day it was added.
     ("a live waker is recorded where it destroys nothing",
      "bin/llm-chat-wake",
-     "    record_alive(_polling_server())",
-     '    record_exit("running")',
+     "    # the record of the dead one it replaced — see record_exit, and "
+     "#11.\n    record_alive(_polling_server())",
+     "    # the record of the dead one it replaced — see record_exit, and "
+     '#11.\n    record_exit("running")',
      "`running` goes back into the exit history, where it is not an exit and "
      "displaces the real one — this is the exact write that produced the "
      "reported file, so the history would be kept and then immediately "
@@ -1597,6 +1650,12 @@ NOT_SWEPT = {
         "grouping and the surviving 429 text are asserted with two servers "
         "and a throttled one, because a reason replaced by 'could not reach' "
         "is what made a throttle read as an outage",
+    "bin/llm_chat:heartbeat_age": "a stamp read and subtracted; every way of "
+        "having no stamp is asserted directly — absent, corrupt, and present "
+        "with no timestamp — and all three report CANNOT SAY rather than "
+        "healthy, because absence of evidence was the thing being fixed. The "
+        "reporting it feeds is swept, and the interval it compares against is "
+        "pinned equal to the waker's own",
     "bin/llm_chat:host_sessions": "every way of not getting an answer is "
         "asserted directly and they all return None: a `claude` that is not "
         "installed, a non-zero exit, unparseable output and two wrong shapes. "

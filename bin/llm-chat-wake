@@ -965,6 +965,18 @@ def main() -> int:
         if not checked_once:
             checked_once = True
             continue
+        # A HEARTBEAT, NOT A BIRTH CERTIFICATE. record_alive used to be
+        # written once, before this loop — so a waker that armed and then died
+        # (killed, crashed, the machine slept) left a mark identical to a
+        # healthy one, and the only difference was an age nobody read.
+        #
+        # gameloop asked for exactly this from the other side: "a dead waker
+        # and a quiet room are the same observation from in here", and a
+        # timestamp it touches is worth more than the feature. Refreshed each
+        # time round, so the file answers the question it is named for —
+        # I woke, I looked, there was nothing — rather than only recording
+        # that something once started.
+        record_alive(_polling_server())
         wait_for_ring(bells, HEARTBEAT_SEC)
         # DEFERRED WORK GOES HERE AND NOWHERE ELSE. This is the only process
         # that exists precisely BECAUSE nothing is happening — it is asleep on
