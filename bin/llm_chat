@@ -1142,7 +1142,56 @@ def describe_audience(audience, identity=None):
     return ", ".join(names)
 
 
-def do_sync(server):
+def shadowed_project_rooms(project=None):
+    """[(room, project_identity, session_identity)] the session store hides.
+
+    THE PROJECT STORE IS LOAD-BEARING FOR SOME AGENTS AND A RELIC FOR OTHERS,
+    and the difference is whether a SESSION store shadows it. Measured across
+    this machine before this was written: of seven checkouts, one (lamp) has
+    no session store at all and runs entirely on the project file — so
+    removing the fallback, which was the tempting fix, would have made it deaf
+    immediately. That option is closed rather than deferred.
+
+    What is left is the narrow case that IS a defect: a project entry hidden
+    behind a session entry that names somebody else. Nothing writes the
+    project file since session scoping, so a hidden one cannot be corrected by
+    any ordinary use — showrunner's still names `owner`, an identity that left
+    the room, and it is inert only because `joined_for` never reaches it while
+    the session file exists.
+
+    Inert by control flow is not inert by design: any future change that
+    consults both would hand that agent a departed identity as its membership.
+    """
+    # BOTH STORES FROM THE SAME ROOT. The first version read the project file
+    # from this argument and the session file from ambient state, so it
+    # compared one project's relic against another project's membership —
+    # mixing passed and ambient scope, which is the defect this function
+    # exists to report, committed inside the reporter.
+    root = project or project_dir()
+    def load_store(*parts):
+        try:
+            with open(os.path.join(root, ".llm_chat", *parts)) as f:
+                return json.load(f) or {}
+        except (OSError, ValueError):
+            return {}
+    at_project = load_store("joined.json")
+    if not at_project:
+        return []
+    sid = session_id()
+    session = load_store("sessions", sid, "joined.json") if sid else {}
+    # NO EARLY RETURN FOR AN EMPTY SESSION STORE. There was one, and it was
+    # redundant — `room in session` below already yields nothing when the
+    # session store is empty, so the mutation that removed it SURVIVED a
+    # sweep, correctly: two spellings of one rule, and no test could tell them
+    # apart because there was nothing to tell. The comprehension is where the
+    # rule lives.
+    return [(room, entry.get("identity"), session[room].get("identity"))
+            for room, entry in sorted(at_project.items())
+            if room in session
+            and entry.get("identity") != session[room].get("identity")]
+
+
+def do_sync(server, repair=False):
     """Pick up broadcast rooms this project is not in yet. Quiet when there is
     nothing to do, because the waker runs it every turn.
 
@@ -1156,6 +1205,35 @@ def do_sync(server):
     A project that has never identified has no identity to join as, and that is
     an opt-out rather than an error: say nothing and exit clean.
     """
+    if repair:
+        # THE ONLY WRITER THE PROJECT STORE HAS. Since session scoping nothing
+        # writes that file, so a shadowed entry naming a departed identity
+        # cannot be corrected by joining, leaving, or syncing — the answer to
+        # "how do I fix this" was editing state by hand, which is the coupling
+        # this project refuses everywhere else.
+        shadowed = shadowed_project_rooms()
+        if not shadowed:
+            print("nothing to repair: no project-level room is shadowed by a "
+                  "different\n  identity in this session's store.")
+            return
+        path = os.path.join(project_dir(), ".llm_chat", "joined.json")
+        with open(path) as f:
+            at_project = json.load(f) or {}
+        for room, was, now in shadowed:
+            del at_project[room]
+            print(f"dropped #{room} from the project store (it said {was}; "
+                  f"this session uses {now})")
+        tmp = own_tmp(path)
+        with open(tmp, "w") as f:
+            json.dump(at_project, f, indent=2)
+        os.replace(tmp, path)
+        # NOT DELETED WHOLESALE. An agent with no session store runs entirely
+        # on this file — one on this machine does — so only the entries a
+        # session store already shadows are dropped.
+        print("  Entries no session store shadows were left alone: for an "
+              "agent without\n  one, this file IS its membership.")
+        return
+
     identity = project_identity()
     if not identity:
         return
@@ -3328,6 +3406,16 @@ def do_doctor(server):
         print("\nno install stamp — wired before stamping existed; re-run "
               "install.sh to record one")
 
+    shadowed = shadowed_project_rooms(project)
+    if shadowed:
+        print("\nSHADOWED PROJECT-LEVEL ROOMS — inert today, wrong the moment "
+              "anything reads them:")
+        for room, was, now in shadowed:
+            print(f"  #{room}: the project store says {was}, this session "
+                  f"uses {now}")
+        print("  Nothing writes that file since session scoping, so it cannot "
+              "correct itself.\n  Clear the shadowed entries:  llm_chat sync "
+              "--repair")
     report_who_is_home(project)
     report_sessions(project)
 
@@ -3773,8 +3861,15 @@ def build_parser():
                         "this; elsewhere it is recorded and ignored")
     p.add_argument("--as", dest="identity")
 
-    sub.add_parser("sync", help="pick up broadcast rooms opened or converted "
-                                "since you identified")
+    p = sub.add_parser("sync", help="pick up broadcast rooms opened or "
+                                    "converted since you identified")
+    p.add_argument("--repair", action="store_true",
+                   help="drop project-level rooms that this session's store "
+                        "already shadows with a DIFFERENT identity. Nothing "
+                        "else writes that file, so a stale entry there is "
+                        "otherwise uncorrectable; entries no session store "
+                        "shadows are left alone, because for an agent without "
+                        "one that file IS its membership")
 
     p = sub.add_parser("mode",
                        help="convert a room between broadcast and ordinary")
@@ -3920,7 +4015,7 @@ def main() -> int:
                  broadcast=bool(chan.get("broadcast")))
         return 0
     if args.cmd == "sync":
-        do_sync(server)
+        do_sync(server, repair=args.repair)
         return 0
     if args.cmd == "mode":
         do_mode(server, args.channel,

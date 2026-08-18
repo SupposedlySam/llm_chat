@@ -18,7 +18,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from support import FakeServer, load  # noqa: E402
+from support import FakeServer, load, write_settings  # noqa: E402
 
 cli = load("llm_chat")
 deliver = load("llm-chat-deliver")
@@ -217,6 +217,130 @@ class DeliverScopeTest(unittest.TestCase):
     def test_no_rooms_at_all_is_an_empty_dict_not_a_crash(self):
         """A wiring notice still has to get out when nothing is joined."""
         self.assertEqual(deliver.joined_for(A), {})
+
+    def stores(self, at_project=None, at_session=None):
+        # THE ENV VAR IS RESTORED HERE, not left set. The first version set
+        # CLAUDE_CODE_SESSION_ID in each test and never put it back, so a
+        # LATER test in the same process inherited it and wrote a read.lock
+        # into the real repo — caught by the damage guard, which is the only
+        # reason I know. A fixture that leaks process state fails somewhere
+        # else entirely, which is the worst place to debug it.
+        before = {k: os.environ.get(k)
+                  for k in ("CLAUDE_CODE_SESSION_ID", "CLAUDE_PROJECT_DIR")}
+        os.environ["CLAUDE_CODE_SESSION_ID"] = A
+        os.environ["CLAUDE_PROJECT_DIR"] = self.tmp.name
+
+        def restore():
+            for key, value in before.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+        self.addCleanup(restore)
+        base = os.path.join(self.tmp.name, ".llm_chat")
+        os.makedirs(os.path.join(base, "sessions", A), exist_ok=True)
+        if at_project is not None:
+            with open(os.path.join(base, "joined.json"), "w") as f:
+                json.dump(at_project, f)
+        if at_session is not None:
+            with open(os.path.join(base, "sessions", A, "joined.json"),
+                      "w") as f:
+                json.dump(at_session, f)
+
+    def test_A_SHADOWED_PROJECT_ROOM_IS_FOUND(self):
+        """Issue #16, narrowed to the case that is actually a defect.
+
+        Nothing has written the project store since session scoping, so an
+        entry hidden behind a session entry that names somebody ELSE cannot be
+        corrected by joining, leaving or syncing. showrunner's still names
+        `owner` — an identity that left the room — and it is inert only
+        because `joined_for` never reaches it while the session file exists.
+        Inert by control flow is not inert by design."""
+        self.stores(at_project={"ops": {"identity": "owner"}},
+                    at_session={"ops": {"identity": "showrunner"}})
+        self.assertEqual(cli.shadowed_project_rooms(self.tmp.name),
+                         [("ops", "owner", "showrunner")])
+
+    def test_AN_AGREEING_project_entry_is_not_a_defect(self):
+        self.stores(at_project={"ops": {"identity": "me"}},
+                    at_session={"ops": {"identity": "me"}})
+        self.assertEqual(cli.shadowed_project_rooms(self.tmp.name), [])
+
+    def test_A_PROJECT_STORE_NOTHING_SHADOWS_IS_LEFT_ALONE(self):
+        """MEASURED before this was written: of seven checkouts on this
+        machine, one runs with NO session store at all and entirely on the
+        project file. Removing the fallback — the tempting fix — would have
+        made it deaf immediately, so the only thing reported is an entry a
+        session store already hides."""
+        self.stores(at_project={"ops": {"identity": "owner"}})
+        self.assertEqual(cli.shadowed_project_rooms(self.tmp.name), [],
+                         "an agent with no session store would be told its "
+                         "own membership is stale")
+
+    def repair(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_sync("http://127.0.0.1:1", repair=True)
+        return out.getvalue()
+
+    def test_REPAIR_DROPS_ONLY_THE_SHADOWED_ENTRY(self):
+        """The only writer the project store has. Nothing has written that
+        file since session scoping, so an entry naming a departed identity
+        could otherwise be corrected only by editing state by hand — which is
+        the coupling this project refuses everywhere else."""
+        self.stores(at_project={"ops": {"identity": "owner"},
+                                "solo": {"identity": "owner"}},
+                    at_session={"ops": {"identity": "showrunner"}})
+        text = self.repair()
+        self.assertIn("dropped #ops", text)
+        with open(os.path.join(self.tmp.name, ".llm_chat",
+                               "joined.json")) as f:
+            left = json.load(f)
+        self.assertNotIn("ops", left)
+        self.assertIn("solo", left,
+                      "an entry no session store shadows is that project's "
+                      "only membership and must survive")
+
+    def test_repair_with_nothing_shadowed_says_so(self):
+        """Silence from a command somebody typed is indistinguishable from a
+        command that did not run."""
+        self.stores(at_project={"ops": {"identity": "me"}},
+                    at_session={"ops": {"identity": "me"}})
+        self.assertIn("nothing to repair", self.repair())
+
+    def test_DOCTOR_NAMES_A_SHADOWED_ENTRY(self):
+        """Inert by control flow is not inert by design, so it is reported
+        rather than left silent — the whole point of #16."""
+        self.stores(at_project={"ops": {"identity": "owner"}},
+                    at_session={"ops": {"identity": "showrunner"}})
+        # WIRED, because doctor returns early on an unset-up repo and would
+        # never reach the report. Registering the two hooks is what gets past
+        # that, and it is what a repo with a stale project store necessarily
+        # has anyway — the store only exists because somebody joined.
+        write_settings(self.tmp.name,
+                       PostToolUse=[os.path.join(cli.ROOT, "bin",
+                                                 "llm-chat-deliver")],
+                       Stop=[os.path.join(cli.ROOT, "bin", "llm-chat-wake")])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            try:
+                cli.do_doctor("http://127.0.0.1:1")
+            except SystemExit:
+                pass
+        text = out.getvalue()
+        self.assertIn("SHADOWED PROJECT-LEVEL ROOMS", text)
+        self.assertIn("sync --repair", text)
+
+    def test_no_project_store_at_all_is_not_a_defect(self):
+        self.stores(at_session={"ops": {"identity": "me"}})
+        self.assertEqual(cli.shadowed_project_rooms(self.tmp.name), [])
+
+    def test_a_corrupt_project_store_is_not_reported_as_shadowed(self):
+        self.stores(at_session={"ops": {"identity": "me"}})
+        with open(os.path.join(self.tmp.name, ".llm_chat",
+                               "joined.json"), "w") as f:
+            f.write("{not json")
+        self.assertEqual(cli.shadowed_project_rooms(self.tmp.name), [])
 
     def test_CORRUPT_STATE_IS_NOT_AN_EMPTY_ROOM_LIST(self):
         """This test previously asserted the defect, under the name

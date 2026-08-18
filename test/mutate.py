@@ -1002,6 +1002,27 @@ MUTATIONS = [
      "`leave` — which stands down a headless agent's waker and made a "
      "Crawler's verdict recoverable only from its transcript (#15)"),
 
+    # AIMED AT THE COMPREHENSION, not at an early return. The first version
+    # reverted `if not session: return []`, which SURVIVED — rightly, because
+    # `room in session` already covers it and the two were one rule spelled
+    # twice. The redundant spelling is gone; this reverts the one that acts.
+    ("a project store NOTHING shadows is left alone", "bin/llm_chat",
+     "            if room in session\n"
+     '            and entry.get("identity") != session[room].get("identity")]',
+     "            if True]",
+     "an agent with no session store is told its own live membership is a "
+     "stale relic, and `sync --repair` would delete the only record it has — "
+     "measured: one of seven checkouts on this machine runs entirely on the "
+     "project file (#16)"),
+
+    ("a shadowed project entry is REPORTED", "bin/llm_chat",
+     "    shadowed = shadowed_project_rooms(project)\n    if shadowed:",
+     "    shadowed = []\n    if False:",
+     "an entry naming an identity that left the room sits in a file nothing "
+     "writes and nothing mentions, inert only because today's control flow "
+     "never reaches it — and any future fallback hands that agent a departed "
+     "identity as its membership"),
+
     ("a transient 429 does not block a turn-end",
      "triggers/answer-when-asked",
      "    while (code == 2 and tried < RETRIES\n"
@@ -1676,6 +1697,13 @@ NOT_SWEPT = {
         "grouping and the surviving 429 text are asserted with two servers "
         "and a throttled one, because a reason replaced by 'could not reach' "
         "is what made a throttle read as an outage",
+    "bin/llm_chat:load_store": "a closure that opens one of the two stores "
+        "from the SAME root and answers {} for absent or corrupt. Both of "
+        "those are asserted directly — no project store, no session store, "
+        "and a corrupt project store all report nothing shadowed — and the "
+        "reason it is a closure at all is swept: reading one store from the "
+        "argument and the other from ambient state compared one project's "
+        "relic against another project's membership",
     "bin/llm_chat:heartbeat_age": "a stamp read and subtracted; every way of "
         "having no stamp is asserted directly — absent, corrupt, and present "
         "with no timestamp — and all three report CANNOT SAY rather than "
