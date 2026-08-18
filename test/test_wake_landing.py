@@ -212,6 +212,50 @@ class MissedWakeWatcherTest(unittest.TestCase):
         self.mod.watch(1000.0)
         self.assertEqual(self.missed()["requested_at"], 1000)
 
+    def tool_mark(self, when):
+        d = os.path.join(self.tmp.name, "probe")
+        os.makedirs(d, exist_ok=True)
+        path = os.path.join(d, "post-tool-use")
+        open(path, "w").close()
+        os.utime(path, (when, when))
+
+    def test_A_TURN_STILL_RUNNING_IS_NOT_A_MISSED_WAKE(self):
+        """`wake_landing` only consumes the note when a turn ENDS, so a turn
+        that started on this rewake and is still going leaves the note exactly
+        where a wake that never arrived does. This record is now spoken to the
+        agent (#20), and telling the session it woke that its wake never
+        landed is how a report stops being believed."""
+        self.pending()
+        self.tool_mark(1500.0)
+        self.mod.watch(1000.0)
+        self.assertFalse(os.path.exists(self.mod.MISSED_PATH))
+
+    def test_a_tool_call_from_BEFORE_the_request_proves_nothing(self):
+        """Paired with the one above, and the reason it is an mtime
+        comparison rather than a presence check: every project that has ever
+        run a tool has this mark, so presence alone would silence the report
+        everywhere."""
+        self.pending()
+        self.tool_mark(500.0)
+        self.mod.watch(1000.0)
+        # EXISTENCE FIRST, and not for tidiness. Reading the file straight
+        # off made this ERROR rather than FAIL when the comparison was
+        # neutered, and the sweep counts an error as "not measured" — the
+        # assertion that was going to check the behaviour never ran.
+        self.assertTrue(os.path.exists(self.mod.MISSED_PATH),
+                        "a stale mark must not read as a running turn")
+        self.assertEqual(self.missed()["requested_at"], 1000)
+
+    def test_NO_tool_mark_at_all_still_reports_the_miss(self):
+        """A repo wired before probing shipped has no mark. Reading absence as
+        "a turn ran" would silence this for exactly the installs least likely
+        to be healthy."""
+        self.pending()
+        self.mod.watch(1000.0)
+        self.assertTrue(os.path.exists(self.mod.MISSED_PATH),
+                        "absence of a mark is not evidence a turn ran")
+        self.assertEqual(self.missed()["requested_at"], 1000)
+
     def test_a_NEWER_request_is_not_this_watcher_s_business(self):
         """Two wakes in quick succession. The second one's note is not
         evidence about the first, and recording it as such would report a miss

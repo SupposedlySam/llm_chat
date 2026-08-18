@@ -2,7 +2,7 @@
 """llm-chat-mcp — the llm_chat CLI, spoken over MCP.
 
 Every llm_chat subcommand (open, join, setup, say, sync, mode, pending, read,
-leave, reopen, invite, channels, briefing, identify, doctor, fingerprint,
+leave, reopen, invite, channels, briefing, identify, doctor, who, fingerprint,
 reload) as one MCP tool each, so an MCP client calls `say` with a JSON object
 instead of building `llm_chat say <channel> "<text>" --as <identity>` as a
 shell string. The CLI does the actual work; this is a translation layer over
@@ -246,6 +246,10 @@ def _build_identify(a):
 
 def _build_doctor(a):
     return ["doctor"]
+
+
+def _build_who(a):
+    return ["who"] + (["--json"] if a.get("as_json") else [])
 
 
 def _build_fingerprint(a):
@@ -662,6 +666,25 @@ TOOLS = [
         "timeout": 15,
         "schema": {"type": "object", "properties": {"server": _SERVER},
                    "required": []},
+    },
+    {
+        "name": "who",
+        "description": "Which identities have a LIVE session right now, "
+                       "machine-wide, with full session ids. Check this "
+                       "before nudging somebody who has not replied: a "
+                       "message to an ended session is stored, not "
+                       "delivered. Exits non-zero when the host could not "
+                       "be asked, which is NOT the same as nobody running.",
+        "build": _build_who,
+        "timeout": 15,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "as_json": {"type": "boolean",
+                            "description": "one record per identity"},
+            },
+            "required": [],
+        },
     },
     {
         "name": "fingerprint",

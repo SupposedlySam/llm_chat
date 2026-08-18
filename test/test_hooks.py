@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 
@@ -258,6 +259,210 @@ class DeliverTest(HookTestCase):
         self.mod.subprocess = FakeSubprocess("abcdef0123456789")
         _, out = self.run_hook('{"session_id": "s1"}')
         self.assertEqual(out, "")
+
+
+class MissedWakeNoticeTest(HookTestCase):
+    """The record that existed for months and that nothing ever opened.
+
+    The waker spawns a detached watcher purely so a rewake that went nowhere
+    can be noticed after the exit — and it wrote `wake.missed` to a path no
+    code in this repo read. #20 is what that costs: a message addressed to an
+    agent sat 32 minutes, `doctor` could state the live state precisely, and
+    two agents in one room each concluded the other had gone quiet.
+    """
+
+    script = "llm-chat-deliver"
+
+    def run_hook(self, payload="{}"):
+        out = io.StringIO()
+        stdin = sys.stdin
+        sys.stdin = io.StringIO(payload)
+        try:
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                code = self.mod.main()
+        finally:
+            sys.stdin = stdin
+        return code, out.getvalue()
+
+    def missed(self, at=None, **extra):
+        record = {"at": at if at is not None else int(time.time()),
+                  "requested_at": 1, "acted": False}
+        record.update(extra)
+        os.makedirs(os.path.dirname(self.mod.MISSED_PATH), exist_ok=True)
+        with open(self.mod.MISSED_PATH, "w") as f:
+            json.dump(record, f)
+
+    def test_a_missed_wake_is_SAID_not_merely_filed(self):
+        self.missed()
+        _, out = self.run_hook()
+        self.assertIn("NEVER LANDED", out)
+
+    def test_it_says_the_messages_arrived_by_TOOL_CALL_not_by_wake(self):
+        """The reporter's own account of how the reply reached them. Without
+        it the line reads as a past-tense complaint rather than a statement
+        about what will happen next time they go idle."""
+        self.missed()
+        _, out = self.run_hook()
+        self.assertIn("tool call", out)
+
+    def test_it_says_silence_is_not_evidence_of_a_quiet_room(self):
+        """The conclusion the agent would otherwise draw, and the one that
+        made two agents both stop waiting at the same time."""
+        self.missed()
+        _, out = self.run_hook()
+        self.assertIn("not evidence", out)
+
+    def test_it_is_said_ONCE(self):
+        """A line on every tool call is read for a day and filtered out for
+        good — and this is a warning it would be expensive to stop believing."""
+        self.missed()
+        _, first = self.run_hook()
+        self.assertIn("NEVER LANDED", first)
+        _, second = self.run_hook()
+        self.assertEqual(second, "")
+
+    def test_a_LATER_miss_is_said_again(self):
+        """Paired with the one above. Remembering "told" rather than "told
+        about this one" would report the first failure and then go silent
+        through every one after it."""
+        self.missed(at=1000)
+        self.run_hook()
+        self.missed(at=2000)
+        _, out = self.run_hook()
+        self.assertIn("NEVER LANDED", out)
+
+    def landed(self, at):
+        with open(self.mod.LANDED_PATH, "w") as f:
+            json.dump({"at": at, "event": "Stop"}, f)
+
+    def test_a_LATER_landing_retires_the_miss(self):
+        """The path recovered. Saying it anyway would be the defect `doctor`
+        already carries a scar for — a fact about a moment printed as a fact
+        about now."""
+        self.missed(at=1000)
+        self.landed(2000)
+        _, out = self.run_hook()
+        self.assertEqual(out, "")
+
+    def test_an_EARLIER_landing_does_not_retire_it(self):
+        """Paired, and it is why age is the wrong test. This was caught
+        against real state: a miss from the previous evening was still the
+        live state the next afternoon, because the last landing came four
+        hours BEFORE it."""
+        self.missed(at=2000)
+        self.landed(1000)
+        _, out = self.run_hook()
+        self.assertIn("NEVER LANDED", out)
+
+    def test_NO_landing_record_at_all_does_not_retire_it(self):
+        """No wake has ever been seen arriving in this checkout, which is not
+        evidence that one just did."""
+        self.missed(at=2000)
+        _, out = self.run_hook()
+        self.assertIn("NEVER LANDED", out)
+
+    def test_it_says_the_miss_is_the_LIVE_state_not_history(self):
+        """The line carries an age, and an age invites the reader to discount
+        it. What licenses the claim is the absence of a later landing, so the
+        line has to say that rather than leave it to be inferred."""
+        self.missed(at=2000)
+        self.landed(1000)
+        _, out = self.run_hook()
+        self.assertIn("none has landed since", out)
+
+    def test_a_record_with_no_timestamp_is_not_a_miss(self):
+        """A record from a watcher that predates the field, or a truncated
+        write. There is nothing to compare a landing against, so there is
+        nothing that can honestly be said."""
+        os.makedirs(os.path.dirname(self.mod.MISSED_PATH), exist_ok=True)
+        with open(self.mod.MISSED_PATH, "w") as f:
+            json.dump({"requested_at": 1}, f)
+        _, out = self.run_hook()
+        self.assertEqual(out, "")
+
+    def test_it_stays_SILENT_when_it_cannot_remember_having_spoken(self):
+        """Better to say nothing once than to say it on every tool call
+        forever — an unwritable marker turns "once per miss" into a loop, and
+        the loop is what makes the warning stop being read."""
+        self.missed()
+        blocker = os.path.join(self.project, "not-a-directory")
+        open(blocker, "w").close()
+        self.mod.TOLD_PATH = os.path.join(blocker, "told")
+        _, out = self.run_hook()
+        self.assertEqual(out, "")
+
+    def test_no_record_means_silence(self):
+        _, out = self.run_hook()
+        self.assertEqual(out, "")
+
+    def test_an_unreadable_record_does_not_break_the_turn(self):
+        os.makedirs(os.path.dirname(self.mod.MISSED_PATH), exist_ok=True)
+        with open(self.mod.MISSED_PATH, "w") as f:
+            f.write("{not json")
+        code, out = self.run_hook()
+        self.assertEqual(code, 0)
+        self.assertEqual(out, "")
+
+    def test_the_record_is_NOT_consumed(self):
+        """`doctor` and any later reader are entitled to it. Spending the
+        evidence to deliver it once is how the next question gets no answer."""
+        self.missed()
+        self.run_hook()
+        self.assertTrue(os.path.exists(self.mod.MISSED_PATH))
+
+    def test_an_automatic_reload_attempt_is_reported_with_its_outcome(self):
+        self.missed(acted=True, said="reload requested")
+        _, out = self.run_hook()
+        self.assertIn("reload requested", out)
+
+
+class HookEventNameTest(HookTestCase):
+    """The reply has to name the event that actually fired.
+
+    This hook is registered on PostToolUse AND SessionStart now, and a
+    hardcoded `hookEventName` is the kind of wrong that costs nothing in
+    testing and silently discards the output in the one place it was added
+    for — a session starting up deaf.
+    """
+
+    script = "llm-chat-deliver"
+
+    def run_hook(self, payload):
+        out = io.StringIO()
+        stdin = sys.stdin
+        sys.stdin = io.StringIO(payload)
+        try:
+            with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                self.mod.main()
+        finally:
+            sys.stdin = stdin
+        return out.getvalue()
+
+    def test_it_answers_a_SessionStart_as_a_SessionStart(self):
+        os.makedirs(os.path.dirname(self.mod.MISSED_PATH), exist_ok=True)
+        with open(self.mod.MISSED_PATH, "w") as f:
+            json.dump({"at": int(time.time())}, f)
+        out = self.run_hook('{"hook_event_name": "SessionStart"}')
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["hookEventName"],
+                         "SessionStart")
+
+    def test_a_payload_that_names_no_event_is_assumed_PostToolUse(self):
+        """Every caller before this change was PostToolUse, and a payload that
+        cannot be parsed must not produce output the host will drop."""
+        os.makedirs(os.path.dirname(self.mod.MISSED_PATH), exist_ok=True)
+        with open(self.mod.MISSED_PATH, "w") as f:
+            json.dump({"at": int(time.time())}, f)
+        out = self.run_hook("{not json")
+        self.assertEqual(json.loads(out)["hookSpecificOutput"]["hookEventName"],
+                         "PostToolUse")
+
+    def test_the_per_event_mark_does_not_replace_the_one_doctor_reads(self):
+        """`doctor` and `last_activity` both read the bare name. Writing only
+        a per-event mark would make every older reader see a hook that had
+        stopped firing."""
+        self.run_hook('{"hook_event_name": "SessionStart"}')
+        self.assertIn("post-tool-use", self.probes())
+        self.assertIn("deliver-SessionStart", self.probes())
 
 
 class DriftNoticeTest(HookTestCase):

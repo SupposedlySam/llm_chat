@@ -873,6 +873,164 @@ class DoctorTest(unittest.TestCase):
         self.addCleanup(lambda: setattr(cli.subprocess, "run", real))
         self.assertIsNone(cli.host_sessions())
 
+    # ── identity → live session, the mapping #19 rebuilt badly outside ─────
+
+    def joined_at(self, where, rooms):
+        """Write a joined.json the way the CLI does, at a given base."""
+        os.makedirs(where, exist_ok=True)
+        with open(os.path.join(where, "joined.json"), "w") as f:
+            json.dump(rooms, f)
+
+    def test_a_live_sessions_identity_is_read_from_ITS_OWN_store(self):
+        base = os.path.join(self.project, ".llm_chat", "sessions", "sid-1")
+        self.joined_at(base, {"room": {"identity": "worker-7"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        self.assertIn("worker-7", cli.live_identities())
+
+    def test_a_session_with_NO_store_of_its_own_uses_the_project_one(self):
+        """Measured across this machine, one checkout runs entirely on the
+        project file. Skipping the fallback reports that agent dead while it
+        is answering — and #19's wording would then be confidently wrong
+        about the one case it exists to report."""
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "project-wide"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "no-store"}])
+        self.assertIn("project-wide", cli.live_identities())
+
+    def test_the_sessions_OWN_store_wins_over_the_project_one(self):
+        """Paired with the fallback: a session that has moved to its own
+        identity must not still answer to the project's older one."""
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "stale"}})
+        self.joined_at(
+            os.path.join(self.project, ".llm_chat", "sessions", "sid-1"),
+            {"room": {"identity": "current"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        live = cli.live_identities()
+        self.assertIn("current", live)
+        self.assertNotIn("stale", live)
+
+    def test_an_identity_with_no_live_session_is_simply_absent(self):
+        self.joined_at(os.path.join(self.project, ".llm_chat", "sessions",
+                                    "sid-1"),
+                       {"room": {"identity": "worker-7"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        self.assertNotIn("lead-ml", cli.live_identities())
+
+    def test_a_host_that_CANNOT_BE_ASKED_is_None_not_an_empty_mapping(self):
+        """The whole complaint in #19 is a wake reported identically whether
+        anybody was there. An empty dict would let a caller answer "nobody is
+        alive" from a question that was never asked."""
+        self.hosts([], returncode=1)
+        self.assertIsNone(cli.live_identities())
+        self.hosts([])
+        self.assertEqual(cli.live_identities(), {})
+
+    def test_a_session_the_host_describes_incompletely_is_SKIPPED(self):
+        """No cwd or no sessionId means there is nowhere to look. Guessing
+        would attribute a live session to whichever project asked."""
+        self.hosts([{"pid": 1, "sessionId": "sid-1"},
+                    {"pid": 2, "cwd": self.project}])
+        self.assertEqual(cli.live_identities(), {})
+
+    def test_a_corrupt_joined_file_does_not_take_the_whole_mapping_down(self):
+        """One unreadable checkout among several must not make every other
+        agent read as dead."""
+        good = os.path.join(self.project, ".llm_chat", "sessions", "good")
+        self.joined_at(good, {"room": {"identity": "fine"}})
+        bad = os.path.join(self.project, ".llm_chat", "sessions", "bad")
+        os.makedirs(bad, exist_ok=True)
+        with open(os.path.join(bad, "joined.json"), "w") as f:
+            f.write("{not json")
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "good"},
+                    {"pid": 2, "cwd": self.project, "sessionId": "bad"}])
+        self.assertIn("fine", cli.live_identities())
+
+    def test_one_session_in_FOUR_ROOMS_is_listed_once(self):
+        """joined.json is keyed by room, so the obvious loop lists the same
+        session once per room. `who` printed exactly that on its first real
+        run, and any count taken from this mapping would have been a count of
+        memberships wearing a session's name."""
+        self.joined_at(
+            os.path.join(self.project, ".llm_chat", "sessions", "sid-1"),
+            {name: {"identity": "busy"} for name in "abcd"})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        self.assertEqual(len(cli.live_identities()["busy"]), 1)
+
+    def whoami(self, as_json=False):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = cli.do_who(as_json)
+        return code, out.getvalue()
+
+    def test_who_prints_the_FULL_session_id(self):
+        """The first thing #19's hand-rolled version got wrong: `doctor`
+        truncates to 8 characters, so comparing against a full uuid matched
+        nothing and every session read as dead, including its own."""
+        self.joined_at(
+            os.path.join(self.project, ".llm_chat", "sessions", "sid-1"),
+            {"room": {"identity": "worker-7"}})
+        full = "73ce3b55-7a02-469e-a10e-ee86da7e1737"
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": full}])
+        # The host's id is what gets printed; the store is keyed by the id the
+        # session actually joined under, which is why this fixture has both.
+        self.joined_at(
+            os.path.join(self.project, ".llm_chat", "sessions", full),
+            {"room": {"identity": "worker-7"}})
+        _, text = self.whoami()
+        self.assertIn(full, text)
+
+    def test_who_CANNOT_TELL_exits_nonzero(self):
+        """The whole point of the verb. A caller scripting against it gets an
+        empty list either way — only the status separates "nobody is running"
+        from "nothing answered", and conflating those is both open issues."""
+        self.hosts([], returncode=1)
+        code, text = self.whoami()
+        self.assertEqual(code, 1)
+        self.assertIn("CANNOT TELL", text)
+
+    def test_who_NOBODY_LIVE_is_a_success_and_says_it_asked(self):
+        self.hosts([])
+        code, text = self.whoami()
+        self.assertEqual(code, 0)
+        self.assertIn("was asked and answered", text)
+
+    def test_who_is_REACHABLE_from_the_command_line(self):
+        """Through `main`, not by calling `do_who`. Every other test here
+        holds the function; a verb wired to the wrong handler, or not wired at
+        all, would pass all of them and fail for every user — and the parser
+        test only proves the FLAG parses, never that anything runs."""
+        self.hosts([], returncode=1)
+        argv = sys.argv
+        sys.argv = ["llm_chat", "who"]
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                code = cli.main()
+        finally:
+            sys.argv = argv
+        self.assertEqual(code, 1)
+        self.assertIn("CANNOT TELL", out.getvalue())
+
+    def test_who_json_marks_whether_the_host_was_ASKED(self):
+        """Both cases produce an empty list, so the flag is the only thing
+        carrying the difference into a program."""
+        self.hosts([], returncode=1)
+        _, unasked = self.whoami(as_json=True)
+        self.assertIs(json.loads(unasked)["asked"], False)
+        self.hosts([])
+        _, asked = self.whoami(as_json=True)
+        self.assertIs(json.loads(asked)["asked"], True)
+
+    def test_one_identity_in_two_live_sessions_keeps_both(self):
+        for sid in ("a", "b"):
+            self.joined_at(
+                os.path.join(self.project, ".llm_chat", "sessions", sid),
+                {"room": {"identity": "twin"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "a"},
+                    {"pid": 2, "cwd": self.project, "sessionId": "b"}])
+        self.assertEqual(len(cli.live_identities()["twin"]), 2)
+
     def test_doctor_says_NOTHING_CAN_BE_WOKEN_when_nobody_is_home(self):
         """It changes what the waker diagnosis means. "No wake has landed"
         reads as a broken mechanism when somebody is sitting there deaf, and
@@ -1153,11 +1311,28 @@ class DoctorTest(unittest.TestCase):
         write_settings(self.project,
                        PostToolUse=["/x/bin/llm-chat-deliver"],
                        Stop=["/x/bin/llm-chat-wake"],
-                       SessionStart=["/x/bin/llm-chat-wake"])
+                       SessionStart=["/x/bin/llm-chat-wake",
+                                     "/x/bin/llm-chat-deliver"])
         self.mark("post-tool-use")
         self.mark("stop")
         text = self.report()
         self.assertIn("Wiring looks right", text)
+
+    def test_deliver_missing_from_SessionStart_is_reported(self):
+        """The waker IS on SessionStart and still cannot say anything there —
+        it is asyncRewake with a week-long timeout, so it blocks in the
+        background rather than answering. Everything about a wake that stopped
+        landing (#20) reaches a starting session through this hook or through
+        nobody, and the restart that causes it IS a session start."""
+        write_settings(self.project,
+                       PostToolUse=["/x/bin/llm-chat-deliver"],
+                       Stop=["/x/bin/llm-chat-wake"],
+                       SessionStart=["/x/bin/llm-chat-wake"])
+        self.mark("post-tool-use")
+        self.mark("stop")
+        text = self.report()
+        self.assertIn("deliver is not on SessionStart", text)
+        self.assertNotIn("Wiring looks right", text)
 
     def test_drift_against_the_install_stamp_is_reported(self):
         write_settings(self.project,

@@ -1,0 +1,105 @@
+#!/bin/sh
+# Watch this repo's GitHub issues and say when one arrives or moves.
+#
+# WHY IT LIVES HERE. The first version of this was a script in a scratch
+# directory, started as a session monitor. A power cut took the machine down
+# and took the script with it, so the watcher did not merely stop — it could
+# not be restarted, because the thing being restarted was gone. Exit 127.
+# Tracked in the repo, it survives the outage that makes people want it.
+#
+# THE FIRST LINE IT PRINTS IS A POSITIVE CONTROL, and that is the point. Two
+# earlier issue checks here read "CONFIGURED BUT NEVER FIRED" for four days,
+# and a watcher that has never spoken is indistinguishable from one that
+# cannot. So this announces the CURRENT open set immediately: if that line
+# never arrives, the watcher is broken and you learn it now rather than the
+# next time somebody files something.
+#
+# Silence afterwards means genuinely nothing new. Failure is loud, because
+# "cannot reach GitHub" and "no new issues" are opposite facts that look
+# identical from a channel that only speaks on change.
+#
+#   sh triggers/issue-watch            # this repo, from its git remote
+#   sh triggers/issue-watch owner/name # somebody else's
+set -u
+
+STATE_DIR="${TMPDIR:-/tmp}"
+FAILING=""
+
+# Resolved absolutely: a PATH that differs under a hook is how a sibling
+# watcher here was found to be looking at nothing at all.
+GH=$(command -v gh 2>/dev/null || true)
+if [ -z "$GH" ]; then
+  echo "ISSUE-WATCH CANNOT START: no gh on PATH — this watcher is INERT, not quiet"
+  exit 1
+fi
+
+# THE REPO IS DERIVED, not hardcoded. A tracked file that names one machine's
+# repository is the defect this project already removed from another trigger,
+# which had a private package manager's path baked into a public tree.
+REPO="${1:-}"
+if [ -z "$REPO" ]; then
+  REPO=$("$GH" repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null || true)
+fi
+if [ -z "$REPO" ]; then
+  echo "ISSUE-WATCH CANNOT START: no repo given and none derivable here"
+  exit 1
+fi
+STATE="$STATE_DIR/issue-watch.$(echo "$REPO" | tr '/' '.').seen"
+
+snapshot() {
+  "$GH" issue list --repo "$REPO" --state open --limit 50 \
+        --json number,title,updatedAt \
+        --jq '.[] | "\(.number)\t\(.updatedAt)\t\(.title)"' 2>/dev/null
+}
+
+# EMPTY OUTPUT IS TWO DIFFERENT FACTS. `gh` prints nothing whether there are no
+# open issues or it could not reach GitHub, so the difference is established by
+# asking a question that must answer rather than by reading silence.
+reachable() {
+  "$GH" repo view "$REPO" --json name >/dev/null 2>&1
+}
+
+first=$(snapshot)
+if [ -z "$first" ]; then
+  if ! reachable; then
+    echo "ISSUE-WATCH CANNOT REACH GITHUB — inert until that is fixed"
+    exit 1
+  fi
+  echo "ISSUE-WATCH LIVE on $REPO — no open issues (this line proves it can look)"
+else
+  echo "ISSUE-WATCH LIVE on $REPO — currently open:"
+  echo "$first" | while IFS= read -r row; do echo "    $row"; done
+fi
+echo "$first" > "$STATE"
+
+while true; do
+  sleep 300
+  now=$(snapshot)
+  if [ -z "$now" ] && ! reachable; then
+    if [ -z "$FAILING" ]; then
+      echo "ISSUE-WATCH: cannot reach GitHub — NOT the same as no new issues"
+      FAILING=1
+    fi
+    continue
+  fi
+  if [ -n "$FAILING" ]; then
+    echo "ISSUE-WATCH: GitHub reachable again"
+    FAILING=""
+  fi
+  # A row is number+updatedAt+title, so a NEW COMMENT on an old issue moves it
+  # too — which is what you want from a watcher whose job is "does anything
+  # need me".
+  echo "$now" | while IFS= read -r row; do
+    [ -z "$row" ] && continue
+    if ! grep -Fqx "$row" "$STATE" 2>/dev/null; then
+      num=$(echo "$row" | cut -f1)
+      title=$(echo "$row" | cut -f3-)
+      if grep -Fq "$(printf '%s\t' "$num")" "$STATE" 2>/dev/null; then
+        echo "ISSUE #$num UPDATED — $title"
+      else
+        echo "NEW ISSUE #$num — $title"
+      fi
+    fi
+  done
+  echo "$now" > "$STATE"
+done

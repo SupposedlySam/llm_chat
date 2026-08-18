@@ -1342,6 +1342,114 @@ def crowded_room_hint(channel, members, audience):
     )
 
 
+def live_identities():
+    """Every identity with a session the HOST says is running, or None.
+
+    THE MAPPING CALLERS HAVE BEEN REBUILDING BADLY. Issue #19 was written
+    after an orchestrator nudged an agent three times over an hour whose
+    session had ended four days earlier, then spent 110 lines outside the tool
+    trying to reconstruct this — and the script lied twice before it stopped.
+    Both of its failures are things only the tool can avoid:
+
+      · `doctor` prints a TRUNCATED session id, so comparing it to a full
+        uuid never matched and every session read as dead, including its own.
+      · `identity.json` is not written per session, so recovering an identity
+        meant grepping a transcript for `--as <name>` — which matches the
+        messages OTHER identities sent, and once picked the word `after` out
+        of ordinary prose.
+
+    Neither is a hazard here: the host gives cwd and a full sessionId, and the
+    identity is in that session's own joined.json.
+
+    A LIVE SESSION WITH NO SESSION STORE USES THE PROJECT ONE, which is not a
+    detail — measured across this machine, one checkout runs entirely on the
+    project file, and a mapping that skipped it would report that agent dead
+    while it was answering.
+
+    None means the host could not be asked, and callers must not turn that
+    into "nobody is alive" — the whole complaint in #19 is a wake reported
+    identically whether or not anybody was there.
+    """
+    sessions = host_sessions()
+    if sessions is None:
+        return None
+    live = {}
+    for session in sessions:
+        cwd, sid = session.get("cwd"), session.get("sessionId")
+        if not cwd or not sid:
+            continue
+        base = os.path.join(cwd, ".llm_chat")
+        rooms = {}
+        for where in (os.path.join(base, "sessions", sid, "joined.json"),
+                      os.path.join(base, "joined.json")):
+            try:
+                with open(where) as f:
+                    rooms = json.load(f) or {}
+                break          # the session store wins; the project one is
+            except (OSError, ValueError):
+                continue       # the fallback for a session that has none
+        # ONE SESSION PER IDENTITY, not one per ROOM it holds under that
+        # identity. joined.json is keyed by room, so the obvious loop lists
+        # the same session four times for an agent sitting in four rooms —
+        # which `who` printed on its first real run, and which would have made
+        # any count taken from this mapping a count of memberships wearing a
+        # session's name.
+        for who in {(entry or {}).get("identity") for entry in rooms.values()}:
+            if who:
+                live.setdefault(who, []).append(session)
+    return live
+
+
+def do_who(as_json=False):
+    """Print the identity → session → liveness mapping. Exit 1 if unaskable.
+
+    ASKED FOR BY NAME IN #19, after an orchestrator rebuilt it outside the
+    tool in 110 lines and the script lied twice before it stopped — once
+    because `doctor` prints a TRUNCATED session id, so comparing it to a full
+    uuid matched nothing and every session read as dead including its own, and
+    once because `identity.json` is not written per session, so recovering an
+    identity meant grepping a transcript for `--as <name>` and that matches
+    the messages OTHER identities sent.
+
+    So: full session ids, never truncated, and the identity taken from the
+    session's own joined.json rather than inferred from prose.
+
+    EXIT 1 WHEN THE HOST CANNOT BE ASKED, and that is the whole design of this
+    verb. A caller scripting against it gets an empty list either way; only
+    the status separates "nobody is running" from "nothing answered", and
+    conflating those is the defect both open issues describe.
+    """
+    live = live_identities()
+    if live is None:
+        if as_json:
+            print(json.dumps({"asked": False, "identities": []}, indent=2))
+        else:
+            print("CANNOT TELL — `claude agents --json` did not answer.\n"
+                  "  This is not 'nobody is live'. Nothing was asked.")
+        return 1
+    if as_json:
+        print(json.dumps({"asked": True, "identities": [
+            {"identity": who,
+             "sessions": [{"sessionId": s.get("sessionId"),
+                           "pid": s.get("pid"),
+                           "cwd": s.get("cwd"),
+                           "name": s.get("name")} for s in sessions]}
+            for who, sessions in sorted(live.items())]}, indent=2))
+        return 0
+    if not live:
+        print("no identity on this machine has a live session.\n"
+              "  The host was asked and answered. Anything said now waits "
+              "until somebody starts.")
+        return 0
+    for who, sessions in sorted(live.items()):
+        print(who)
+        for s in sessions:
+            print("  session %s  pid %s  %s"
+                  % (s.get("sessionId") or "?", s.get("pid") or "?",
+                     s.get("cwd") or "?"))
+    return 0
+
+
 def say_reach(server, channel, sender, audience, chan):
     """One line telling the sender who it just woke, and who merely gets to see it.
 
@@ -1360,7 +1468,25 @@ def say_reach(server, channel, sender, audience, chan):
     if not woken:
         return (f"wakes nobody; {len(passive)} will see it when next working "
                 f"({', '.join(passive)})")
-    out = f"wakes {', '.join(woken)}"
+    # WOKEN AND LEFT-FOR ARE DIFFERENT CLAIMS. This said "wakes lead-ml"
+    # whether lead-ml was a running session or four days dead, and an
+    # orchestrator nudged one three times over an hour on the strength of it
+    # (#19). Leaving a message for somebody who will resume is legitimate and
+    # is most of the point of a transcript — it just must not be worded like a
+    # delivery that reached somebody.
+    live = live_identities()
+    if live is None:
+        # Could not ask the host. Say what was always said rather than
+        # inventing a liveness claim in either direction.
+        out = f"wakes {', '.join(woken)}"
+    else:
+        awake = [m for m in woken if m in live]
+        gone = [m for m in woken if m not in live]
+        out = f"wakes {', '.join(awake)}" if awake else ""
+        if gone:
+            out += ("; " if out else "") + (
+                "LEFT FOR %s — no live session, so nobody was woken"
+                % ", ".join(gone))
     if passive:
         out += f"; passive for {', '.join(passive)}"
     return out
@@ -2428,7 +2554,7 @@ def do_reload(force=False, i_know=False):
             "worse trade than it looks when two of those sessions\n  have "
             "been running for days."
             % (len(here),
-               "\n".join("    %s  %s" % ((s.get("sessionId") or "?")[:8],
+               "\n".join("    %s  %s" % (s.get("sessionId") or "?",
                                          s.get("name") or "unnamed")
                          for s in here),
                len(here)))
@@ -3119,9 +3245,14 @@ def report_who_is_home(project):
     for session in here:
         sid = session.get("sessionId") or "?"
         it_is_me = " (this session)" if mine and sid == mine else ""
+        # THE FULL ID, and it used to be `sid[:8]`. Somebody comparing this
+        # line against a real session id matched nothing, concluded every
+        # session was dead including their own, and shipped that conclusion
+        # into an orchestrator (#19). Truncation saved 28 characters and cost
+        # a diagnosis. `llm_chat who` is the machine-readable form.
         print("\nagent here: yes — %s, pid %s, session %s%s"
               % (session.get("name") or "unnamed", session.get("pid") or "?",
-                 sid[:8], it_is_me))
+                 sid, it_is_me))
     window = ide_window(project)
     if window:
         # Recorded because it is the only thing that tells two windows apart:
@@ -3138,7 +3269,7 @@ def report_who_is_home(project):
               "(%s).\n  Your environment and the host disagree about who you "
               "are. The rooms are\n  held by whichever id joined them, and "
               "this line is the disagreement itself\n  rather than a "
-              "diagnosis of what caused it." % mine[:8])
+              "diagnosis of what caused it." % mine)
 
 
 def report_sessions(project):
@@ -3303,6 +3434,18 @@ def do_doctor(server):
               "session that\n    starts and never takes a turn — a window reload, a "
               "resume — has nothing\n    listening and cannot be woken at all. Re-run "
               "install.sh.")
+    # The waker IS on SessionStart and still cannot say anything there: it is
+    # asyncRewake with a week-long timeout, so it blocks in the background
+    # rather than answering. Everything below about a wake that stopped
+    # landing is therefore delivered by this hook or by nobody — and the
+    # restart that causes it is exactly a session start (#20).
+    deliver_no_start = ("llm-chat-deliver" in registered
+                        and "SessionStart" not in events["llm-chat-deliver"])
+    if deliver_no_start:
+        print("\n  ! deliver is not on SessionStart, so this repo learns nothing at "
+              "start-up.\n    Messages that arrived while it was down wait for the "
+              "first tool call, and a\n    wake that stopped landing is not reported "
+              "until something happens to fire\n    a hook. Re-run install.sh.")
 
     print()
     if not registered:
@@ -3342,7 +3485,7 @@ def do_doctor(server):
               "only a real session start can create one)")
         print("\nNothing is lost meanwhile — `llm_chat read <channel>` never "
               "depends on a hook.")
-    elif not missing and not no_sessionstart:
+    elif not missing and not no_sessionstart and not deliver_no_start:
         print("Wiring looks right: both hooks are registered and both have fired "
               "in this checkout.")
 
@@ -3970,6 +4113,10 @@ def build_parser():
                         "in your own repo and not in a monorepo")
 
     sub.add_parser("doctor", help="why is nothing arriving?")
+    p = sub.add_parser("who", help="which identities have a LIVE session "
+                                   "right now, machine-wide")
+    p.add_argument("--json", dest="as_json", action="store_true",
+                   help="one record per identity, for programs")
     p = sub.add_parser("fingerprint",
                        help="hash of a checkout's hook scripts")
     p.add_argument("--of", dest="of", default=None,
@@ -4052,6 +4199,8 @@ def main() -> int:
     if args.cmd == "doctor":
         do_doctor(server)
         return 0
+    if args.cmd == "who":
+        return do_who(args.as_json)
     if args.cmd == "channels":
         do_channels(server, args.show_closed, args.as_json)
         return 0

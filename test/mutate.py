@@ -1316,14 +1316,29 @@ MUTATIONS = [
      "in the listing, so the address is reported as absent for projects that "
      "have one — and absent is the answer that reads as 'not a VSCode agent'"),
 
+    # TWO CALLERS ASK THE HOST THE SAME WAY, so each anchor carries its own
+    # next line. Without that they matched two places and the sweep refused
+    # both rather than guess — which is the right refusal and a useless
+    # measurement. `live_identities` arrived second and made the older anchor
+    # ambiguous; a mutation that cannot be applied defends nothing.
     ("nobody home is not the same as could not ask", "bin/llm_chat",
      "    sessions = host_sessions()\n    if sessions is None:\n"
-     "        return None",
-     "    sessions = host_sessions() or []",
+     "        return None\n"
+     "    root = os.path.abspath(project or project_dir())",
+     "    sessions = host_sessions() or []\n"
+     "    root = os.path.abspath(project or project_dir())",
      "a host that cannot be asked reports as 'no live session in this "
      "project', so a missed wake reads as an agent that simply went home — "
      "the two states this check exists to separate, collapsed by the one line "
      "that separates them"),
+
+    ("an unaskable host does not empty the identity mapping", "bin/llm_chat",
+     "    sessions = host_sessions()\n    if sessions is None:\n"
+     "        return None\n    live = {}",
+     "    sessions = host_sessions() or []\n    live = {}",
+     "`who` answers 'nobody is live' to a question that was never asked, and "
+     "`say --to` reports LEFT FOR every member on any machine where the host "
+     "cannot be reached — the same inversion at both ends of the mapping"),
 
     ("a sibling directory is not this project", "bin/llm_chat",
      "        if cwd == root or cwd.startswith(root + os.sep):",
@@ -1402,6 +1417,114 @@ MUTATIONS = [
      "llms.txt: every other check pools the docs, so the name counted as "
      "documented while the whole integration surface stayed invisible to the "
      "readers that file exists for"),
+
+    ("a wake and a note left for the dead are worded APART", "bin/llm_chat",
+     '        awake = [m for m in woken if m in live]\n'
+     '        gone = [m for m in woken if m not in live]',
+     '        awake = list(woken)\n        gone = []',
+     "`say --to lead-ml` reads 'wakes lead-ml' whether that session is running "
+     "or ended four days ago, which is exactly what an orchestrator acted on "
+     "three times in an hour before filing #19 — and the failure is silent in "
+     "the direction that costs most, because the sender stops and waits"),
+
+    # `do_who` asks the same question the same way, so each anchor carries
+    # the line after it. Two matches make the sweep refuse both rather than
+    # guess which one a name meant — a correct refusal and a useless
+    # measurement, and it is the second time this pair of callers has done it.
+    ("an unaskable host is not a claim that everyone is DEAD", "bin/llm_chat",
+     "    live = live_identities()\n    if live is None:\n"
+     "        # Could not ask the host.",
+     "    live = live_identities() or {}\n    if False:\n"
+     "        # Could not ask the host.",
+     "on any machine where the host cannot be asked — no `claude` on PATH, a "
+     "different harness — every message reports LEFT FOR every member, so the "
+     "one line that was added to be believed becomes the line nobody can"),
+
+    ("`who` exits NONZERO when the host could not be asked", "bin/llm_chat",
+     "    live = live_identities()\n    if live is None:\n        if as_json:",
+     "    live = live_identities() or {}\n    if False:\n        if as_json:",
+     "'nobody is running' and 'nothing answered' both print an empty list, so "
+     "the exit status is the only thing carrying the difference to a script — "
+     "and collapsing exactly that pair is what both open issues are about"),
+
+    ("a live session's identity survives having no session store",
+     "bin/llm_chat",
+     '        for where in (os.path.join(base, "sessions", sid, "joined.json"),\n'
+     '                      os.path.join(base, "joined.json")):',
+     '        for where in (os.path.join(base, "sessions", sid, "joined.json"),):',
+     "measured across this machine one checkout runs entirely on the project "
+     "file, so that agent reads as dead while it is answering — and the "
+     "wording added for #19 would then be confidently wrong about the very "
+     "case it exists to report"),
+
+    ("a missed wake is SAID, not merely filed", "bin/llm-chat-deliver",
+     "    missed = missed_wake_note()",
+     "    missed = ''",
+     "the waker has been spawning a detached watcher to record a rewake that "
+     "went nowhere, into a file nothing in this repo ever opened — which is "
+     "#20 exactly: a message sat 32 minutes, `doctor` could state the live "
+     "state precisely, and two agents in one room each concluded the other "
+     "had gone quiet"),
+
+    ("a LATER landing retires the miss", "bin/llm-chat-deliver",
+     "    if wake_landed_since(at):\n        return \"\"",
+     '    if False:\n        return ""',
+     "a wake that failed once is announced as the live state for as long as "
+     "the record sits there — caught against real state, where a miss from "
+     "the previous evening rendered as news seventeen hours later, which is "
+     "the same past-printed-as-present defect `doctor` already carries a scar "
+     "for"),
+
+    ("only a LATER landing counts, not any landing", "bin/llm-chat-deliver",
+     '            return float((json.load(f) or {}).get("at") or 0) > when',
+     '            return float((json.load(f) or {}).get("at") or 0) >= 0',
+     "any landing ever recorded in this checkout retires every future miss, "
+     "so the report goes permanently silent on exactly the machines where a "
+     "wake HAS worked once — which is all of them, and it is the direction "
+     "that looks healthy"),
+
+    ("the missed-wake line is said ONCE per miss", "bin/llm-chat-deliver",
+     '            if int((f.read() or "0").strip() or 0) >= at:\n'
+     "                return \"\"",
+     '            if False:\n                return ""',
+     "it fires on every tool call instead, and a warning on a loop is read "
+     "for a day and filtered out for good — which is this project's own "
+     "finding about crying wolf, applied to the one warning it would be "
+     "expensive to stop believing"),
+
+    ("a turn still running is not a missed wake", "bin/llm-chat-wake",
+     "    if tool_ran_since(at):\n        return 0",
+     "    if False:\n        return 0",
+     "`wake_landing` only consumes the note when a turn ENDS, so any turn "
+     "longer than the grace window records a miss — and the record is now "
+     "spoken, so the session that WAS woken gets told its wake never landed, "
+     "which is how a report stops being believed"),
+
+    ("a stale tool mark is not a running turn", "bin/llm-chat-wake",
+     '            os.path.join(STATE, "probe", "post-tool-use")) > at',
+     '            os.path.join(STATE, "probe", "post-tool-use")) > 0',
+     "every project that has ever run a tool has that mark, so a presence "
+     "check silences the missed-wake report everywhere at once and leaves it "
+     "looking healthy"),
+
+    ("the delivery hook answers the event that actually fired",
+     "bin/llm-chat-deliver",
+     '        event = payload.get("hook_event_name") or event',
+     "        pass",
+     "it is registered on SessionStart now, and a reply stamped PostToolUse "
+     "is one the host is entitled to discard — silently, in the exact place "
+     "it was added for: a session starting up deaf"),
+
+    ("the delivery hook is on SessionStart", "install.sh",
+     'hooks.setdefault("SessionStart", []).append({\n    "hooks": [{\n'
+     '        "type": "command",\n        "command": hook_cmd,',
+     'if False:\n    hooks.setdefault("SessionStart", []).append({\n'
+     '    "hooks": [{\n        "type": "command",\n'
+     '        "command": hook_cmd,',
+     "the waker is on SessionStart and cannot speak there — asyncRewake with "
+     "a week-long timeout blocks in the background rather than answering — so "
+     "a session that starts deaf after a host restart learns it from nothing, "
+     "which is the 32 minutes in #20"),
 ]
 
 
@@ -1970,6 +2093,9 @@ NOT_SWEPT = {
         "argv produced",
     "bin/llm-chat-mcp:_build_doctor": "trivial, asserted directly (constant "
         "argv)",
+    "bin/llm-chat-mcp:_build_who": "both branches asserted directly for the "
+        "exact argv produced; the CLI-correspondence tests additionally prove "
+        "the flag it emits is one this parser accepts",
     "bin/llm-chat-mcp:_build_fingerprint": "both branches asserted directly "
         "for the exact argv produced",
     "bin/llm-chat-mcp:_build_reload": "both branches asserted directly for "

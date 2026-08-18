@@ -152,8 +152,24 @@ class ServerTest(unittest.TestCase):
         for who in ("alice", "bob", "carol"):
             self.server.membership("room", who)
 
+        # THE HOST IS NOT ASKED IN A UNIT TEST. `say` now consults
+        # live_identities() so it can tell a wake from a message left for
+        # somebody who is gone (#19), and the unstubbed version shells out to
+        # `claude agents --json` — which would make every assertion in this
+        # file depend on which sessions happen to be running on the machine,
+        # and bob and carol are never among them. The default stub says
+        # everyone in the room is alive because that is the ordinary case; the
+        # tests that care about death say so explicitly.
+        self.real_live = cli.live_identities
+        self.alive({who: [{"sessionId": who}] for who in
+                    ("alice", "bob", "carol")})
+
+    def alive(self, live):
+        cli.live_identities = lambda: live
+
     def tearDown(self):
         cli.call = self.real
+        cli.live_identities = self.real_live
 
     def say(self, text, identity="alice", audience=None):
         out = io.StringIO()
@@ -280,6 +296,58 @@ class StoreTest(ServerTest):
         out = self.say("hi", audience=cli.AUDIENCE_NONE)
         self.assertIn("wakes nobody", out)
         self.assertIn("when next working", out)
+
+    def test_a_message_to_a_dead_identity_is_not_reported_as_a_wake(self):
+        """#19: an orchestrator nudged one agent three times over an hour
+        because `say --to` said "wakes lead-ml" for a session that had ended
+        four days earlier. The message is still worth leaving — it just must
+        not be worded like a delivery that reached somebody."""
+        self.alive({"alice": [{}], "carol": [{}]})
+        out = self.say("hi", audience="bob")
+        self.assertIn("LEFT FOR bob", out)
+        self.assertNotIn("wakes bob", out)
+
+    def test_a_dead_addressee_is_worded_differently_from_a_live_one(self):
+        """The two states have to be told apart from the line alone. Asserting
+        the dead wording in isolation would pass a version that printed it for
+        everybody."""
+        self.alive({"alice": [{}], "bob": [{}], "carol": [{}]})
+        living = self.say("hi", audience="bob")
+        self.alive({"alice": [{}], "carol": [{}]})
+        dead = self.say("hi", audience="bob")
+        self.assertNotEqual(living, dead)
+        self.assertIn("wakes bob", living)
+        self.assertNotIn("LEFT FOR", living)
+
+    def test_the_live_ones_are_still_reported_as_woken(self):
+        """A room with one dead member must not lose the fact that the others
+        were genuinely interrupted."""
+        self.alive({"alice": [{}], "carol": [{}]})
+        out = self.say("hi", audience="bob,carol")
+        self.assertIn("wakes carol", out)
+        self.assertIn("LEFT FOR bob", out)
+
+    def test_an_unaskable_host_does_not_become_a_liveness_claim(self):
+        """None means "could not look", and turning that into "nobody is
+        alive" would invent in the same direction the bug ran, just louder."""
+        self.alive(None)
+        out = self.say("hi", audience="bob")
+        self.assertIn("wakes bob", out)
+        self.assertNotIn("LEFT FOR", out)
+
+    def test_a_dead_addressee_says_nobody_was_woken(self):
+        """The sender's next action turns on this. "LEFT FOR bob" alone still
+        reads as delivery to somebody who is merely busy."""
+        self.alive({"alice": [{}]})
+        out = self.say("hi", audience="bob")
+        self.assertIn("no live session", out)
+
+    def test_the_message_is_still_stored_for_a_dead_addressee(self):
+        """Not a refusal. Leaving a note for an agent that will resume is most
+        of the point of a transcript."""
+        self.alive({"alice": [{}]})
+        self.say("hi", audience="bob")
+        self.assertEqual(self.server.tables["messages"][0]["audience"], "bob")
 
     def test_the_sender_is_never_counted_among_the_woken(self):
         """Only the reach line — the confirmation above it legitimately names

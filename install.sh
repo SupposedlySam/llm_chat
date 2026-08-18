@@ -145,6 +145,28 @@ hooks.setdefault("PostToolUse", []).append({
     }],
 })
 
+# START path, and the waker cannot serve it. The waker is registered on
+# SessionStart too, but it is `asyncRewake` with a week-long timeout — it
+# blocks in the background and returns only when it delivers, so it has no
+# way to put a line in front of a session that is starting. This one is
+# synchronous and answers immediately.
+#
+# It exists because of #20: after a host restart the poll keeps running and
+# wakes stop landing, `doctor` diagnoses it precisely, and nothing surfaces
+# that diagnosis — a message addressed to an agent sat 32 minutes while two
+# agents in one room each concluded the other had gone quiet. The restart is
+# the moment the session goes deaf, so the session start is where it has to be
+# said. It also hands over anything that arrived while the session was down,
+# which used to wait for the first tool call.
+hooks.setdefault("SessionStart", []).append({
+    "hooks": [{
+        "type": "command",
+        "command": hook_cmd,
+        "timeout": 10,
+        "statusMessage": "llm_chat: anything waiting?",
+    }],
+})
+
 # Idle path: PostToolUse cannot fire when no tools are firing, so an agent that
 # has ended its turn would never hear anything. asyncRewake lets this block in
 # the background after turn-end and wake the session on arrival. The long

@@ -725,6 +725,27 @@ def watch_for_a_missed_wake():
         pass            # never let bookkeeping break the wake it describes
 
 
+def tool_ran_since(at):
+    """Has this project run a tool call since `at`? False if it cannot tell.
+
+    The PostToolUse mark is written on EVERY invocation of the delivery hook,
+    including the silent case where nothing was waiting, so its mtime is the
+    cheapest available "a turn is running" signal — and it needs no network,
+    no server and no cooperation from the harness whose cooperation is the
+    thing in doubt.
+
+    FALSE ON ANY DOUBT, because the caller turns True into "say nothing".
+    A repo wired before probing shipped has no mark at all, and reading that
+    as "a turn ran" would silence the report permanently for exactly the
+    installs least likely to be healthy.
+    """
+    try:
+        return os.path.getmtime(
+            os.path.join(STATE, "probe", "post-tool-use")) > at
+    except OSError:
+        return False
+
+
 def watch(at):
     """Wait out the grace window, then record whether the wake landed."""
     time.sleep(REWAKE_GRACE + WATCH_MARGIN)
@@ -735,6 +756,20 @@ def watch(at):
         return 0                     # consumed: a turn happened. Nothing owed.
     if abs(float(pending.get("at") or 0) - at) > 0.5:
         return 0                     # a NEWER request; this one was answered
+    # AN UNCONSUMED NOTE IS NOT YET A MISSED WAKE. `wake_landing` only runs
+    # when a turn ENDS, so a turn that started on this rewake and is still
+    # running at grace+margin leaves the note exactly where a wake that never
+    # arrived does. Recording a miss there would put "your wake did not land"
+    # in front of the very session it woke — and this record is about to be
+    # spoken to the agent (#20), so a plausible false positive is not a
+    # blemish, it is the thing that stops it being believed.
+    #
+    # A tool call after the request settles it: the model is running. That it
+    # also masks a genuine miss during BUSY work is correct rather than a
+    # hole — the delivery hook hands messages over within one tool call there,
+    # and the failure being reported is an IDLE session going deaf.
+    if tool_ran_since(at):
+        return 0
     record = {"at": int(time.time()), "requested_at": int(at),
               "acted": False}
     if os.path.isfile(AUTO_RELOAD_PATH):

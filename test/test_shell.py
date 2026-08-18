@@ -142,9 +142,22 @@ class InstallTest(ShellTestCase):
         hooks = hooks_in(self.local)
         self.assertEqual(len(hooks.get("PostToolUse", [])), 1)
         self.assertEqual(len(hooks.get("Stop", [])), 1)
-        self.assertEqual(len(hooks.get("SessionStart", [])), 1,
-                         "without SessionStart a reloaded session has nothing "
-                         "listening and cannot be woken at all")
+        self.assertEqual(len(hooks.get("SessionStart", [])), 2,
+                         "the waker, so a reloaded session has something "
+                         "listening, AND deliver, so it learns at start-up "
+                         "that its wake path stopped working")
+
+    def test_DELIVER_is_on_SessionStart_not_only_the_waker(self):
+        """#20. The waker is on SessionStart already and still cannot say a
+        word there: it is asyncRewake with a week-long timeout, so it blocks
+        in the background instead of answering. A session that starts deaf
+        after a host restart learns it from this hook or from nothing — and a
+        message addressed to an agent sat 32 minutes proving that."""
+        self.run_script(INSTALL, self.repo)
+        started = hooks_in(self.local).get("SessionStart", [])
+        self.assertTrue(any("llm-chat-deliver" in c for c in started),
+                        started)
+        self.assertTrue(any("llm-chat-wake" in c for c in started), started)
 
     def test_the_absolute_path_stays_out_of_the_tracked_file(self):
         """settings.json is tracked in most repos, and the command is an
@@ -159,8 +172,12 @@ class InstallTest(ShellTestCase):
         self.run_script(INSTALL, self.repo)
         self.run_script(INSTALL, self.repo)
         hooks = hooks_in(self.local)
-        for event in ("PostToolUse", "Stop", "SessionStart"):
-            self.assertEqual(len(hooks[event]), 1, event)
+        # SessionStart carries two of ours ON PURPOSE — the waker and the
+        # delivery hook — so the count that proves nothing stacked is the
+        # count after one install, not one per event.
+        expected = {"PostToolUse": 1, "Stop": 1, "SessionStart": 2}
+        for event, count in expected.items():
+            self.assertEqual(len(hooks[event]), count, event)
 
     def test_a_previous_install_is_migrated_out_of_the_tracked_file(self):
         """Re-installing alone cannot fix this: the installer no longer writes
@@ -326,7 +343,7 @@ class TeardownTest(ShellTestCase):
         self.run_script(TEARDOWN, self.repo)
         done = self.run_script(INSTALL, self.repo)
         self.assertEqual(done.returncode, 0, done.stderr)
-        self.assertEqual(len(hooks_in(self.local)["SessionStart"]), 1)
+        self.assertEqual(len(hooks_in(self.local)["SessionStart"]), 2)
 
     def test_an_unknown_option_is_refused(self):
         done = self.run_script(TEARDOWN, "--nonsense", self.repo,

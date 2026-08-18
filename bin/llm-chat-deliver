@@ -276,6 +276,108 @@ def upgrade_notice(session_id) -> str:
     return "\n".join(lines)
 
 
+MISSED_PATH = os.path.join(PROJECT, ".llm_chat", "wake.missed")
+TOLD_PATH = MISSED_PATH + ".told"
+LANDED_PATH = os.path.join(PROJECT, ".llm_chat", "wake.landed")
+
+
+def wake_landed_since(when) -> bool:
+    """Has a rewake been observed LANDING since `when`? False if unknown.
+
+    THE RECORD IS A FACT ABOUT A MOMENT, NOT ABOUT NOW. Caught by running
+    this against real state: a miss from 20:10 the previous evening rendered
+    as news the following afternoon, seventeen hours later — which is the
+    same defect `doctor` already carries a scar for, where "a wake has landed
+    here" stayed on screen for ninety minutes while every wake failed.
+
+    Age alone is the wrong test, though, and that is why this asks a
+    different question. A miss from last night is still the live state if
+    nothing has landed since; a miss from four minutes ago is spent if
+    something has. Only a LATER landing retires it.
+
+    False when there is no landing record at all — that means no wake has
+    ever been seen arriving in this checkout, which is not evidence that one
+    just did.
+    """
+    try:
+        with open(LANDED_PATH) as f:
+            return float((json.load(f) or {}).get("at") or 0) > when
+    except (OSError, ValueError, TypeError):
+        return False
+
+
+def missed_wake_note() -> str:
+    """Say, once, that a wake was requested for this session and never landed.
+
+    THE RECORD ALREADY EXISTED AND NOTHING READ IT. The waker spawns a
+    detached watcher that outlives its own exit precisely so somebody can
+    notice a rewake that went nowhere, and it has been writing `wake.missed`
+    to a file no code in this repo opens. A detector whose output nobody reads
+    is not a detector; it is the same silence it was built to break, with a
+    receipt.
+
+    WHY HERE. Issue #20 is an idle session going deaf after a host restart:
+    the poll keeps running, `doctor` diagnoses it exactly, and the diagnosis
+    is unreachable unless somebody thinks to ask — so a roll-call message sat
+    32 minutes and two agents in one room each concluded the other had gone
+    quiet. The reporter's own account names this hook as what finally moved
+    the message: "it reached them because one of their own tool calls happened
+    to fire the PostToolUse delivery hook — not because a wake landed." That
+    is the moment the fact is both known and deliverable, so that is where it
+    is said.
+
+    ONCE PER MISS. The record is not consumed — `doctor` and any later reader
+    are entitled to it — so what is remembered is the `at` already spoken. A
+    line repeated on every tool call would be read for a day and then filtered
+    out for good, which is this project's own finding about warnings that cry
+    wolf, applied to a warning it would be expensive to stop believing.
+    """
+    try:
+        with open(MISSED_PATH) as f:
+            record = json.load(f) or {}
+        at = int(record.get("at") or 0)
+    except (OSError, ValueError, TypeError):
+        return ""
+    if not at:
+        return ""
+    if wake_landed_since(at):
+        return ""       # the path recovered; this is history, not the state
+    try:
+        with open(TOLD_PATH) as f:
+            if int((f.read() or "0").strip() or 0) >= at:
+                return ""
+    except (OSError, ValueError):
+        pass                     # never told, or the marker is unreadable —
+        # repeating once is the cheap failure here, staying silent is not.
+    try:
+        os.makedirs(os.path.dirname(TOLD_PATH), exist_ok=True)
+        with open(TOLD_PATH, "w") as f:
+            f.write(str(at))
+    except OSError:
+        return ""       # cannot remember having said it, so do not start
+    waited = max(0, int(time.time()) - at)
+    ago = ("%dh" % (waited // 3600) if waited >= 3600
+           else "%dm" % (waited // 60))
+    line = [
+        "llm_chat: A WAKE WAS REQUESTED FOR THIS SESSION AND NEVER LANDED "
+        "(%s ago," % ago,
+        "  and none has landed since — so this is the live state, not "
+        "history).",
+        "  Anything above reached you because a tool call fired this hook, "
+        "not because",
+        "  the wake path worked. While you are idle, NOTHING will arrive on "
+        "its own —",
+        "  so silence in a room right now is not evidence that the room is "
+        "quiet.",
+        "  `llm_chat doctor` has the live state. A window reload re-arms the "
+        "listener.",
+    ]
+    if record.get("acted"):
+        line.append("  (a reload was attempted automatically: %s)"
+                    % (record.get("said") or "no output"))
+    return "\n".join(line)
+
+
 def addressed_to_me(message, identity):
     """Did this message ask for ME, or did it merely happen near me?
 
@@ -331,17 +433,29 @@ def main() -> int:
     # break the pipe on the caller; the session id in it is what keeps the
     # upgrade notice to once per session.
     session_id = None
+    # WHICH EVENT INVOKED US, because this hook is no longer registered on one.
+    # SessionStart was added for #20 — a session that starts deaf after a host
+    # restart has to be told at the start, which is where the restart happened
+    # — and `hookEventName` in the reply has to name the event that actually
+    # fired or the host has every right to discard the output.
+    event = "PostToolUse"
     try:
         payload = json.loads(sys.stdin.read() or "{}")
         session_id = payload.get("session_id")
+        event = payload.get("hook_event_name") or event
     except (ValueError, Exception):
         pass
 
     # Before any early return: the point of the mark is that it happens on
     # EVERY invocation, including the silent common case of nothing waiting.
+    # The bare name is kept because `doctor` and `last_activity` both read it
+    # and a per-event mark alone would make every older reader see a hook that
+    # had stopped firing.
     mark_fired("post-tool-use")
+    mark_fired("deliver-%s" % event)
 
     notice = upgrade_notice(session_id)
+    missed = missed_wake_note()
 
     # In no rooms is fine — a wiring notice still has to get out.
     joined = joined_for(session_id)
@@ -351,7 +465,7 @@ def main() -> int:
         # alternative is a session that believes it is in no rooms while
         # senders watch their messages succeed.
         print(json.dumps({"hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
+            "hookEventName": event,
             "additionalContext":
                 "llm_chat could not read this project's joined rooms, so it "
                 "cannot say whether anything is waiting. This is NOT 'nothing "
@@ -394,7 +508,7 @@ def main() -> int:
         blocks.append(render_channel(channel, identity,
                                      waiting[:MAX_PER_DELIVERY]))
 
-    if not blocks and not notice:
+    if not blocks and not notice and not missed:
         return 0
 
     header = (
@@ -410,9 +524,13 @@ def main() -> int:
         parts.append(notice)
     if blocks:
         parts.append(header + "\n\n" + "\n\n".join(blocks))
+    # LAST, and deliberately after the messages. It is a statement about how
+    # those messages got here, and it is worth nothing read before them.
+    if missed:
+        parts.append(missed)
     print(json.dumps({
         "hookSpecificOutput": {
-            "hookEventName": "PostToolUse",
+            "hookEventName": event,
             "additionalContext": "\n\n".join(parts),
         }
     }))

@@ -93,7 +93,7 @@ class ToolsListTest(McpTestCase):
         self.assertEqual(names, {
             "open", "join", "setup", "say", "sync", "mode", "pending", "read",
             "leave", "owed", "delete", "reopen", "invite", "channels",
-            "briefing", "identify", "doctor", "fingerprint", "reload",
+            "briefing", "identify", "doctor", "who", "fingerprint", "reload",
             "maintenance",
         })
 
@@ -287,6 +287,13 @@ class ArgvBuildersTest(McpTestCase):
 
     def test_doctor(self):
         self.assertEqual(self.call("doctor", {}), ["doctor"])
+
+    def test_who(self):
+        self.assertEqual(self.call("who", {}), ["who"])
+
+    def test_who_json(self):
+        self.assertEqual(self.call("who", {"as_json": True}),
+                         ["who", "--json"])
 
     def test_fingerprint_of_a_specific_tree(self):
         argv = self.call("fingerprint", {"of": "/some/checkout"})

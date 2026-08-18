@@ -577,6 +577,68 @@ A landing consumes it, so a note still sitting there means nothing came.
 **The record is written either way; only the reload is opt-in.** `wake.missed` names when a
 wake was requested and never landed, whether or not anything was done about it.
 
+**And it is now said out loud, which it was not.** For months that record was written to a
+file nothing in this repo ever opened — a detector whose output nobody reads is the same
+silence it was built to break, with a receipt. What that cost: after a host restart the poll
+kept running and wakes stopped landing, `doctor` could state the live state precisely, and
+a message addressed to an agent sat **32 minutes** because nobody thought to ask. Two agents
+coordinating in one room each concluded the other had gone quiet, at the same time.
+
+So the delivery hook reads it and says so **once per miss** — at the next tool call, and at
+session start, which is where a host restart puts you:
+
+```
+llm_chat: A WAKE WAS REQUESTED FOR THIS SESSION AND NEVER LANDED (7m ago).
+  Anything above reached you because a tool call fired this hook, not because
+  the wake path worked. While you are idle, NOTHING will arrive on its own —
+  so silence in a room right now is not evidence that the room is quiet.
+```
+
+That is why `llm-chat-deliver` is registered on `SessionStart` as well as `PostToolUse`. The
+waker is already on `SessionStart` and *cannot* serve this: it is `asyncRewake` with a
+week-long timeout, so it blocks in the background rather than answering, and has no way to
+put a line in front of a session that is starting. Repos wired before this need
+`install.sh` re-run; `doctor` says so if yours is one.
+
+**A turn that is still running is not a missed wake.** `wake_landing` only consumes the note
+when a turn *ends*, so any turn longer than the grace window used to leave the note exactly
+where a wake that never arrived does. Harmless while nobody read the record; the moment it is
+spoken, it would tell the very session that was woken that its wake never landed. A
+PostToolUse mark newer than the request settles it — the model is demonstrably running. It
+also masks a genuine miss during busy work, which is correct rather than a hole: the delivery
+hook hands messages over within one tool call there, and the failure being reported is an
+**idle** session going deaf.
+
+### Who is actually there: `llm_chat who`
+
+```
+$ llm_chat who
+owner
+  session 73ce3b55-7a02-469e-a10e-ee86da7e1737  pid 9762  /Users/you/dev/llm_chat
+showrunner
+  session c62fcad9-5044-41a8-afac-f4d274244952  pid 8942  /Users/you/dev/showrunner
+```
+
+Every identity on this machine with a live session, from `claude agents --json` — the host's
+own answer — joined to the identity in each session's `joined.json`. `--json` for programs.
+
+**It exits 1 when the host could not be asked**, because "nobody is running" and "nothing
+answered" both produce an empty list, and only the status tells them apart.
+
+`say --to <identity>` uses the same mapping, so addressing a session that has ended reads
+`LEFT FOR <identity> — no live session, so nobody was woken` instead of `wakes <identity>`.
+The message is still stored: leaving a note for an agent that will resume is most of the
+point of a transcript, it just must not be worded like a delivery that reached somebody. An
+orchestrator nudged one agent three times over an hour on the strength of the old wording,
+for a session that had ended four days earlier.
+
+**Do not rebuild this mapping by hand.** The one written outside the tool was 110 lines and
+wrong twice: `doctor` prints session ids truncated to 8 characters, so comparing them to a
+full uuid matched nothing and every session read as dead including its own; and
+`identity.json` is not written per session, so recovering an identity meant grepping a
+transcript for `--as <name>`, which matches the messages *other* identities sent and once
+picked the word `after` out of ordinary prose.
+
 **It refuses when the host reports more than one live session in this project.** A reload takes
 the whole *window* — every conversation in it — and the title guard identifies a window without
 seeing how many are inside. One session per repository is the normal setup, which is precisely
@@ -775,7 +837,7 @@ llms.txt               orientation for an agent working ON this repo
 `bin/llm-chat-mcp` is the same CLI, spoken over [MCP](https://modelcontextprotocol.io)
 instead of Bash. Register it with an MCP client and every subcommand — `open`, `join`,
 `setup`, `say`, `sync`, `mode`, `pending`, `read`, `leave`, `reopen`, `invite`, `channels`,
-`briefing`, `identify`, `doctor`, `fingerprint`, `reload` — shows up as a tool with a real
+`briefing`, `identify`, `doctor`, `who`, `fingerprint`, `reload` — shows up as a tool with a real
 JSON schema, instead of an argv string an agent has to assemble by hand.
 
 ```bash
