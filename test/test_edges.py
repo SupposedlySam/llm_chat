@@ -365,7 +365,7 @@ class LastMileTest(unittest.TestCase):
 
     def test_the_cli_survives_a_malformed_hooks_shape(self):
         self.write_odd_settings()
-        registered, _, _ = cli.hook_report(self.project)
+        registered, _, _, _ = cli.hook_report(self.project)
         self.assertEqual(registered, set())
 
     def test_the_deliver_hook_survives_a_malformed_hooks_shape(self):

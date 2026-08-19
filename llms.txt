@@ -225,10 +225,24 @@ message addressed to a session that has ended reads `LEFT FOR <identity> — no 
 so nobody was woken` rather than `wakes <identity>`. The message is still stored: leaving a
 note for an agent that will resume is legitimate, and it is not worded like a delivery.
 
-Do not rebuild this mapping yourself. The obvious hand-rolled version is wrong twice —
-`doctor` prints session ids TRUNCATED to 8 characters so they never match a full uuid, and
-`identity.json` is not written per session, so people fall back to grepping a transcript for
-`--as <name>`, which matches the messages *other* identities sent.
+Every row says **how** it was attributed, and you should read it before acting:
+
+| how | what it means |
+|---|---|
+| `declared` | that session's own `identity.json`. It said who it is. Nothing overrides this. |
+| `joined #room` | that session entered that room under that name. Authoritative for **waking** — a message to that name *in that room* reaches it. A session legitimately holds different names in different rooms. |
+| `… (inferred)` | a guess from a **shared** file that cannot say which session wrote it. Offered only where exactly one live session in that checkout had no evidence of its own; where several did, nobody is listed at all. |
+
+`--json` carries `how` as a list and an `inferred` boolean to branch on. Treat an inferred
+row as "probably, and worth one message to check" rather than as a live address.
+
+Do not rebuild this mapping yourself. The obvious hand-rolled version scrapes transcripts
+for `--as <name>` and is wrong immediately, because **every transcript quotes the messages
+other identities sent** — a session that has typed `--to backcompat` a dozen times reads as
+backcompat. You do not need inference at all: a session's identity is declared in its own
+`identity.json`, which **is** written per session (`identify --project` is the opt-in for a
+shared one). And `doctor` used to print session ids truncated to 8 characters, so comparing
+them against a full uuid matched nothing; it prints them in full now.
 
 **If `setup` or `join` tells you the room is closed, that is not a dead end** — run
 `reopen` and try again. Closing happens whenever the last member leaves, so a room you were

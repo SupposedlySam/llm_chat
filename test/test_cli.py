@@ -946,6 +946,205 @@ class DoctorTest(unittest.TestCase):
                     {"pid": 2, "cwd": self.project, "sessionId": "bad"}])
         self.assertIn("fine", cli.live_identities())
 
+    # ── issue #21: over-attribution, which fails in the dangerous direction ─
+
+    def declared(self, sid, identity):
+        where = os.path.join(self.project, ".llm_chat", "sessions", sid)
+        os.makedirs(where, exist_ok=True)
+        with open(os.path.join(where, "identity.json"), "w") as f:
+            json.dump({"identity": identity}, f)
+
+    def how_for(self, live, identity, sid):
+        for row in live.get(identity, []):
+            if row.get("sessionId") == sid:
+                return row.get("llm_chat_how")
+        return None
+
+    def test_a_DECLARED_identity_is_marked_as_declared(self):
+        """`identity.json` IS written per session — I said otherwise in #19
+        and it was false. `identity_path()` has been session-scoped since
+        `identify` in one session was found renaming every other session in
+        the checkout."""
+        self.declared("sid-1", "orchestrator")
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        live = cli.live_identities()
+        self.assertEqual(self.how_for(live, "orchestrator", "sid-1"),
+                         ["declared"])
+
+    def test_a_ROOM_JOIN_says_WHICH_ROOM(self):
+        """A session genuinely holds a different identity per room —
+        game_loop's c9156a5d is `gameloop` in #llm_chat_owner and `owner` in
+        #game_loop_owner, which is the data rather than a defect. Reporting
+        the union as "the session's identities" is what made one session
+        appear under two names with no way to see why."""
+        self.joined_at(
+            os.path.join(self.project, ".llm_chat", "sessions", "sid-1"),
+            {"alpha": {"identity": "one"}, "beta": {"identity": "two"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        live = cli.live_identities()
+        self.assertEqual(self.how_for(live, "one", "sid-1"), ["joined #alpha"])
+        self.assertEqual(self.how_for(live, "two", "sid-1"), ["joined #beta"])
+
+    def test_the_DECLARATION_is_listed_before_the_room_joins(self):
+        """Strongest evidence first, and it is not cosmetic: `who` prints the
+        list in order, so a reader skimming the first item must land on the
+        thing that settles it rather than on one room among several."""
+        self.declared("sid-1", "orchestrator")
+        self.joined_at(
+            os.path.join(self.project, ".llm_chat", "sessions", "sid-1"),
+            {"alpha": {"identity": "orchestrator"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        self.assertEqual(self.how_for(cli.live_identities(), "orchestrator",
+                                      "sid-1"),
+                         ["declared", "joined #alpha"])
+
+    def test_a_session_declaring_AND_joining_elsewhere_shows_both(self):
+        """The declaration does not suppress a room joined under a different
+        name — they are different claims, and the room one is what answers
+        "will a message to that name in that room reach anybody"."""
+        self.declared("sid-1", "orchestrator")
+        self.joined_at(
+            os.path.join(self.project, ".llm_chat", "sessions", "sid-1"),
+            {"alpha": {"identity": "backcompat"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        live = cli.live_identities()
+        self.assertEqual(self.how_for(live, "orchestrator", "sid-1"),
+                         ["declared"])
+        self.assertEqual(self.how_for(live, "backcompat", "sid-1"),
+                         ["joined #alpha"])
+
+    def test_TWO_undeclared_sessions_in_one_checkout_claim_NOBODY(self):
+        """#21's core. The project store cannot say which session wrote it,
+        and claiming both makes a DEAD identity look alive — so the caller
+        nudges a room nobody is reading, which is the exact failure the verb
+        exists to prevent."""
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "backcompat"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "a"},
+                    {"pid": 2, "cwd": self.project, "sessionId": "b"}])
+        self.assertEqual(cli.live_identities(), {})
+
+    def test_ONE_undeclared_session_still_gets_the_project_file(self):
+        """Paired, and the reason this is not simply deleted: measured across
+        this machine, one checkout runs entirely on the project store, and
+        skipping it reports that agent dead while it is answering."""
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "backcompat"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "a"}])
+        self.assertIn("backcompat", cli.live_identities())
+
+    def test_the_project_file_attribution_is_marked_INFERRED(self):
+        """It is a guess from a file that cannot name its author, and #21
+        asked for the guessed half to be visible as a guess."""
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "backcompat"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "a"}])
+        self.assertIn("inferred",
+                      self.how_for(cli.live_identities(), "backcompat", "a")[0])
+
+    def test_a_DECLARED_session_does_not_make_its_NEIGHBOUR_ambiguous(self):
+        """A session with evidence of its own is not competing for the shared
+        file, so one declared session plus one bare one still resolves."""
+        self.declared("mine", "orchestrator")
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "backcompat"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "mine"},
+                    {"pid": 2, "cwd": self.project, "sessionId": "bare"}])
+        live = cli.live_identities()
+        self.assertEqual(self.how_for(live, "orchestrator", "mine"),
+                         ["declared"])
+        self.assertIn("backcompat", live)
+        self.assertNotIn("bare", [s.get("sessionId")
+                                  for s in live.get("orchestrator", [])])
+
+    def test_a_declared_session_is_NEVER_claimed_by_the_shared_file(self):
+        """The reporter's rule, and the one that matters most: a session that
+        said who it is must not also be attributed to somebody else."""
+        self.declared("mine", "orchestrator")
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "backcompat"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "mine"}])
+        live = cli.live_identities()
+        self.assertNotIn("mine", [s.get("sessionId")
+                                  for s in live.get("backcompat", [])])
+
+    def test_a_SHARED_FILE_naming_several_identities_claims_nobody(self):
+        """The same coin flip one level down: it says this CHECKOUT talks
+        under several names, not which of them this session is."""
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"a": {"identity": "one"}, "b": {"identity": "two"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "bare"}])
+        self.assertEqual(cli.live_identities(), {})
+
+    def test_a_project_identity_json_beats_the_project_joined_json(self):
+        """A shared declaration is still a declaration — weaker than a
+        session's own, stronger than reading room names off a membership
+        file."""
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "from-rooms"}})
+        with open(os.path.join(self.project, ".llm_chat", "identity.json"),
+                  "w") as f:
+            json.dump({"identity": "from-declaration"}, f)
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "bare"}])
+        live = cli.live_identities()
+        self.assertIn("from-declaration", live)
+        self.assertNotIn("from-rooms", live)
+
+    def test_sessions_in_DIFFERENT_checkouts_do_not_make_each_other_ambiguous(self):
+        """The ambiguity is per directory, because the file being guessed at
+        is per directory."""
+        other = os.path.join(self.tmp.name, "other")
+        os.makedirs(os.path.join(other, ".llm_chat"), exist_ok=True)
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "here"}})
+        self.joined_at(os.path.join(other, ".llm_chat"),
+                       {"room": {"identity": "there"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "a"},
+                    {"pid": 2, "cwd": other, "sessionId": "b"}])
+        live = cli.live_identities()
+        self.assertIn("here", live)
+        self.assertIn("there", live)
+
+    def test_who_PRINTS_how_each_row_was_attributed(self):
+        self.declared("sid-1", "orchestrator")
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        _, text = self.whoami()
+        self.assertIn("how: declared", text)
+
+    def test_who_EXPLAINS_inferred_when_it_shows_one(self):
+        """The word alone is not enough — a reader needs to know it is a
+        guess from a file that cannot name its author, and that the silent
+        case is stricter rather than looser."""
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "backcompat"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "a"}])
+        _, text = self.whoami()
+        self.assertIn("GUESS", text)
+
+    def test_who_does_NOT_explain_inferred_when_nothing_is(self):
+        """A footnote on every listing is a footnote nobody reads."""
+        self.declared("sid-1", "orchestrator")
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        _, text = self.whoami()
+        self.assertNotIn("GUESS", text)
+
+    def test_who_json_carries_an_INFERRED_flag_a_script_can_branch_on(self):
+        """A sentence is not something a caller branches on, and the whole
+        request was that the guessed half be visible to a program."""
+        self.joined_at(os.path.join(self.project, ".llm_chat"),
+                       {"room": {"identity": "backcompat"}})
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "a"}])
+        _, text = self.whoami(as_json=True)
+        row = json.loads(text)["identities"][0]["sessions"][0]
+        self.assertIs(row["inferred"], True)
+
+    def test_who_json_does_not_mark_a_DECLARATION_as_inferred(self):
+        self.declared("sid-1", "orchestrator")
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])
+        _, text = self.whoami(as_json=True)
+        row = json.loads(text)["identities"][0]["sessions"][0]
+        self.assertIs(row["inferred"], False)
+
     def test_one_session_in_FOUR_ROOMS_is_listed_once(self):
         """joined.json is keyed by room, so the obvious loop lists the same
         session once per room. `who` printed exactly that on its first real
@@ -1318,6 +1517,96 @@ class DoctorTest(unittest.TestCase):
         text = self.report()
         self.assertIn("Wiring looks right", text)
 
+    def test_a_hook_running_from_ANOTHER_CHECKOUT_is_reported(self):
+        """gameloop's repo vendors llm_chat under `.lamp/`, so `llm_chat
+        doctor` there ran a months-old copy while the hooks — absolute paths
+        into the source tree — ran current code. Their doctor could not
+        mention a hook gap it had never heard of, and `who` did not exist.
+        They found it through an argparse error, not through the tool whose
+        job it is."""
+        write_settings(self.project,
+                       PostToolUse=["/other/tree/bin/llm-chat-deliver"],
+                       Stop=["/other/tree/bin/llm-chat-wake"],
+                       SessionStart=["/other/tree/bin/llm-chat-wake",
+                                     "/other/tree/bin/llm-chat-deliver"])
+        self.mark("post-tool-use")
+        self.mark("stop")
+        text = self.report()
+        self.assertIn("DIFFERENT BUILD", text)
+        self.assertIn("/other/tree", text)
+
+    def test_hooks_from_THIS_checkout_say_nothing(self):
+        """Paired. The ordinary case is one tree, and a warning that fires
+        for everybody is one nobody reads."""
+        write_settings(self.project,
+                       PostToolUse=[os.path.join(cli.ROOT, "bin",
+                                                 "llm-chat-deliver")],
+                       Stop=[os.path.join(cli.ROOT, "bin", "llm-chat-wake")],
+                       SessionStart=[os.path.join(cli.ROOT, "bin",
+                                                  "llm-chat-wake")])
+        self.mark("post-tool-use")
+        self.mark("stop")
+        self.assertNotIn("DIFFERENT BUILD", self.report())
+
+    def test_the_divergence_is_reported_even_when_the_STAMP_matches(self):
+        """The stamp compares the wiring to the tree it was wired FROM, and
+        can be perfectly current while this is wrong. It is a fact about the
+        hooks; this is a fact about the program printing the report."""
+        write_settings(self.project,
+                       PostToolUse=["/other/tree/bin/llm-chat-deliver"],
+                       Stop=["/other/tree/bin/llm-chat-wake"],
+                       SessionStart=["/other/tree/bin/llm-chat-wake",
+                                     "/other/tree/bin/llm-chat-deliver"])
+        self.mark("post-tool-use")
+        self.mark("stop")
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "installed.json"), "w") as f:
+            json.dump({"fingerprint": cli.wiring_fingerprint(cli.ROOT),
+                       "checkout": cli.ROOT}, f)
+        text = self.report()
+        self.assertIn("DIFFERENT BUILD", text)
+        self.assertNotIn("STALE:", text)
+
+    def test_the_divergence_names_the_command_to_run_instead(self):
+        """A warning whose remedy is 'find the other copy yourself' is one
+        more thing to work out while already confused."""
+        write_settings(self.project,
+                       PostToolUse=["/other/tree/bin/llm-chat-deliver"],
+                       Stop=["/other/tree/bin/llm-chat-wake"],
+                       SessionStart=["/other/tree/bin/llm-chat-wake",
+                                     "/other/tree/bin/llm-chat-deliver"])
+        self.mark("post-tool-use")
+        self.mark("stop")
+        self.assertIn("/other/tree/bin/llm_chat doctor", self.report())
+
+    def test_a_hook_tree_that_is_GONE_is_said_so(self):
+        """Different remedy entirely: nothing is delivering at all, and
+        pointing somebody at a copy that does not exist wastes the one line
+        they were going to read."""
+        write_settings(self.project,
+                       PostToolUse=["/no/such/tree/bin/llm-chat-deliver"],
+                       Stop=["/no/such/tree/bin/llm-chat-wake"],
+                       SessionStart=["/no/such/tree/bin/llm-chat-wake",
+                                     "/no/such/tree/bin/llm-chat-deliver"])
+        self.mark("post-tool-use")
+        self.mark("stop")
+        self.assertIn("GONE", self.report())
+
+    def test_an_unparseable_hook_command_names_no_tree(self):
+        """A wrapper script, a shell one-liner. A tree named wrongly and
+        confidently is worse here than no tree named at all."""
+        self.assertIsNone(cli.hook_checkout("run-my-wrapper --deliver",
+                                            "llm-chat-deliver"))
+
+    def test_a_QUOTED_hook_command_is_still_read(self):
+        """install.sh writes the interpreter and the script as separate argv
+        entries, and settings files in the wild carry both quoted forms."""
+        self.assertEqual(
+            cli.hook_checkout("'/usr/bin/python3' '/a/b/bin/llm-chat-deliver'",
+                              "llm-chat-deliver"),
+            "/a/b")
+
     def test_deliver_missing_from_SessionStart_is_reported(self):
         """The waker IS on SessionStart and still cannot say anything there —
         it is asyncRewake with a week-long timeout, so it blocks in the
@@ -1476,7 +1765,84 @@ class DoctorTest(unittest.TestCase):
     def test_a_landing_is_reported_when_there_is_one(self):
         self.joined_with_waker(os.getpid())
         self.landed(event="Stop")
-        self.assertIn("a wake LANDED", self.report())
+        self.assertIn("a wake last LANDED", self.report())
+
+    def test_a_landing_does_not_CONCLUDE_that_replies_arrive(self):
+        """It used to end "so replies arrive on their own" — a present-tense
+        conclusion drawn from the last success. gameloop read it, believed
+        it, and passed "llm_chat is healthy" to a human while a newer wake
+        had already failed. The age is the fact; the conclusion belongs to
+        the reader, and only after the contradicting checks have spoken."""
+        self.joined_with_waker(os.getpid())
+        self.landed(event="Stop")
+        self.assertNotIn("replies arrive on their own", self.report())
+
+    # ── a wake that failed AFTER the last landing, with nothing queued ──────
+
+    def missed_at(self, at):
+        with open(os.path.join(self.project, ".llm_chat", "wake.missed"),
+                  "w") as f:
+            json.dump({"at": at, "requested_at": at - 110}, f)
+
+    def test_a_miss_NEWER_than_the_landing_contradicts_it(self):
+        """gameloop had both lines on screen an hour after installing the
+        delivery hook: doctor said a wake landed 1718m ago, the hook said one
+        was requested 6h ago and never came. Both true; only one was the live
+        state, and the reassuring one had already been passed to a human."""
+        self.joined_with_waker(os.getpid())
+        now = cli.now_ms() // 1000
+        self.landed(at=now - 100_000, event="Stop")
+        self.missed_at(now - 20_000)
+        text = self.report()
+        self.assertIn("NEVER LANDED", text)
+
+    def test_the_contradiction_does_NOT_need_a_message_still_waiting(self):
+        """The whole gap. `waiting_longer_than_the_last_wake` can only speak
+        while something is unread, and the delivery hook collects anything a
+        missed wake stranded on the very next tool call — so the ordinary
+        outcome of this failure is an empty queue and an intact failure."""
+        self.joined_with_waker(os.getpid())
+        now = cli.now_ms() // 1000
+        self.landed(at=now - 100_000, event="Stop")
+        self.missed_at(now - 20_000)
+        text = self.report()
+        self.assertIn("NEVER LANDED", text)
+        # Nothing is queued here, so the OLDER witness is silent — which is
+        # what makes this a test of the new one rather than of both at once.
+        self.assertNotIn("has been waiting", text)
+
+    def test_a_miss_OLDER_than_the_landing_is_spent(self):
+        """Paired, and it is why this compares against the landing rather
+        than the clock. A wake that failed and was then followed by one that
+        worked is history."""
+        self.joined_with_waker(os.getpid())
+        now = cli.now_ms() // 1000
+        self.missed_at(now - 100_000)
+        self.landed(at=now - 20_000, event="Stop")
+        self.assertNotIn("NEVER LANDED", self.report())
+
+    def test_no_miss_recorded_says_nothing(self):
+        self.joined_with_waker(os.getpid())
+        self.landed(event="Stop")
+        self.assertNotIn("NEVER LANDED", self.report())
+
+    def test_a_corrupt_miss_record_does_not_take_doctor_down(self):
+        self.joined_with_waker(os.getpid())
+        self.landed(event="Stop")
+        with open(os.path.join(self.project, ".llm_chat", "wake.missed"),
+                  "w") as f:
+            f.write("{not json")
+        self.assertIn("a wake last LANDED", self.report())
+
+    def test_the_contradiction_says_idle_means_NOTHING_ARRIVES(self):
+        """The actionable half. "A wake failed" is a fact about a mechanism;
+        "nothing will reach you while you sit still" is the thing that
+        changes what the reader does next."""
+        self.joined_with_waker(os.getpid())
+        now = cli.now_ms() // 1000
+        self.landed(at=now - 100_000, event="Stop")
+        self.missed_at(now - 20_000)
+        self.assertIn("while you are idle", self.report())
 
     # ── issue #13: worked ONCE is not works NOW ─────────────────────────────
 

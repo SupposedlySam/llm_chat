@@ -1418,6 +1418,89 @@ MUTATIONS = [
      "documented while the whole integration surface stayed invisible to the "
      "readers that file exists for"),
 
+    ("the hook path is read as a PATH, not matched as a substring",
+     "bin/llm_chat",
+     "        if os.path.basename(stripped) == hook:",
+     "        if hook in stripped:",
+     "a wrapper called `run-llm-chat-deliver-first` yields its own directory "
+     "as the checkout, so doctor names a tree nothing runs from — and a tree "
+     "named wrongly and confidently is worse here than no tree named at all, "
+     "because the remedy it prints sends you somewhere real that is not it"),
+
+    ("a shared file cannot name ONE of several sessions", "bin/llm_chat",
+     "        if len(waiting) != 1:\n            continue",
+     "        if False:\n            continue",
+     "every undeclared session in a checkout is claimed by whatever the "
+     "project store says, so a DEAD identity reads as live and the caller "
+     "nudges a room nobody is reading — #21, and it is the one direction this "
+     "verb must never fail in"),
+
+    ("a shared file naming SEVERAL identities names none of them",
+     "bin/llm_chat",
+     "            name = names.pop() if len(names) == 1 else None",
+     "            name = names.pop() if names else None",
+     "a checkout that talks under several names attributes an arbitrary one "
+     "of them — whichever the set happens to yield — to a session that "
+     "declared nothing, which is a coin flip presented as a fact"),
+
+    ("a session's own DECLARATION is read at all", "bin/llm_chat",
+     '    if name:\n        out.append((name, "declared"))',
+     "    if False:\n        out.append((name, \"declared\"))",
+     "the strongest evidence there is goes unread, so a session that said who "
+     "it is falls back to being guessed at from a shared file — and I told "
+     "#19's reporter this file was not written per session, which was false "
+     "and is exactly the belief that makes inference look unavoidable"),
+
+    ("who lists a session ONCE per identity, not once per reason",
+     "bin/llm_chat",
+     "        for row in rows:\n"
+     "            if row.get(\"sessionId\") == sid:\n                break",
+     "        for row in []:\n"
+     "            if row.get(\"sessionId\") == sid:\n                break",
+     "an agent sitting in four rooms under one name is printed four times, "
+     "which `who` did on its first real run and which makes any count taken "
+     "from this mapping a count of memberships wearing a session's name"),
+
+    ("doctor reads the missed-wake record too", "bin/llm_chat",
+     "                missed = missed_since_the_last_wake(project, landed)\n"
+     "                if missed is not None:",
+     "                missed = None\n                if False:",
+     "the queue-based check is the only contradiction left, and it can only "
+     "speak while something is UNREAD — so a wake that failed and whose "
+     "message was then collected by a tool call reads as healthy, which is "
+     "the ordinary outcome and is what gameloop passed to a human as "
+     "'llm_chat is healthy' an hour before the hook contradicted it"),
+
+    ("a spent miss does not contradict a newer landing", "bin/llm_chat",
+     "    if not at or at <= float(landed_at or 0):\n        return None",
+     "    if not at:\n        return None",
+     "a wake that failed once and was followed by one that worked keeps "
+     "reporting the path broken forever, so the loudest line in `doctor` "
+     "becomes permanently wrong for anybody who has ever had a miss — and a "
+     "warning that cries wolf is one this project has already paid to learn "
+     "about twice"),
+
+    ("doctor says when it is not the build the HOOKS run", "bin/llm_chat",
+     "    elsewhere = sorted(t for t in hook_trees\n"
+     "                       if os.path.abspath(t) != os.path.abspath(ROOT))",
+     "    elsewhere = []",
+     "a repo that vendors llm_chat runs its own months-old copy while the "
+     "hooks run current code from wherever install.sh was invoked, so the "
+     "diagnosis describes a different program than the one delivering — "
+     "gameloop read a stale doctor all day and found it through an argparse "
+     "error rather than through the tool whose job it is"),
+
+    ("the hook's PATH is kept, not just its name", "bin/llm_chat",
+     "                            where = hook_checkout(cmd, e)\n"
+     "                            if where:\n"
+     "                                trees.add(where)",
+     "                            where = None\n"
+     "                            if False:\n"
+     "                                trees.add(where)",
+     "the one fact saying WHICH BUILD delivers your messages is in hand at "
+     "that line and thrown away, which is exactly how it came to be missing "
+     "for as long as it was"),
+
     ("a wake and a note left for the dead are worded APART", "bin/llm_chat",
      '        awake = [m for m in woken if m in live]\n'
      '        gone = [m for m in woken if m not in live]',
@@ -1447,15 +1530,20 @@ MUTATIONS = [
      "the exit status is the only thing carrying the difference to a script — "
      "and collapsing exactly that pair is what both open issues are about"),
 
+    # REPLACES an anchor that #21 deleted. The old mutation pointed at a
+    # two-path lookup that no longer exists; the BEHAVIOUR it defended — a
+    # session with no store of its own still being findable — survived the
+    # rewrite and needs an anchor that survived with it. A stale mutation is
+    # not a neutral leftover: it reports SURVIVED, which reads as an
+    # undefended behaviour rather than as a broken measurement.
     ("a live session's identity survives having no session store",
      "bin/llm_chat",
-     '        for where in (os.path.join(base, "sessions", sid, "joined.json"),\n'
-     '                      os.path.join(base, "joined.json")):',
-     '        for where in (os.path.join(base, "sessions", sid, "joined.json"),):',
+     "    for cwd, waiting in unclaimed.items():",
+     "    for cwd, waiting in []:",
      "measured across this machine one checkout runs entirely on the project "
-     "file, so that agent reads as dead while it is answering — and the "
-     "wording added for #19 would then be confidently wrong about the very "
-     "case it exists to report"),
+     "file, so that agent reads as dead while it is answering — and the #19 "
+     "wording would then be confidently wrong about the very case it exists "
+     "to report"),
 
     ("a missed wake is SAID, not merely filed", "bin/llm-chat-deliver",
      "    missed = missed_wake_note()",
@@ -2093,6 +2181,14 @@ NOT_SWEPT = {
         "argv produced",
     "bin/llm-chat-mcp:_build_doctor": "trivial, asserted directly (constant "
         "argv)",
+    "bin/llm_chat:_read_json": "a two-line reader whose only decision is that "
+        "absent, unparseable and not-a-dict all become None — asserted "
+        "through every caller that has a corrupt-file test, and the callers "
+        "are where getting it wrong would show",
+    "bin/llm_chat:session_attributions": "every kind of evidence asserted "
+        "directly — declared, per-room, both together, and the ORDER — and "
+        "the two rules it enforces are swept where they bite, in "
+        "live_identities",
     "bin/llm-chat-mcp:_build_who": "both branches asserted directly for the "
         "exact argv produced; the CLI-correspondence tests additionally prove "
         "the flag it emits is one this parser accepts",

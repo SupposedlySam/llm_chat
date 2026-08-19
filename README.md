@@ -632,12 +632,33 @@ point of a transcript, it just must not be worded like a delivery that reached s
 orchestrator nudged one agent three times over an hour on the strength of the old wording,
 for a session that had ended four days earlier.
 
+**Every row says how it was attributed**, because the first version did not and immediately
+over-claimed. Three kinds of evidence, and they are not equally strong:
+
+- `declared` — that session's own `identity.json`. It said who it is; nothing overrides it.
+- `joined #room` — that session entered that room under that name. Authoritative for
+  *waking*, and genuinely per-room: one session is legitimately `gameloop` in one room and
+  `owner` in another. Reporting the union as "the session's identities" is what made a
+  session appear under two names with no way to see why.
+- `… (inferred)` — a guess from a **shared** file that cannot say which session wrote it.
+  Offered only where exactly one live session in that checkout had no evidence of its own.
+  Where several did, **nobody is listed** — a name missing costs a wasted message, a name
+  wrongly present costs the belief that somebody is listening.
+
+`--json` carries `how` as a list and an `inferred` boolean to branch on.
+
 **Do not rebuild this mapping by hand.** The one written outside the tool was 110 lines and
-wrong twice: `doctor` prints session ids truncated to 8 characters, so comparing them to a
-full uuid matched nothing and every session read as dead including its own; and
-`identity.json` is not written per session, so recovering an identity meant grepping a
-transcript for `--as <name>`, which matches the messages *other* identities sent and once
+lied twice. Once because `doctor` printed session ids truncated to 8 characters, so
+comparing them to a full uuid matched nothing and every session read as dead including its
+own — it prints them in full now. And once because it recovered identities by grepping
+transcripts for `--as <name>`, which matches the messages *other* identities sent and once
 picked the word `after` out of ordinary prose.
+
+You do not need inference for that at all: a session's identity is declared in its own
+`identity.json`, and that file **is** per-session. (This README said the opposite until
+somebody built a scraper on the strength of it. `identity_path()` has been session-scoped
+since `identify` in one session was found renaming every other session in the checkout;
+`identify --project` is the opt-in for a shared name.)
 
 **It refuses when the host reports more than one live session in this project.** A reload takes
 the whole *window* — every conversation in it — and the title guard identifies a window without

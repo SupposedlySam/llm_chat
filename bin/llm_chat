@@ -42,6 +42,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import socket
 import subprocess
 import sys
@@ -1342,29 +1343,78 @@ def crowded_room_hint(channel, members, audience):
     )
 
 
+def _read_json(path):
+    """The file as a dict, or None for absent/unreadable/not-a-dict."""
+    try:
+        with open(path) as f:
+            got = json.load(f)
+    except (OSError, ValueError):
+        return None
+    return got if isinstance(got, dict) else None
+
+
+def session_attributions(cwd, sid):
+    """[(identity, how)] for ONE live session, strongest evidence first.
+
+    THREE KINDS OF EVIDENCE, and #21 was filed because they were being poured
+    into one bucket and served as fact.
+
+      declared     the session's OWN identity.json. It said who it is. There
+                   is nothing stronger and nothing may override it.
+      joined #room the session's OWN joined.json says it entered that room
+                   under that name. Authoritative for WAKING — a message to
+                   that name in that room really does reach this session —
+                   and genuinely per-room: game_loop's c9156a5d is `gameloop`
+                   in #llm_chat_owner and `owner` in #game_loop_owner, which
+                   is the data rather than a defect. Reporting the union as
+                   "the session's identities" is what made one session appear
+                   under two names with no way to see why.
+      project file the checkout's shared store. INFERENCE, and weak: the file
+                   cannot say which session wrote it. Handled by the caller,
+                   which alone can see how many sessions are competing for it.
+
+    The reporter's own diagnosis was transcript-scraping for `--as <name>`,
+    which is not what this ever did — but their FIX is right, and it is the
+    one applied here: a declaration wins outright, and an inference may never
+    claim a session that has evidence of its own.
+    """
+    base = os.path.join(cwd, ".llm_chat")
+    mine = os.path.join(base, "sessions", sid)
+    out, seen = [], set()
+
+    declared = (_read_json(os.path.join(mine, "identity.json")) or {})
+    name = declared.get("identity")
+    if name:
+        out.append((name, "declared"))
+        seen.add(name)
+
+    for room, entry in sorted((_read_json(os.path.join(mine, "joined.json"))
+                               or {}).items()):
+        who = (entry or {}).get("identity")
+        # A room-join is not suppressed by the declaration — it is a
+        # different, narrower claim, and it is the one that answers "will a
+        # message to this name in this room wake anybody". Only a repeat of
+        # the SAME name in another room is dropped.
+        if who and (who, room) not in seen:
+            out.append((who, "joined #%s" % room))
+            seen.add((who, room))
+            seen.add(who)
+    return out
+
+
 def live_identities():
-    """Every identity with a session the HOST says is running, or None.
+    """Every identity with a live session, as {identity: [session, ...]}, or
+    None when the host could not be asked.
 
-    THE MAPPING CALLERS HAVE BEEN REBUILDING BADLY. Issue #19 was written
-    after an orchestrator nudged an agent three times over an hour whose
-    session had ended four days earlier, then spent 110 lines outside the tool
-    trying to reconstruct this — and the script lied twice before it stopped.
-    Both of its failures are things only the tool can avoid:
+    THE MAPPING CALLERS KEPT REBUILDING BADLY, and then this one got it wrong
+    in its own way. Issue #19 asked for it after an orchestrator nudged an
+    agent for an hour whose session had ended four days earlier. Issue #21
+    arrived the same day this shipped, because the first version OVER-claimed
+    — and it failed in the dangerous direction, which is the one that makes a
+    dead identity look alive and sends somebody to nudge a room nobody reads.
 
-      · `doctor` prints a TRUNCATED session id, so comparing it to a full
-        uuid never matched and every session read as dead, including its own.
-      · `identity.json` is not written per session, so recovering an identity
-        meant grepping a transcript for `--as <name>` — which matches the
-        messages OTHER identities sent, and once picked the word `after` out
-        of ordinary prose.
-
-    Neither is a hazard here: the host gives cwd and a full sessionId, and the
-    identity is in that session's own joined.json.
-
-    A LIVE SESSION WITH NO SESSION STORE USES THE PROJECT ONE, which is not a
-    detail — measured across this machine, one checkout runs entirely on the
-    project file, and a mapping that skipped it would report that agent dead
-    while it was answering.
+    Each returned session carries `llm_chat_how`, saying which evidence put it
+    there. Callers that must not act on a guess can read it; `who` prints it.
 
     None means the host could not be asked, and callers must not turn that
     into "nobody is alive" — the whole complaint in #19 is a wake reported
@@ -1374,29 +1424,70 @@ def live_identities():
     if sessions is None:
         return None
     live = {}
+    unclaimed = {}          # cwd -> [session, ...] with no evidence of their own
+
+    def add(identity, session, how):
+        """One row per (identity, SESSION) — never one per reason.
+
+        joined.json is keyed by room, so an agent sitting in four rooms under
+        one name produced four identical rows the first time this was written,
+        and the fix for that is what discarded the reasons in the first place.
+        Both facts fit: the session is listed once, and every reason it is
+        listed is kept alongside it.
+        """
+        rows = live.setdefault(identity, [])
+        sid = session.get("sessionId")
+        for row in rows:
+            if row.get("sessionId") == sid:
+                break
+        else:
+            row = dict(session)
+            row["llm_chat_how"] = []
+            rows.append(row)
+        if how not in row["llm_chat_how"]:
+            row["llm_chat_how"].append(how)
+
     for session in sessions:
         cwd, sid = session.get("cwd"), session.get("sessionId")
         if not cwd or not sid:
             continue
+        found = session_attributions(cwd, sid)
+        for identity, how in found:
+            add(identity, session, how)
+        if not found:
+            unclaimed.setdefault(os.path.abspath(cwd), []).append(session)
+
+    # THE PROJECT FILE, AND ONLY WHEN IT CAN MEAN ONE SESSION. This fallback
+    # was added here deliberately — measured across this machine, one checkout
+    # runs entirely on the project store, and skipping it reports that agent
+    # dead while it is answering. But it claimed EVERY undeclared session in
+    # the directory, because the file cannot say which one wrote it: #21 saw
+    # two sessions reported as `backcompat` when one of them had no identity
+    # and was in no rooms at all.
+    #
+    # With exactly one candidate the inference is sound. With more it is a
+    # coin flip presented as a fact, so nobody is claimed — a name missing
+    # from this mapping costs a caller a wasted message, and a name wrongly
+    # present costs them the belief that somebody is listening.
+    for cwd, waiting in unclaimed.items():
+        if len(waiting) != 1:
+            continue
         base = os.path.join(cwd, ".llm_chat")
-        rooms = {}
-        for where in (os.path.join(base, "sessions", sid, "joined.json"),
-                      os.path.join(base, "joined.json")):
-            try:
-                with open(where) as f:
-                    rooms = json.load(f) or {}
-                break          # the session store wins; the project one is
-            except (OSError, ValueError):
-                continue       # the fallback for a session that has none
-        # ONE SESSION PER IDENTITY, not one per ROOM it holds under that
-        # identity. joined.json is keyed by room, so the obvious loop lists
-        # the same session four times for an agent sitting in four rooms —
-        # which `who` printed on its first real run, and which would have made
-        # any count taken from this mapping a count of memberships wearing a
-        # session's name.
-        for who in {(entry or {}).get("identity") for entry in rooms.values()}:
-            if who:
-                live.setdefault(who, []).append(session)
+        name = (_read_json(os.path.join(base, "identity.json")) or {}).get(
+            "identity")
+        how = "project identity.json (inferred)"
+        if not name:
+            names = {(e or {}).get("identity") for e in
+                     (_read_json(os.path.join(base, "joined.json"))
+                      or {}).values()}
+            names.discard(None)
+            # More than one name in the shared file is the same coin flip one
+            # level down: it says this CHECKOUT talks under several names, not
+            # which of them this session is.
+            name = names.pop() if len(names) == 1 else None
+            how = "project joined.json (inferred)"
+        if name:
+            add(name, waiting[0], how)
     return live
 
 
@@ -1405,19 +1496,29 @@ def do_who(as_json=False):
 
     ASKED FOR BY NAME IN #19, after an orchestrator rebuilt it outside the
     tool in 110 lines and the script lied twice before it stopped — once
-    because `doctor` prints a TRUNCATED session id, so comparing it to a full
+    because `doctor` printed a TRUNCATED session id, so comparing it to a full
     uuid matched nothing and every session read as dead including its own, and
-    once because `identity.json` is not written per session, so recovering an
-    identity meant grepping a transcript for `--as <name>` and that matches
-    the messages OTHER identities sent.
+    once because it recovered identities by grepping transcripts for
+    `--as <name>`, which matches the messages OTHER identities sent.
 
-    So: full session ids, never truncated, and the identity taken from the
-    session's own joined.json rather than inferred from prose.
+    Neither is needed: the host gives a full sessionId, and a session's
+    identity is declared in its own `identity.json`. (I told them in #19 that
+    file was not written per session. That was WRONG — `identity_path()` is
+    session-scoped and has been since `identify` in one session was found
+    renaming every other session in the checkout. The shared file is an opt-in
+    via `identify --project`.)
+
+    EVERY ROW SAYS HOW IT WAS ATTRIBUTED, which is #21: the first version
+    poured a declaration, a room-join and a guess into one list and served
+    them as equally true, so a session appeared under two names with nothing
+    to say why, and undeclared sessions were claimed outright. A caller
+    deciding whether to nudge somebody has to be able to see which half is a
+    guess.
 
     EXIT 1 WHEN THE HOST CANNOT BE ASKED, and that is the whole design of this
     verb. A caller scripting against it gets an empty list either way; only
     the status separates "nobody is running" from "nothing answered", and
-    conflating those is the defect both open issues describe.
+    conflating those is the defect both #19 and #20 describe.
     """
     live = live_identities()
     if live is None:
@@ -1433,7 +1534,17 @@ def do_who(as_json=False):
              "sessions": [{"sessionId": s.get("sessionId"),
                            "pid": s.get("pid"),
                            "cwd": s.get("cwd"),
-                           "name": s.get("name")} for s in sessions]}
+                           "name": s.get("name"),
+                           # HOW, and `inferred` derived from it rather than
+                           # left to the caller to parse a sentence. #21 asked
+                           # for the guessed rows to be visible as guesses,
+                           # and a boolean is what a script will actually
+                           # branch on.
+                           "how": s.get("llm_chat_how") or [],
+                           "inferred": all(
+                               "inferred" in h
+                               for h in (s.get("llm_chat_how") or ["?"]))}
+                          for s in sessions]}
             for who, sessions in sorted(live.items())]}, indent=2))
         return 0
     if not live:
@@ -1444,9 +1555,16 @@ def do_who(as_json=False):
     for who, sessions in sorted(live.items()):
         print(who)
         for s in sessions:
-            print("  session %s  pid %s  %s"
+            print("  session %s  pid %s  %s\n    how: %s"
                   % (s.get("sessionId") or "?", s.get("pid") or "?",
-                     s.get("cwd") or "?"))
+                     s.get("cwd") or "?",
+                     ", ".join(s.get("llm_chat_how") or ["?"])))
+    if any("inferred" in h for sessions in live.values()
+           for s in sessions for h in (s.get("llm_chat_how") or [])):
+        print("\n`inferred` rows are a GUESS from a shared file that cannot "
+              "say which session\nwrote it. They are offered only where one "
+              "live session in that checkout had\nno evidence of its own; "
+              "where several did, nobody is listed at all.")
     return 0
 
 
@@ -2493,7 +2611,7 @@ def do_reload(force=False, i_know=False):
     # sits there forever — recoverable only by a human typing at it. Observed
     # exactly that way once. Refuse rather than strand it.
     project = project_dir()
-    _, _, evts = hook_report(project)
+    _, _, evts, _ = hook_report(project)
     if "SessionStart" not in evts.get("llm-chat-wake", set()):
         raise SystemExit(
             "refusing: llm-chat-wake is not registered on SessionStart in this "
@@ -2615,6 +2733,36 @@ def do_reload(force=False, i_know=False):
     print("reload requested — the window should be reloading now")
 
 
+def hook_checkout(command, hook):
+    """The llm_chat checkout a registered hook command runs OUT OF, or None.
+
+    THE PATH WAS ALWAYS THERE AND ALWAYS DISCARDED. `hook_report` read this
+    exact string and asked only whether a name appeared in it, so the one fact
+    that says WHICH BUILD delivers your messages was thrown away at the moment
+    it was in hand.
+
+    What that cost: gameloop's repo vendors llm_chat under `.lamp/`, so typing
+    `llm_chat doctor` there ran a months-old copy while the hooks — absolute
+    paths into the source tree — ran current code. Their doctor could not
+    mention a hook gap it had never heard of, and `who` did not exist. They
+    found the divergence through an argparse error, not through the tool whose
+    job it is.
+
+    A command is `<python> <checkout>/bin/<hook>` possibly quoted, so the
+    checkout is the grandparent of the entry that ends in the hook's name.
+    Returns None rather than guessing when no token ends that way — a wrapper
+    script, a shell one-liner — because a wrong tree named confidently is
+    worse here than no tree named at all.
+    """
+    for token in shlex.split(command or "", posix=True) if command else []:
+        stripped = token.rstrip(os.sep)
+        if os.path.basename(stripped) == hook:
+            parent = os.path.dirname(os.path.dirname(stripped))
+            if parent:
+                return os.path.abspath(parent)
+    return None
+
+
 def hook_report(project):
     """(registered, fired) for each hook this project should have.
 
@@ -2625,7 +2773,7 @@ def hook_report(project):
     its settings has perfectly correct config and an inert hook, and every
     inspection of the config says it is fine.
     """
-    registered, events = set(), {h: set() for h in EXPECTED_HOOKS}
+    registered, events, trees = set(), {h: set() for h in EXPECTED_HOOKS}, set()
     for name in ("settings.local.json", "settings.json"):
         try:
             with open(os.path.join(project, ".claude", name)) as f:
@@ -2642,6 +2790,9 @@ def hook_report(project):
                         if e in cmd:
                             registered.add(e)
                             events[e].add(event)
+                            where = hook_checkout(cmd, e)
+                            if where:
+                                trees.add(where)
 
     # A mark's ABSENCE means "has not fired since the probe existed" — never
     # "has not fired". Any repo wired before probing shipped reads as unfired
@@ -2654,7 +2805,7 @@ def hook_report(project):
         "llm-chat-deliver": os.path.exists(os.path.join(probe, "post-tool-use")),
         "llm-chat-wake": os.path.exists(os.path.join(probe, "stop")),
     }
-    return registered, fired, events
+    return registered, fired, events, trees
 
 
 # The newest column this client WRITES. When the server predates the migration
@@ -3123,6 +3274,41 @@ def landing_is_confirmed(project):
     return None if event is None else event == "Stop"
 
 
+def missed_since_the_last_wake(project, landed_at):
+    """Seconds since a rewake was recorded as never landing, if it is NEWER
+    than `landed_at`. None otherwise, and None on any doubt.
+
+    THE SECOND WITNESS, and `doctor` had neither read it nor known it existed.
+    `waiting_longer_than_the_last_wake` makes the same argument from the
+    queue — a message that should have woken us and is still sitting there —
+    but it can only speak while something is UNREAD. A wake that failed and
+    whose message was then picked up by a tool call leaves the queue empty and
+    the failure intact, and that is the ordinary case rather than a corner:
+    the delivery hook fires on every tool call, so anything a missed wake
+    stranded gets collected the moment the agent does anything at all.
+
+    Reported by gameloop within an hour of installing the hook, with both
+    lines on screen disagreeing: `doctor` said "a wake LANDED 1718m ago, so
+    replies arrive on their own" while the hook said one had been requested 6h
+    ago and never came. Both true. Only one was the live state, and the
+    reassuring one had already been passed on to a human as "llm_chat is
+    healthy".
+
+    Compared against the landing rather than against the clock, for the reason
+    the delivery hook uses the same comparison: an old miss is still the live
+    state if nothing has landed since, and a fresh one is spent if something
+    has.
+    """
+    try:
+        with open(os.path.join(project, ".llm_chat", "wake.missed")) as f:
+            at = float((json.load(f) or {}).get("at") or 0)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not at or at <= float(landed_at or 0):
+        return None
+    return max(0, now_ms() // 1000 - int(at))
+
+
 def waiting_longer_than_the_last_wake(server, project, landed_at):
     """(seq, seconds_waiting) for a message that should have woken us since
     the last recorded landing, or None.
@@ -3419,7 +3605,7 @@ def do_doctor(server):
     print()
     print(install_report(project) + stale_skill_report(project) + "\n")
 
-    registered, fired, events = hook_report(project)
+    registered, fired, events, hook_trees = hook_report(project)
     for hook in EXPECTED_HOOKS:
         reg = hook in registered
         state = ("registered, and has fired" if reg and fired[hook]
@@ -3427,6 +3613,37 @@ def do_doctor(server):
                  else "NOT REGISTERED")
         where = ",".join(sorted(events[hook])) if events[hook] else "-"
         print(f"  {hook:20} {state}  [{where}]")
+    # THE BUILD ANSWERING IS NOT NECESSARILY THE BUILD DELIVERING, and until
+    # this line every word below was written as though it were. A repo that
+    # VENDORS llm_chat — under .lamp/, as a submodule, as a copy — runs that
+    # copy when somebody types `llm_chat doctor`, while its hooks are absolute
+    # paths into wherever install.sh was run from. The two drift apart in the
+    # direction nobody checks: the hooks stay current because they point at a
+    # live tree, and the CLI ages in place.
+    #
+    # Reported by gameloop, who ran a months-old doctor all day: it could not
+    # mention the SessionStart gap because it had never heard of it, and `who`
+    # did not exist. They found it through an argparse error.
+    #
+    # NOT the install stamp. That compares the wiring to the tree it was wired
+    # FROM and can match perfectly while this is wrong — the stamp is a fact
+    # about the hooks, and this is a fact about the program printing the
+    # report.
+    elsewhere = sorted(t for t in hook_trees
+                       if os.path.abspath(t) != os.path.abspath(ROOT))
+    if elsewhere:
+        print("\n  ! THIS DIAGNOSIS IS COMING FROM A DIFFERENT BUILD THAN "
+              "YOUR HOOKS RUN.")
+        print(f"      this CLI : {ROOT}")
+        for tree in elsewhere:
+            gone = "" if os.path.isdir(os.path.join(tree, "bin")) else \
+                "   (and that tree is GONE — the hooks cannot be running)"
+            print(f"      hooks    : {tree}{gone}")
+        print("    Everything above and below describes the copy you just "
+              "ran, which is not\n    the code delivering your messages. A "
+              "check missing here may exist there,\n    and a verb this "
+              "refuses may work there. Run the hooks' copy instead:\n"
+              f"      {os.path.join(elsewhere[0], 'bin', 'llm_chat')} doctor")
     no_sessionstart = ("llm-chat-wake" in registered
                        and "SessionStart" not in events["llm-chat-wake"])
     if no_sessionstart:
@@ -3622,8 +3839,32 @@ def do_doctor(server):
                           "been a window reload rather than a turn.\n  The "
                           "next real one will say.")
                 else:
-                    print(f"  a wake LANDED {when}, so replies arrive on "
-                          "their own")
+                    # NOT "so replies arrive on their own" any more. That drew
+                    # a present-tense conclusion from the last success, which
+                    # is the exact shape every other fix on this screen exists
+                    # to remove — and it was read, believed, and passed on to
+                    # a human as "llm_chat is healthy" while a newer wake had
+                    # already failed. The age is the fact; the conclusion is
+                    # the reader's, and only after the two checks below have
+                    # had their say.
+                    print(f"  a wake last LANDED {when}. That is the most "
+                          "recent SUCCESS, not a\n  statement about now — "
+                          "read the next line before concluding anything.")
+                missed = missed_since_the_last_wake(project, landed)
+                if missed is not None:
+                    # THE SECOND WITNESS, and the one that speaks when the
+                    # queue cannot. A wake that failed and whose message was
+                    # then collected by a tool call leaves nothing waiting and
+                    # the failure intact — which is the ordinary case, because
+                    # the delivery hook fires on every tool call.
+                    print("  BUT A WAKE WAS REQUESTED %dm AFTER THAT AND "
+                          "NEVER LANDED (%dm ago).\n  So the newer evidence "
+                          "says the wake path is NOT working, whatever the\n"
+                          "  line above says about earlier. Anything arriving "
+                          "now is arriving\n  because you ran a tool, and "
+                          "nothing will arrive while you are idle."
+                          % (max(0, (now_ms() // 1000 - missed
+                                     - int(landed))) // 60, missed // 60))
                 stuck = waiting_longer_than_the_last_wake(server, project,
                                                           landed)
                 if stuck:

@@ -135,26 +135,54 @@ class HookReportTest(unittest.TestCase):
         """The whole point. A hook present in settings.json and never invoked
         is indistinguishable from a working one by configuration alone."""
         write_settings(self.project, PostToolUse=["/x/bin/llm-chat-deliver"])
-        registered, fired, _ = cli.hook_report(self.project)
+        registered, fired, _, _ = cli.hook_report(self.project)
         self.assertIn("llm-chat-deliver", registered)
         self.assertFalse(fired["llm-chat-deliver"])
         self.probe("post-tool-use")
-        _, fired, _ = cli.hook_report(self.project)
+        _, fired, _, _ = cli.hook_report(self.project)
         self.assertTrue(fired["llm-chat-deliver"])
 
     def test_the_events_a_hook_is_on_are_reported(self):
         """`registered` alone would hide a waker present only on Stop — the
         half that cannot help a session which never takes a turn."""
         write_settings(self.project, Stop=["/x/bin/llm-chat-wake"])
-        _, _, events = cli.hook_report(self.project)
+        _, _, events, _ = cli.hook_report(self.project)
         self.assertEqual(events["llm-chat-wake"], {"Stop"})
         write_settings(self.project, Stop=["/x/bin/llm-chat-wake"],
                        SessionStart=["/x/bin/llm-chat-wake"])
-        _, _, events = cli.hook_report(self.project)
+        _, _, events, _ = cli.hook_report(self.project)
         self.assertEqual(events["llm-chat-wake"], {"Stop", "SessionStart"})
 
+    def test_the_CHECKOUT_each_hook_runs_from_is_kept(self):
+        """It was read and discarded — the string was in hand and the one
+        fact saying WHICH BUILD delivers your messages was thrown away.
+        gameloop's repo vendors llm_chat under `.lamp/`, so their doctor
+        answered from a months-old copy while the hooks ran current code."""
+        write_settings(self.project,
+                       PostToolUse=["/a/tree/bin/llm-chat-deliver"],
+                       Stop=["/other/tree/bin/llm-chat-wake"])
+        _, _, _, trees = cli.hook_report(self.project)
+        self.assertEqual(trees, {"/a/tree", "/other/tree"})
+
+    def test_an_unparseable_command_contributes_no_tree(self):
+        """A tree named wrongly and confidently is worse than none named.
+
+        The name must be CONTAINED and not be the basename, or the fixture
+        answers the same either way — `llm-chat-x` contains no hook name at
+        all, so it proved nothing about how the path is read. Caught by the
+        sweep, which is the whole reason the sweep exists."""
+        write_settings(self.project,
+                       PostToolUse=["/w/bin/run-llm-chat-deliver-first"])
+        _, _, _, trees = cli.hook_report(self.project)
+        self.assertEqual(trees, set())
+
+    def test_a_command_naming_no_hook_at_all_contributes_no_tree(self):
+        write_settings(self.project, PostToolUse=["run-wrapper llm-chat-x"])
+        _, _, _, trees = cli.hook_report(self.project)
+        self.assertEqual(trees, set())
+
     def test_a_repo_with_nothing_registered_reports_nothing(self):
-        registered, _, _ = cli.hook_report(self.project)
+        registered, _, _, _ = cli.hook_report(self.project)
         self.assertEqual(registered, set())
 
     def test_malformed_settings_do_not_crash_the_report(self):
@@ -162,7 +190,7 @@ class HookReportTest(unittest.TestCase):
         os.makedirs(d)
         with open(os.path.join(d, "settings.local.json"), "w") as f:
             f.write("{not json")
-        registered, _, _ = cli.hook_report(self.project)
+        registered, _, _, _ = cli.hook_report(self.project)
         self.assertEqual(registered, set())
 
 

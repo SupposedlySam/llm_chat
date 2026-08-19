@@ -591,13 +591,19 @@ class StillLandingTest(unittest.TestCase):
         with redirect_stdout(out):
             self.cli.do_doctor("http://127.0.0.1:1")
         text = out.getvalue()
-        self.assertIn("a wake LANDED 94m ago", text)
+        self.assertIn("a wake last LANDED 94m ago", text)
         self.assertIn("BUT seq 43 has been waiting", text)
         self.assertIn("the wake is NOT landing", text)
-        # The order is the argument: the optimistic line first, then the live
+        # The order is the argument: the historical line first, then the live
         # state contradicting it. A reader who stops at the first sentence is
         # the reader this failed.
-        self.assertLess(text.index("a wake LANDED"), text.index("BUT seq 43"))
+        self.assertLess(text.index("a wake last LANDED"),
+                        text.index("BUT seq 43"))
+        # And the first sentence no longer draws the conclusion for them.
+        # gameloop read "so replies arrive on their own", believed it, and
+        # passed "llm_chat is healthy" to a human while a newer wake had
+        # already failed.
+        self.assertNotIn("replies arrive on their own", text)
 
 
 class DoctorHonestyTest(unittest.TestCase):
