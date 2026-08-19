@@ -416,6 +416,168 @@ class MissedWakeNoticeTest(HookTestCase):
         self.assertIn("reload requested", out)
 
 
+class DivergentCheckoutTest(HookTestCase):
+    """A detector on the side of the gap with the NEWER build on it.
+
+    `doctor` warns about this too, and cannot help the case it was built for:
+    it lives in the CLI you TYPE, and divergence matters precisely when the
+    CLI you type is OLD — which is when it does not contain the warning. So
+    that check fires when your copy is newer and is silent when it is older,
+    and older is the common direction, because a vendored payload goes stale
+    by sitting still while the source moves.
+
+    A hook runs the current code by construction. It can say what no old CLI
+    can be made to say. Found by gameloop, who grepped both binaries rather
+    than taking my word that the check worked.
+    """
+
+    script = "llm-chat-deliver"
+
+    def vendor(self, where, fingerprint):
+        """A second checkout inside the project, with a stated build."""
+        path = os.path.join(self.project, where, "bin")
+        os.makedirs(path, exist_ok=True)
+        open(os.path.join(path, "llm_chat"), "w").close()
+        self.prints[os.path.abspath(os.path.join(self.project, where))] = \
+            fingerprint
+        return os.path.abspath(os.path.join(self.project, where))
+
+    def setUp(self):
+        super().setUp()
+        self.prints = {os.path.abspath(self.mod.ROOT): "aaaaaaaaaaaaaaaa"}
+        # Kept before stubbing, so the two tests that exercise the REAL
+        # reader still can. Everything else wants the table.
+        self.real_fingerprint = self.mod.fingerprint_of
+        self.mod.fingerprint_of = lambda tree: self.prints.get(
+            os.path.abspath(tree))
+
+    def test_a_vendored_copy_of_a_DIFFERENT_build_is_reported(self):
+        self.vendor(".lamp/llm_chat", "bbbbbbbbbbbbbbbb")
+        self.assertIn("DIFFERENT BUILD", self.mod.upgrade_notice("s1"))
+
+    def test_a_vendored_copy_of_the_SAME_build_is_SILENT(self):
+        """The guard against crying wolf, and the reason this compares
+        fingerprints rather than paths. A repo whose hooks were installed
+        FROM its vendored copy is correctly configured and would otherwise be
+        nagged forever about itself."""
+        self.vendor(".lamp/llm_chat", "aaaaaaaaaaaaaaaa")
+        self.assertEqual(self.mod.divergent_checkouts(), [])
+
+    def test_the_notice_names_BOTH_trees(self):
+        """One path is not actionable — the reader has to be able to tell
+        which of the two they have been typing."""
+        tree = self.vendor("vendor/llm_chat", "bbbbbbbbbbbbbbbb")
+        text = self.mod.upgrade_notice("s1")
+        self.assertIn(tree, text)
+        self.assertIn(self.mod.ROOT, text)
+
+    def test_it_says_DELIVERY_is_still_current(self):
+        """Otherwise it reads as "your messages are broken", which is the
+        opposite of true: the hooks are absolute paths into the newer tree."""
+        self.vendor(".lamp/llm_chat", "bbbbbbbbbbbbbbbb")
+        self.assertIn("DELIVERY is current", self.mod.upgrade_notice("s1"))
+
+    def test_it_says_an_OLD_copy_may_be_missing_this_very_warning(self):
+        """The circularity is the point of the finding, so it is said out
+        loud rather than left for the reader to deduce."""
+        self.vendor(".lamp/llm_chat", "bbbbbbbbbbbbbbbb")
+        self.assertIn("would have told you", self.mod.upgrade_notice("s1"))
+
+    def test_the_hooks_OWN_tree_is_never_reported_as_a_second_copy(self):
+        """ROOT is moved INSIDE the project for this, because otherwise the
+        walk could never reach it and the test passes for the wrong reason —
+        a repo installed from a checkout vendored within itself is exactly
+        the configuration that must stay silent."""
+        inside = self.vendor("tools/llm_chat", "aaaaaaaaaaaaaaaa")
+        self.mod.ROOT = inside
+        self.assertEqual(self.mod.other_checkouts(), [])
+
+    def test_it_does_not_descend_INTO_a_checkout_it_found(self):
+        """A checkout contains its own subdirectories, and a nested walk
+        there is cost with nothing at the end of it."""
+        self.vendor(".lamp/llm_chat", "bbbbbbbbbbbbbbbb")
+        os.makedirs(os.path.join(self.project, ".lamp", "llm_chat",
+                                 "inner", "bin"), exist_ok=True)
+        open(os.path.join(self.project, ".lamp", "llm_chat", "inner", "bin",
+                          "llm_chat"), "w").close()
+        self.assertEqual(len(self.mod.other_checkouts()), 1)
+
+    def test_a_copy_beyond_the_depth_limit_is_not_hunted_for(self):
+        """Stated rather than implied: this runs after every tool call, and
+        an unbounded walk is not worth a rarer catch. Vendored payloads sit
+        shallow."""
+        deep = os.path.join(*(["deep"] * (self.mod.VENDOR_DEPTH + 2)))
+        self.vendor(os.path.join(deep, "llm_chat"), "bbbbbbbbbbbbbbbb")
+        self.assertEqual(self.mod.other_checkouts(), [])
+
+    def test_junk_directories_are_skipped(self):
+        self.vendor(os.path.join("node_modules", "llm_chat"), "bbbb")
+        self.assertEqual(self.mod.other_checkouts(), [])
+
+    def test_an_UNKNOWABLE_fingerprint_says_nothing(self):
+        """Cannot compare, so cannot claim. Reporting a divergence on the
+        strength of a failed hash would fire for everybody with a second copy
+        of any build.
+
+        OURS is unknowable and THEIRS is not, deliberately. Stubbing both to
+        None makes the mutation and the fix agree — no candidate has a hash,
+        so nothing is appended either way — and the test proves nothing. That
+        exact fixture shape has now got past me three times in one day."""
+        self.vendor(".lamp/llm_chat", "bbbbbbbbbbbbbbbb")
+        del self.prints[os.path.abspath(self.mod.ROOT)]
+        self.assertEqual(self.mod.divergent_checkouts(), [])
+
+    def test_it_is_said_once_per_session_like_the_rest(self):
+        self.vendor(".lamp/llm_chat", "bbbbbbbbbbbbbbbb")
+        self.assertIn("DIFFERENT BUILD", self.mod.upgrade_notice("s1"))
+        self.assertEqual(self.mod.upgrade_notice("s1"), "")
+
+    def test_the_fingerprint_is_ASKED_OF_THE_CLI_not_recomputed(self):
+        """Two copies of a hash algorithm drift, and a drift detector that
+        has drifted is worse than none — the same reason `stale_install`
+        shells out rather than hashing here."""
+        asked = []
+
+        class Fake:
+            @staticmethod
+            def run(argv, **kw):
+                asked.append(argv)
+                return type("R", (), {"returncode": 0, "stdout": "abc123\n",
+                                      "stderr": ""})()
+        self.mod.subprocess = Fake
+        self.assertEqual(self.real_fingerprint("/some/tree"), "abc123")
+        self.assertIn("fingerprint", asked[0])
+        self.assertIn("/some/tree", asked[0])
+
+    def test_a_fingerprint_that_cannot_be_taken_is_None(self):
+        """A CLI that will not start. Never let bookkeeping break the turn,
+        and never let a failure read as a hash — `divergent_checkouts` turns
+        None into silence, and would turn a bogus string into a warning."""
+        class Boom:
+            @staticmethod
+            def run(*a, **kw):
+                raise OSError("no interpreter")
+        self.mod.subprocess = Boom
+        self.assertIsNone(self.real_fingerprint("/x"))
+
+    def test_an_EMPTY_answer_is_None_rather_than_a_hash(self):
+        class Blank:
+            @staticmethod
+            def run(*a, **kw):
+                return type("R", (), {"returncode": 1, "stdout": "",
+                                      "stderr": "no such tree"})()
+        self.mod.subprocess = Blank
+        self.assertIsNone(self.real_fingerprint("/x"))
+
+    def test_it_does_not_claim_the_WIRING_is_old(self):
+        """A separate block on purpose. The wiring is fine and the hooks are
+        current — saying "this repo is running an OLDER wiring" would be
+        false, and `install.sh` is not the remedy for typing the wrong
+        binary."""
+        self.vendor(".lamp/llm_chat", "bbbbbbbbbbbbbbbb")
+        self.assertNotIn("OLDER wiring", self.mod.upgrade_notice("s1"))
+
+
 class HookEventNameTest(HookTestCase):
     """The reply has to name the event that actually fired.
 

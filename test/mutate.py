@@ -1418,6 +1418,35 @@ MUTATIONS = [
      "documented while the whole integration surface stayed invisible to the "
      "readers that file exists for"),
 
+    ("the DIVERGENT-BUILD warning is on the hook's side of the gap",
+     "bin/llm-chat-deliver",
+     "    divergent = divergent_checkouts()\n"
+     "    if not gap and not drift and not divergent:",
+     "    divergent = []\n    if not gap and not drift:",
+     "the only remaining warning lives in the CLI you TYPE, which is silent "
+     "in exactly the case it exists for — an OLD vendored copy does not "
+     "contain the check, so it fires when your copy is NEWER and never when "
+     "it is older, and older is the common direction because a vendored "
+     "payload goes stale by sitting still"),
+
+    ("a vendored copy of the SAME build is not a divergence",
+     "bin/llm-chat-deliver",
+     "        if theirs and theirs != mine:",
+     "        if theirs:",
+     "a repo whose hooks were installed FROM its vendored copy is correctly "
+     "configured and gets nagged about itself on every session, which is the "
+     "cry-wolf failure this project has already paid for twice — and the "
+     "second time the lesson was that a line permanently wrong for its "
+     "reader teaches them to skip it"),
+
+    ("an unknowable fingerprint claims no divergence",
+     "bin/llm-chat-deliver",
+     "    mine = fingerprint_of(ROOT)\n    if not mine:\n        return []",
+     "    mine = fingerprint_of(ROOT)\n    if False:\n        return []",
+     "a failed hash makes every second checkout look divergent, so the "
+     "warning fires for everybody who has vendored ANY build — including the "
+     "matching one it is meant to stay quiet about"),
+
     ("the hook path is read as a PATH, not matched as a substring",
      "bin/llm_chat",
      "        if os.path.basename(stripped) == hook:",
@@ -2181,6 +2210,16 @@ NOT_SWEPT = {
         "argv produced",
     "bin/llm-chat-mcp:_build_doctor": "trivial, asserted directly (constant "
         "argv)",
+    "bin/llm-chat-deliver:other_checkouts": "every branch asserted directly — "
+        "a copy found, the hooks' OWN tree excluded (with ROOT moved inside "
+        "the project, or the walk could never reach it and the test would "
+        "pass for the wrong reason), no descent into a checkout already "
+        "found, the depth limit, and the skipped directories",
+    "bin/llm-chat-deliver:fingerprint_of": "asserted directly in all three "
+        "outcomes — the argv it asks the CLI for, a raising subprocess, and "
+        "an empty answer — and the one thing that could go wrong silently, "
+        "a failure read as a hash, is swept where it bites in "
+        "divergent_checkouts",
     "bin/llm_chat:_read_json": "a two-line reader whose only decision is that "
         "absent, unparseable and not-a-dict all become None — asserted "
         "through every caller that has a corrupt-file test, and the callers "

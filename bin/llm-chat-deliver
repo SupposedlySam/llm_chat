@@ -223,11 +223,102 @@ def stale_install():
     return (recorded, current) if current and current != recorded else None
 
 
+# How far into the project to look for a second copy. Vendored payloads sit
+# shallow — `.lamp/llm_chat`, `vendor/llm_chat`, a submodule — and an
+# unbounded walk on a hook that runs after every tool call is not worth a
+# rarer catch.
+VENDOR_DEPTH = 4
+SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "build", "dist",
+             "__pycache__", ".dart_tool", "target", ".llm_chat"}
+
+
+def other_checkouts():
+    """Other llm_chat checkouts inside this project, excluding the hooks' own.
+
+    THIS CHECK IS ON THIS SIDE OF THE GAP ON PURPOSE, and the version before
+    it was not. `doctor` also warns about a divergent build, but it lives in
+    the CLI you TYPE — and divergence matters precisely when the CLI you type
+    is OLD, which is when it does not contain the warning. So that check fires
+    when your copy is NEWER than the hooks' tree and is silent when it is
+    older, which is the common direction: a vendored payload goes stale by
+    sitting still while the source moves.
+
+    Found by gameloop, who grepped for the warning in both binaries rather
+    than taking my word that it worked. Their `.lamp/llm_chat` is a genuinely
+    different build with no `who` in it, and its `doctor` says nothing at all
+    about that.
+
+    A hook runs the current code BY CONSTRUCTION — its command is an absolute
+    path into the tree it was installed from — so it can say what no old CLI
+    can be made to say. That is the whole reason this lives here.
+    """
+    found, root = [], os.path.abspath(ROOT)
+    stack = [(PROJECT, 0)]
+    while stack:
+        where, depth = stack.pop()
+        if depth > VENDOR_DEPTH:
+            continue
+        try:
+            entries = list(os.scandir(where))
+        except OSError:
+            continue
+        for entry in entries:
+            if not entry.is_dir() or entry.name in SKIP_DIRS:
+                continue
+            if os.path.isfile(os.path.join(entry.path, "bin", "llm_chat")):
+                tree = os.path.abspath(entry.path)
+                if tree != root:
+                    found.append(tree)
+                continue          # do not descend into a checkout we found
+            stack.append((entry.path, depth + 1))
+    return sorted(found)
+
+
+def fingerprint_of(tree):
+    """That checkout's hook-script hash, or None. Shelled out for the reason
+    `stale_install` gives: a second copy of the hash algorithm drifts, and a
+    drift detector that has drifted is worse than none."""
+    try:
+        done = subprocess.run(
+            [sys.executable, CLI, "fingerprint", "--of", tree],
+            capture_output=True, text=True, timeout=8)
+    except Exception:
+        return None
+    return (done.stdout or "").strip() or None
+
+
+def divergent_checkouts():
+    """[(tree, its fingerprint)] for copies whose BUILD differs from ours.
+
+    FINGERPRINTS, NOT PATHS, and that is the whole guard against crying wolf.
+    A vendored copy of the same build is not a problem and must stay silent;
+    so must a repo whose hooks were installed FROM its vendored copy, which
+    is correctly configured and would otherwise be nagged forever about
+    itself. This project has already paid twice for a warning that fired at
+    the wrong population, and the second time the lesson was that a line
+    permanently on and permanently wrong for its reader teaches them to skip
+    it — and it will be right some day.
+    """
+    others = other_checkouts()
+    if not others:
+        return []
+    mine = fingerprint_of(ROOT)
+    if not mine:
+        return []          # cannot compare; say nothing rather than guess
+    out = []
+    for tree in others:
+        theirs = fingerprint_of(tree)
+        if theirs and theirs != mine:
+            out.append((tree, theirs))
+    return out
+
+
 def upgrade_notice(session_id) -> str:
     """Say it ONCE per session, or a standing gap becomes standing noise."""
     gap = missing_hooks()
     drift = stale_install()
-    if not gap and not drift:
+    divergent = divergent_checkouts()
+    if not gap and not drift and not divergent:
         return ""
     marker = os.path.join(PROJECT, ".llm_chat", f"wiring.{session_id or 'nosession'}")
     if os.path.exists(marker):
@@ -251,6 +342,32 @@ def upgrade_notice(session_id) -> str:
     except Exception:
         pass
 
+    # A SEPARATE BLOCK, not a bullet under the sentence below. "This repo is
+    # running an OLDER wiring" is false here — the wiring is fine and the
+    # hooks are current. What is wrong is that the agent is probably TYPING a
+    # different program than the one delivering its messages, and `install.sh`
+    # is not the remedy for that.
+    blocks = []
+    if divergent:
+        said = ["llm_chat: THERE IS ANOTHER llm_chat CHECKOUT IN THIS REPO, "
+                "AND IT IS A DIFFERENT BUILD.",
+                "  hooks run from : %s" % ROOT,
+                "  also here      : %s"
+                % "\n                   ".join(t for t, _ in divergent),
+                "  Your hooks are absolute paths into the first one, so "
+                "DELIVERY is current.",
+                "  But `llm_chat …` typed by hand may reach the other copy, "
+                "and if that one is",
+                "  older it will be missing checks and verbs this one has — "
+                "including, when it",
+                "  is old enough, the `doctor` line that would have told you "
+                "any of this.",
+                "  Run the hooks' copy to be sure:",
+                "    %s doctor" % os.path.join(ROOT, "bin", "llm_chat")]
+        blocks.append("\n".join(said))
+    if not gap and not drift:
+        return "\n\n".join(blocks)
+
     lines = ["llm_chat: this repo is running an OLDER wiring than the checkout "
              "it points at."]
     if gap:
@@ -273,7 +390,8 @@ def upgrade_notice(session_id) -> str:
     lines.append(f"Fix it with:\n  {os.path.join(ROOT, 'install.sh')} {PROJECT}\n"
                  "then RELOAD THE WINDOW — hooks are read when a session starts, "
                  "so a newly\nwritten one stays inert until then.")
-    return "\n".join(lines)
+    blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
 
 
 MISSED_PATH = os.path.join(PROJECT, ".llm_chat", "wake.missed")
