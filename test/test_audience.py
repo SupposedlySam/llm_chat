@@ -14,6 +14,7 @@ import io
 import json
 import os
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stdout
 
@@ -148,6 +149,15 @@ class ServerTest(unittest.TestCase):
         self.server = FakeServer()
         self.real = cli.call
         cli.call = self.server.call
+        # A THROWAWAY PROJECT. `do_say` writes a room hint and `do_read` takes
+        # the read lock, both as FILES — so without this they land in whatever
+        # repo the suite is run from, under the live session id inherited from
+        # the environment. It never showed here because `.llm_chat/hint.room`
+        # and that lock already exist on any machine that has used llm_chat;
+        # the first cold-clone run reported the suite modifying the repo it
+        # tests.
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["CLAUDE_PROJECT_DIR"] = self.tmp.name
         self.chan = self.server.channel("room")
         for who in ("alice", "bob", "carol"):
             self.server.membership("room", who)
@@ -170,6 +180,8 @@ class ServerTest(unittest.TestCase):
     def tearDown(self):
         cli.call = self.real
         cli.live_identities = self.real_live
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        self.tmp.cleanup()
 
     def say(self, text, identity="alice", audience=None):
         out = io.StringIO()

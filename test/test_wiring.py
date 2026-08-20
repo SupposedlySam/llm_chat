@@ -486,5 +486,75 @@ class ExecutableBitTest(unittest.TestCase):
                                 % relative)
 
 
+class ContinuousIntegrationTest(unittest.TestCase):
+    """The workflow is the one place that runs this suite off this machine.
+
+    WHAT THIS CHECKS AND WHAT IT CANNOT. GitHub is the only real consumer of
+    that file, so nothing here validates its YAML — an invalid workflow fails
+    on GitHub, loudly, which is an honest failure. What is NOT honest is a
+    workflow that parses perfectly and runs nothing: it goes green, the badge
+    is green, and the suite has silently stopped running off this machine.
+    That is this repo's recurring defect, so that is what is asserted.
+
+    Written because verify reported the file UNCHECKED — it matched no rule,
+    so nothing looked at it at all. A CI file nothing verifies is the same
+    shape as the thing it was added to fix.
+    """
+
+    def setUp(self):
+        self.path = os.path.join(mutate.ROOT, ".github", "workflows",
+                                 "tests.yml")
+
+    def test_the_workflow_exists(self):
+        self.assertTrue(os.path.isfile(self.path),
+                        "no CI workflow — the suite runs only where somebody "
+                        "types a command")
+
+    def test_IT_ACTUALLY_RUNS_THE_SUITE(self):
+        """A workflow that runs nothing is green and means nothing."""
+        with open(self.path) as f:
+            text = f.read()
+        self.assertIn("test/run.py", text,
+                      "the workflow does not invoke the suite")
+
+    def test_it_runs_on_push_AND_on_pull_request(self):
+        """Push alone leaves a contributor's branch unmeasured until it is
+        merged, which is the moment the check is worth least."""
+        with open(self.path) as f:
+            text = f.read()
+        self.assertIn("pull_request:", text)
+        self.assertIn("push:", text)
+
+    def commands(self):
+        """The workflow's executable lines, with comments stripped.
+
+        Reading the whole file failed this the first time it ran — on the
+        COMMENT explaining why there are no installs. A check whose fixture
+        cannot tell a command from a sentence about commands reports the
+        explanation as the violation, and would go on doing so however the
+        file was fixed.
+        """
+        with open(self.path) as f:
+            return "\n".join(line for line in f
+                             if not line.lstrip().startswith("#"))
+
+    def test_it_installs_NOTHING(self):
+        """Every entrypoint here is stdlib-only on purpose — an MCP client
+        that spawns bin/llm-chat-mcp should not need a pip install to talk
+        to it. A workflow that quietly installed dependencies would make the
+        suite pass in a way no consumer can reproduce."""
+        self.assertNotIn("pip install", self.commands())
+
+    def test_it_says_the_MUTATION_SWEEP_is_not_run_there(self):
+        """The sweep is what says a behaviour is DEFENDED rather than merely
+        covered, and it stays on the commit gate because it takes tens of
+        minutes. A green tick that is read as "the tests would notice" is
+        exactly the false comfort this project keeps removing, so the file has
+        to say so where somebody reading it will see it."""
+        with open(self.path) as f:
+            text = f.read()
+        self.assertIn("does NOT run the mutation sweep", text)
+
+
 if __name__ == "__main__":
     unittest.main()

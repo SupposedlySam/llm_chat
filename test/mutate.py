@@ -1554,6 +1554,32 @@ MUTATIONS = [
      "warning that cries wolf is one this project has already paid to learn "
      "about twice"),
 
+    ("being served by a tree you are EDITING is said out loud", "bin/llm_chat",
+     "    if direct and checkout_dirty():",
+     "    if False:",
+     "the line above calls the directly-wired state reassuring — 'already "
+     "running the current scripts, nothing to do' — and CURRENT is not "
+     "COMMITTED: for whoever maintains the checkout those scripts are "
+     "uncommitted work, a half-saved hook takes effect on the next tool call, "
+     "and a sweep mutating this tree once reached a neighbouring agent and "
+     "retired its waker"),
+
+    ("only the tree the HOOKS run from is anybody's business",
+     "bin/llm_chat",
+     "    if direct and checkout_dirty():",
+     "    if checkout_dirty():",
+     "a consumer wired to its own vendored copy is nagged about OUR working "
+     "tree, which it is not being served by and cannot act on — the cry-wolf "
+     "failure this file has already paid for twice"),
+
+    ("a compile that built NOTHING is refused", "bin/llm_chat",
+     "    missing = missing_workers()\n    if missing:",
+     "    missing = missing_workers()\n    if False:",
+     "a server comes up on a checkout whose workers were never produced and "
+     "500s every /db request — and the check went untested for so long "
+     "because it only ever fired in a COLD CLONE, which is precisely where "
+     "the suite had never been run"),
+
     ("doctor says when it is not the build the HOOKS run", "bin/llm_chat",
      "    elsewhere = sorted(t for t in hook_trees\n"
      "                       if os.path.abspath(t) != os.path.abspath(ROOT))",
@@ -2269,10 +2295,16 @@ NOT_SWEPT = {
         "absent, unparseable and not-a-dict all become None — asserted "
         "through every caller that has a corrupt-file test, and the callers "
         "are where getting it wrong would show",
+    # THROUGH ITS CALLER, not directly, and the wording matters because these
+    # reasons are the only record of WHY a function is not swept. This one
+    # said "asserted directly" the day it was written; the tests go through
+    # `live_identities`. showrunner's point in #learnings: an exclusion is a
+    # claim, and a claim written once and checked never is the thing that
+    # rots. Corrected the same week rather than left to be believed.
     "bin/llm_chat:session_attributions": "every kind of evidence asserted "
-        "directly — declared, per-room, both together, and the ORDER — and "
-        "the two rules it enforces are swept where they bite, in "
-        "live_identities",
+        "through live_identities, which is its only caller — declared, "
+        "per-room, both together, and the ORDER — and the two rules it "
+        "enforces are swept where they bite, in live_identities",
     "bin/llm-chat-mcp:_build_who": "both branches asserted directly for the "
         "exact argv produced; the CLI-correspondence tests additionally prove "
         "the flag it emits is one this parser accepts",

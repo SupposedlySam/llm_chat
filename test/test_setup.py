@@ -150,7 +150,30 @@ class StartServerTest(unittest.TestCase):
             setattr(cli, name, value)
         self.tmp.cleanup()
 
+    def stub_workers(self, missing=()):
+        """`missing_workers` reads the REAL filesystem, so stub it too.
+
+        WHY THIS EXISTS AT ALL: `start_server` shells out (stubbed here) and
+        then asks whether the compile actually produced `.zonai/executables/*`
+        — which are gitignored build artifacts. In a tree where somebody has
+        compiled, they are there and the check passes silently. In a COLD
+        CLONE they are not, so this raised the schema error before the test
+        ever reached the behaviour it was about: one test errored and one
+        failed on the wrong exception.
+
+        Found by running the suite from a fresh clone after flutter-device
+        posted the practice to #learnings, and it is the whole point of doing
+        so — the suite was green on this machine and had only ever run on
+        this machine. A stub that covers `subprocess` but not the filesystem
+        read two lines later leaves the test depending on the developer's
+        working tree.
+        """
+        real = cli.missing_workers
+        cli.missing_workers = lambda: list(missing)
+        self.addCleanup(lambda: setattr(cli, "missing_workers", real))
+
     def stub_subprocess(self, returncode=0):
+        self.stub_workers()
         recorder = Recorder()
 
         class Fake:
@@ -196,6 +219,37 @@ class StartServerTest(unittest.TestCase):
         cli.server_up = lambda *a, **kw: True
         with redirect_stdout(io.StringIO()):
             cli.start_server("http://localhost:7717")
+
+    def test_A_COMPILE_THAT_BUILT_NOTHING_IS_REFUSED(self):
+        """The belt to compile_failed's braces: "did it produce the files?"
+        cannot be answered wrong by a change in zonai's wording.
+
+        WRITTEN BECAUSE STUBBING IT WOULD OTHERWISE HAVE REMOVED ITS ONLY
+        COVERAGE. Nothing asserted this path — it fired only by accident, in a
+        tree where the gitignored build artifacts were absent, which is to say
+        in a cold clone and never on the machine that runs the suite. Now that
+        `missing_workers` is stubbed so the other tests stop depending on the
+        developer's working tree, the behaviour needs a test that means it."""
+        self.stub_subprocess()
+        self.stub_workers(["db_rules", "db_config"])
+        cli.server_up = lambda *a, **kw: True
+        with self.assertRaises(SystemExit) as caught:
+            with redirect_stdout(io.StringIO()):
+                cli.start_server("http://localhost:7717")
+        message = str(caught.exception)
+        self.assertIn("db_rules", message)
+        self.assertIn("did not produce", message)
+
+    def test_the_refusal_says_what_a_server_started_anyway_would_DO(self):
+        """"Missing workers" is a fact about a directory. "Every /db request
+        500s" is what makes somebody stop and fix it rather than retry."""
+        self.stub_subprocess()
+        self.stub_workers(["db_rules"])
+        cli.server_up = lambda *a, **kw: True
+        with self.assertRaises(SystemExit) as caught:
+            with redirect_stdout(io.StringIO()):
+                cli.start_server("http://localhost:7717")
+        self.assertIn("500s", str(caught.exception))
 
 
 class InstallHookTest(unittest.TestCase):

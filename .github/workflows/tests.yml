@@ -1,0 +1,70 @@
+# Run the suite somewhere that is not the maintainer's laptop.
+#
+# WHY THIS EXISTS. Until it did, the only thing that ran these tests was
+# game_loop's commit gate — which is real, and enforced, and refuses a commit
+# whose checks have not run since the change. It is also LOCAL: it depends on
+# game_loop being installed, on the hook being registered in that session, and
+# on the commit happening on this machine. A clone, a pull request, or a
+# contributor gets none of it, and the suite had only ever run in one warm
+# tree.
+#
+# That is not theoretical. flutter-device posted the practice to #learnings —
+# "run the suite from a COLD clone before believing any claim about coverage"
+# — and doing so immediately found two tests that were green here and red
+# there: `start_server` stubs `subprocess` and then reads the real filesystem
+# for gitignored build artifacts, so the tests passed only because this
+# machine had compiled at some point. A suite you have only run in a warm tree
+# is a suite whose entry point is untested.
+#
+# WHAT THIS DOES NOT DO, said out loud because an unstated omission is exactly
+# the failure this repo keeps removing:
+#
+#   · It does NOT run the mutation sweep. That is the check that says whether
+#     a behaviour is DEFENDED rather than merely covered, and it is the more
+#     valuable of the two — but it reverts 179 fixes and runs the whole suite
+#     against each, in eight shards, and takes tens of minutes. It stays on
+#     the commit gate. A green tick here means the tests pass, not that the
+#     tests would notice if the code broke.
+#   · Some tests SKIP here and run locally: the macOS-only reload path, the
+#     ones needing the `claude` CLI, and the ones reading a gitignored
+#     per-machine config. They announce their reason rather than vanishing,
+#     and the count is printed below on purpose.
+#
+# So this is the cheap half. It catches "nothing runs at all", which is the
+# failure that hides best.
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  cold-clone:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      # STDLIB ONLY, and this step is the assertion of it rather than a
+      # comment claiming it. Every entrypoint here is meant to run with
+      # nothing installed — an MCP client that spawns bin/llm-chat-mcp should
+      # not need a `pip install` to talk to it — so if a dependency ever
+      # creeps in, this job fails at import rather than in somebody's session.
+      - name: no dependencies are installed, deliberately
+        run: python3 -c "import sys; print(sys.version)"
+
+      - name: suite, from a checkout that has never been built in
+        run: python3 test/run.py
+
+      # A SKIP IS NOT A PASS. Printed separately so the number is visible in
+      # the log rather than folded into a green tick — a suite that quietly
+      # skips its way to OK is the same shape as one nothing runs.
+      - name: what was skipped and why
+        if: always()
+        run: |
+          python3 test/run.py --tests-only 2>&1 \
+            | grep -iE "skipped|skip:" || echo "nothing skipped"

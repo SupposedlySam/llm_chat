@@ -1393,6 +1393,47 @@ class DoctorTest(unittest.TestCase):
         self.assertNotIn("STALE:", text)
         self.assertIn("already running the current scripts", text)
 
+    def dirty(self, yes):
+        real = cli.checkout_dirty
+        cli.checkout_dirty = lambda root=None: yes
+        self.addCleanup(lambda: setattr(cli, "checkout_dirty", real))
+
+    def test_being_SERVED_BY_A_TREE_YOU_ARE_EDITING_is_reported(self):
+        """showrunner's post to #learnings: if your agent runs ON the tool it
+        is editing, the running copy and the edited copy have to be different
+        copies, and the distance is a thing to measure rather than assume.
+
+        The line above this one calls the directly-wired state reassuring —
+        "already running the current scripts, nothing to do" — and CURRENT is
+        not COMMITTED. For whoever maintains this checkout the scripts serving
+        the session are uncommitted work, a half-saved hook takes effect on
+        the next tool call, and the wake hook is the one that would have
+        delivered the message saying it broke. A sweep mutating this tree once
+        reached a neighbouring agent and retired its waker."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        self.wired(here, fingerprint="old-stamp")
+        self.dirty(True)
+        self.assertIn("UNCOMMITTED CHANGES", self.report())
+
+    def test_a_CLEAN_tree_is_not_warned_about(self):
+        """Paired. The hazard is uncommitted work, not direct wiring — and a
+        line that fires for every directly-wired repo is one nobody reads."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        self.wired(here, fingerprint="old-stamp")
+        self.dirty(False)
+        self.assertNotIn("UNCOMMITTED CHANGES", self.report())
+
+    def test_a_VENDORED_consumer_is_not_warned_about_OUR_working_tree(self):
+        """The warning is about the tree the HOOKS run from. A consumer wired
+        to its own vendored copy is not being served by this one, so our
+        uncommitted state is none of its business — and telling it otherwise
+        would be the cry-wolf failure this file keeps removing."""
+        with tempfile.TemporaryDirectory() as tree:
+            os.makedirs(os.path.join(tree, "bin"))
+            self.wired(tree, fingerprint="old-stamp")
+            self.dirty(True)
+            self.assertNotIn("UNCOMMITTED CHANGES", self.report())
+
     def test_a_VENDORED_consumer_that_drifted_still_gets_the_loud_one(self):
         """Paired, and the reason the check exists at all: a vendored copy that
         has drifted really is running old code, and softening that for everyone

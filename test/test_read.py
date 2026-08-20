@@ -356,10 +356,21 @@ class NothingNewTest(unittest.TestCase):
         self.server = FakeServer()
         self.real = cli.call
         cli.call = self.server.call
+        # A THROWAWAY PROJECT, because `do_read` takes the read lock and that
+        # lock is a FILE. Without this the path resolves to whatever repo the
+        # suite is run from and the test writes `.llm_chat/sessions/<sid>/
+        # read.lock` into it — using the live session id inherited from the
+        # environment. Invisible on a machine where that file already exists,
+        # which is every machine that has ever used llm_chat; caught the first
+        # time the suite ran in a COLD CLONE.
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["CLAUDE_PROJECT_DIR"] = self.tmp.name
         self.server.membership("room", "me")
 
     def tearDown(self):
         cli.call = self.real
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        self.tmp.cleanup()
 
     def read(self):
         out = io.StringIO()
@@ -414,11 +425,16 @@ class ExitContractTest(unittest.TestCase):
         self.server = FakeServer()
         self.real = cli.call
         cli.call = self.server.call
+        # Same reason as NothingNewTest above: `do_read` takes a lock on disk.
+        self.tmp = tempfile.TemporaryDirectory()
+        os.environ["CLAUDE_PROJECT_DIR"] = self.tmp.name
         self.server.channel("room")
         self.server.membership("room", "me")
 
     def tearDown(self):
         cli.call = self.real
+        os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        self.tmp.cleanup()
 
     def read_json(self, identity="me", channel="room"):
         out = io.StringIO()
