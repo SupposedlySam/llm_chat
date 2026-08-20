@@ -430,7 +430,9 @@ class RunTest(unittest.TestCase):
         cli.call = dead
         said = self.run_due()
         self.assertEqual(self.ran, [])
-        self.assertIn("cannot tell", said[0].lower())
+        # Joined rather than `said[0]`, so a version that says NOTHING fails
+        # this instead of raising IndexError on the way to it (#22).
+        self.assertIn("cannot tell", "\n".join(said).lower())
 
     def test_nothing_queued_does_not_even_ask_how_quiet_it_is(self):
         """The ordinary case is an empty queue, and it must cost nothing —

@@ -415,7 +415,12 @@ class SlackClientTest(unittest.TestCase):
         self.respond({"ok": True})
         client = self.mod.Slack("t", "C1")
         client.post("the answer", thread_ts="100.5")
-        self.assertEqual(json.loads(self.seen["data"])["thread_ts"], "100.5")
+        # `.get`, so a body that OMITS the field disagrees with this instead
+        # of raising KeyError. Indexing killed the test outright when the
+        # threading was removed, and the sweep could only report "crashed,
+        # not measured" — see #22.
+        self.assertEqual(json.loads(self.seen["data"]).get("thread_ts"),
+                         "100.5")
 
     def test_a_root_post_carries_NO_thread_ts(self):
         """Sending a null would make Slack reject it, and sending the
@@ -617,9 +622,24 @@ class LoopTest(unittest.TestCase):
     """The run loop. It never exits on its own, so the clock is the seam."""
 
     class Clock:
+        """Stands in for the whole `time` module, and `time()` is why.
+
+        It only had `sleep`, because a bridge that stops on a deleted room
+        never reaches the code that asks what time it is. Remove the stopping
+        and it does — `watched_parents` calls `now()` — so the mutation for
+        that behaviour died with AttributeError before either assertion ran,
+        and #22 could only report "crashed, not measured". A fixture that
+        models half a module measures only the paths that stay inside that
+        half.
+        """
+
         def __init__(self, stop_after):
             self.slept = []
             self.stop_after = stop_after
+
+        @staticmethod
+        def time():
+            return time.time()
 
         def sleep(self, seconds):
             self.slept.append(seconds)
@@ -1160,6 +1180,26 @@ class OutboundThreadingTest(BridgeTest):
         self.mod.note_question({"ts": self.parent}, ["--to-none"])
         slack = self.answer()
         self.assertIsNone(slack.posted[0][1])
+
+    def test_a_TWO_PART_form_that_is_not_to_creates_no_debt(self):
+        """The only shape that can MEASURE this guard, which is why it exists
+        as a test rather than as a comment.
+
+        The two tests above pass a one-element list, so removing the guard
+        does not make the code do the wrong thing — it makes it IndexError on
+        `addressing[1]`, and a crash is not a measurement. Under #22 this
+        mutation was reported CRASHED for exactly that reason: 33 tests
+        errored and not one of them failed, so nothing had ever established
+        whether the behaviour was defended at all.
+
+        `["--to-all", ...]` is the shape that separates the two. `route` does
+        not produce it today, but `note_question` is reached with whatever its
+        caller passes, and the guard's claim is about the VERB rather than
+        about the length — an addressing that names everyone must not create a
+        debt owed by one agent, however many parts it arrives in."""
+        self.mod.note_question({"thread_ts": self.parent},
+                               ["--to-all", "alice"])
+        self.assertEqual(self.mod.read_asked(), {})
 
 
 class DeadReadIsLoudTest(BridgeTest):

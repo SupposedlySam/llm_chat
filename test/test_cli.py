@@ -1329,7 +1329,12 @@ class DoctorTest(unittest.TestCase):
         # real lock, or the match returns first and this asserts nothing.
         with open(os.path.join(ide, "000.txt"), "w") as f:
             f.write("ignore me")
-        self.assertEqual(cli.ide_window(self.project)["port"], "222")
+        # `(x or {}).get`, because the failure being guarded against is that
+        # the search gives up and returns NOTHING — and indexing into None
+        # raised TypeError before this could disagree with it. The sweep read
+        # that as "crashed, not measured" (#22).
+        self.assertEqual((cli.ide_window(self.project) or {}).get("port"),
+                         "222")
 
     def test_no_ide_directory_at_all_is_not_an_error(self):
         """Claude Code outside VSCode writes none of this, and that is a

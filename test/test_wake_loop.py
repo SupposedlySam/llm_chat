@@ -207,15 +207,29 @@ class WakeLoopTest(unittest.TestCase):
         self.assertNotIn("#notices", err.getvalue())
 
     def exit_record(self):
-        """The NEWEST exit record. The file holds a history now — see #11: one
-        slot meant a new waker starting destroyed the evidence about why the
-        old one stopped, which is the only question the file exists for."""
-        return self.exit_records()[-1]
+        """The NEWEST exit record, or {} if nothing was recorded at all.
+
+        The file holds a history now — see #11: one slot meant a new waker
+        starting destroyed the evidence about why the old one stopped, which
+        is the only question the file exists for.
+
+        EMPTY RATHER THAN RAISING, and that is #22 rather than tidiness. When
+        a mutation stops the waker recording anything, `[-1]` on a missing
+        file took the test down with an exception — so the assertion that was
+        going to check the reason never ran, and the sweep could only report
+        "crashed, not measured". A caller that reads a field off this with
+        `.get` now watches the mutation flip its assertion instead."""
+        records = self.exit_records()
+        return records[-1] if records else {}
 
     def exit_records(self):
         import json as _json
-        with open(os.path.join(self.project, ".llm_chat", "wake.exit")) as f:
-            return _json.load(f)
+        try:
+            with open(os.path.join(self.project, ".llm_chat",
+                                   "wake.exit")) as f:
+                return _json.load(f) or []
+        except (OSError, ValueError):
+            return []
 
     def alive_record(self):
         import json as _json
@@ -231,7 +245,7 @@ class WakeLoopTest(unittest.TestCase):
         self.mod.still_worth_listening = lambda rooms: False
         self.mod.time = NoSleep()
         self.assertEqual(self.run_main(), 0)
-        self.assertIn("closed", self.exit_record()["reason"])
+        self.assertIn("closed", self.exit_record().get("reason", ""))
 
     def test_THE_LIVENESS_MARK_IS_REFRESHED_EVERY_PASS(self):
         """It used to be written ONCE, before the loop — a birth certificate
@@ -265,25 +279,25 @@ class WakeLoopTest(unittest.TestCase):
         self.mod.superseded = lambda: True
         self.mod.time = NoSleep()
         self.run_main()
-        self.assertIn("superseded", self.exit_record()["reason"])
+        self.assertIn("superseded", self.exit_record().get("reason", ""))
 
     def test_an_orphaned_waker_says_so(self):
         self.mod.addressed = lambda channel, entry: None
         self.mod.orphaned = lambda: True
         self.mod.time = NoSleep()
         self.run_main()
-        self.assertIn("orphaned", self.exit_record()["reason"])
+        self.assertIn("orphaned", self.exit_record().get("reason", ""))
 
     def test_a_waker_with_no_rooms_says_so(self):
         with open(os.path.join(self.project, ".llm_chat", "joined.json"), "w") as f:
             json.dump({}, f)
         self.assertEqual(self.run_main(), 0)
-        self.assertIn("no rooms", self.exit_record()["reason"])
+        self.assertIn("no rooms", self.exit_record().get("reason", ""))
 
     def test_failing_to_claim_the_pidfile_is_recorded(self):
         self.mod.claim_pidfile = lambda: False
         self.run_main()
-        self.assertIn("pidfile", self.exit_record()["reason"])
+        self.assertIn("pidfile", self.exit_record().get("reason", ""))
 
     def test_a_LIVE_waker_is_recorded_somewhere_that_destroys_nothing(self):
         """This test used to assert that `running` was written into wake.exit,
@@ -383,7 +397,7 @@ class WakeLoopTest(unittest.TestCase):
         server five minutes before the message that never arrived."""
         self.mod.claim_pidfile = lambda: False
         self.run_main()
-        self.assertEqual(self.exit_record()["server"], "http://127.0.0.1:1")
+        self.assertEqual(self.exit_record().get("server"), "http://127.0.0.1:1")
 
     def test_A_STUB_SESSION_SAYS_SO_rather_than_standing_down_silently(self):
         """Issue #12. A waker armed under one id is in no rooms while another
@@ -403,7 +417,7 @@ class WakeLoopTest(unittest.TestCase):
                   "w") as f:
             json.dump({}, f)
         self.assertEqual(self.run_main(), 0)
-        reason = self.exit_record()["reason"]
+        reason = self.exit_record().get("reason", "")
         self.assertIn("identity split", reason)
         self.assertIn("5930ff25", reason)
 
@@ -469,7 +483,7 @@ class WakeLoopTest(unittest.TestCase):
                   "w") as f:
             json.dump({}, f)
         self.assertEqual(self.run_main(), 0)
-        reason = self.exit_record()["reason"]
+        reason = self.exit_record().get("reason", "")
         self.assertIn("nothing to listen for", reason)
         self.assertNotIn("identity split", reason)
 
@@ -500,7 +514,7 @@ class WakeLoopTest(unittest.TestCase):
         self.mod.joined_rooms = boom
         self.assertIsNone(self.mod._polling_server())
         self.mod.record_exit("still recorded")
-        self.assertIn("still recorded", self.exit_record()["reason"])
+        self.assertIn("still recorded", self.exit_record().get("reason", ""))
 
     def test_BOTH_RECORDS_NAME_THE_SESSION_that_wrote_them(self):
         """wake.exit and wake.alive are PROJECT-level while a waker is
@@ -510,7 +524,7 @@ class WakeLoopTest(unittest.TestCase):
         self.mod._SID = "5930ff25"
         self.mod.claim_pidfile = lambda: False
         self.run_main()
-        self.assertEqual(self.exit_record()["session"], "5930ff25")
+        self.assertEqual(self.exit_record().get("session"), "5930ff25")
         self.mod.record_alive("http://127.0.0.1:1")
         self.assertEqual(self.alive_record()["session"], "5930ff25")
 

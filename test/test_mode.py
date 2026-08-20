@@ -45,6 +45,19 @@ class ModeTest(unittest.TestCase):
             cli.do_mode("srv", name, identity, mode, yes)
         return out.getvalue()
 
+    def last_posted(self):
+        """The newest message row, or {} when nothing was posted at all.
+
+        NOT `tables["messages"][-1]`, and that is #22 rather than style. The
+        thing these tests measure is whether the room is TOLD, so the case
+        worth catching is the one where nothing was said — and indexing
+        straight into the table raised KeyError there, killing the test before
+        its assertion ran. The sweep could then only report "crashed, not
+        measured": four tests died and not one of them disagreed with
+        anything, so nothing had ever established that this notice is
+        defended."""
+        return (self.server.tables.get("messages") or [{}])[-1]
+
     # ── the conversion ──────────────────────────────────────────────────────
     def test_ordinary_becomes_broadcast(self):
         self.mode("broadcast")
@@ -110,14 +123,14 @@ class ModeTest(unittest.TestCase):
         """A room whose wake behaviour changed under them and did not say so is
         a trap."""
         self.mode("broadcast")
-        posted = self.server.tables["messages"][-1]
-        self.assertIn("BROADCAST", posted["text"])
+        posted = self.last_posted()
+        self.assertIn("BROADCAST", posted.get("text", ""))
 
     def test_the_notice_wakes_nobody(self):
         """It costs every member a turn otherwise — for an announcement about
         reducing how often they are interrupted."""
         self.mode("broadcast")
-        self.assertEqual(self.server.tables["messages"][-1]["audience"],
+        self.assertEqual(self.last_posted().get("audience"),
                          cli.AUDIENCE_NONE)
 
     def test_the_notice_says_how_to_reverse_it(self):
@@ -125,13 +138,13 @@ class ModeTest(unittest.TestCase):
         is the point of telling them at all."""
         self.mode("broadcast")
         self.assertIn("mode room ordinary --yes",
-                      self.server.tables["messages"][-1]["text"])
+                      self.last_posted().get("text", ""))
 
     def test_the_notice_for_the_other_direction_names_the_other_reversal(self):
         self.mode("broadcast")
         self.mode("ordinary")
         self.assertIn("mode room broadcast --yes",
-                      self.server.tables["messages"][-1]["text"])
+                      self.last_posted().get("text", ""))
 
     def test_going_broadcast_says_auto_join_is_not_retroactive(self):
         """Both hooks poll from LOCAL state, so a project that already

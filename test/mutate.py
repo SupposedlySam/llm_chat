@@ -44,7 +44,23 @@ LOCK = os.path.join(HERE, ".mutate.lock")
 # The rest are real debt and are listed by name in every sweep. This number is
 # a ratchet: it may be lowered, never raised. Raising it is how a measured gap
 # becomes a permanent one.
-CRASHED_CEILING = 11
+#
+# AT ZERO SINCE #22, and the ratchet is the whole point of it having been 11.
+# Ten mutations went red by RAISING, so for those ten nothing had ever
+# established whether the behaviour was defended — and "unknown" reads a lot
+# like "fine" when it is one line in a green run. They survived two consecutive
+# handbacks that named them as carried, which is where carried turns into
+# hidden.
+#
+# What fixing them took, and the shape is worth keeping: about half were
+# fragile TESTS — an index into a table that a neutered producer never wrote,
+# so the assertion died on the way to the thing it was going to check. The
+# other half were bad MUTATIONS, which is the more interesting half: a
+# mutation that also breaks a bounds check, or a format string, or drops the
+# argument a `%s` still needs, does not measure a behaviour. It measures that
+# the program stops. Reverting the WORDING a fix introduced measures the fix;
+# deleting the branch around it measures nothing.
+CRASHED_CEILING = 0
 
 # Long enough for the suite plus a heavily loaded machine — eight shards
 # compete for the cores — and short enough that a hang is reported rather than
@@ -951,9 +967,20 @@ MUTATIONS = [
      "printed as though tool activity had been counted and found absent, so a "
      "number derived from one signal reads as covering both"),
 
+    # NOT `if False:`, which was this mutation until #22. The guard both
+    # carries the message AND protects the unpack two lines below, so
+    # removing it raised TypeError before any assertion ran — the behaviour
+    # was never measured, only the crash. Granting the permission instead
+    # states the same consequence and leaves the program able to run.
     ("CANNOT TELL is not permission to run", "bin/llm_chat",
-     "        if quiet is None:",
-     "        if False:",
+     "        if quiet is None:\n"
+     "            # CANNOT TELL is not permission. A server that cannot be "
+     "reached",
+     "        if quiet is None:\n"
+     "            quiet = (QUIET_SECONDS, 'assumed')\n"
+     "        if False:\n"
+     "            # CANNOT TELL is not permission. A server that cannot be "
+     "reached",
      "the run path treats 'could not measure the silence' as 'the silence is "
      "long enough' and starts a database rewrite while agents are working"),
 
@@ -995,8 +1022,14 @@ MUTATIONS = [
     # text is a MARKER as well as a change.
     ("the answer gate offers an exit that wakes nobody",
      "triggers/answer-when-asked",
+     # KEEPS THE %s ON PURPOSE. The first version of this mutation dropped it,
+     # so the line below it fed an argument to a format string that no longer
+     # took one and the trigger raised TypeError — eight tests died and not
+     # one of them disagreed with anything, which is #22's whole complaint. A
+     # mutation has to break the BEHAVIOUR and leave the program able to run,
+     # or it measures nothing.
      '        "    llm_chat say %s \\"done: <what you found>\\" --to-none"',
-     '        "    (mutation: no non-waking exit offered)"',
+     '        "    llm_chat leave %s"',
      "the gate demands an answer, the etiquette forbids trivial ones because "
      "every message wakes the room, and the only remedy left on offer is "
      "`leave` — which stands down a headless agent's waker and made a "
@@ -1216,9 +1249,14 @@ MUTATIONS = [
      "— a typo becomes silence, which is indistinguishable from the bridge "
      "being down"),
 
+    # THE WORDING, not the branch. `if True:` sent the empty case down the
+    # has-members path and it died on `members[0]` — an IndexError where the
+    # assertion about what the human is TOLD should have been. The fix this
+    # reverts was always the sentence, so the sentence is what to revert.
     ("a failed member lookup is not an empty room", "bin/llm-chat-slack",
-     "    if members:",
-     "    if True:",
+     '        body = ("Could not read the members of *%s* just now — that is "\n'
+     '                "\'could not look\', not \'nobody is there\'." % room)',
+     '        body = ("*%s* has no members." % room)',
      "'could not look' is reported as 'nobody is there', sending a human off "
      "to debug an empty room that is full — the distinction this project has "
      "now made in four separate files"),
@@ -1402,8 +1440,15 @@ MUTATIONS = [
 
     ("the MCP and the CLI are checked against each other, not each other's "
      "descriptions", "bin/llm_chat",
+     # `--no-advance`, NOT `--peek-at`, and the difference is a finding rather
+     # than a detail. argparse allows abbreviations by default, so `--peek` is
+     # accepted as a prefix of `--peek-at` — the correspondence check passed,
+     # the parse succeeded, and the CLI then died on `args.peek` deep in a
+     # handler. Four tests errored, none failed, and #22 could only call it
+     # unmeasured. A rename that is not a prefix is the drift this check can
+     # actually see. The abbreviation hazard itself is its own issue.
      '    p.add_argument("--peek", action="store_true", help="do not advance your cursor")',
-     '    p.add_argument("--peek-at", action="store_true", help="do not advance your cursor")',
+     '    p.add_argument("--no-advance", action="store_true", help="do not advance your cursor")',
      "bin/llm-chat-mcp builds argv this parser rejects, and every argv fixture "
      "in test_mcp.py stays green — both halves were written from the same "
      "belief about what the CLI accepts, so they agree with each other "
