@@ -215,8 +215,20 @@ class FingerprintTest(unittest.TestCase):
             self.assertEqual(cli.installed_fingerprint(tmp), "abc123")
 
 
+@unittest.skipUnless(sys.platform == "darwin",
+                     "the reload path is macOS-only — off it, do_reload "
+                     "short-circuits before reaching any of these refusals")
 class ReloadGuardTest(unittest.TestCase):
-    """Every path here must REFUSE. None of these may reach osascript."""
+    """Every path here must REFUSE. None of these may reach osascript.
+
+    SKIPPED OFF macOS, which five sibling tests in test_setup.py already were
+    and these three were not. `do_reload` returns "automated reload is
+    macOS-only" before evaluating any guard, so on Linux each of these
+    asserted its refusal text against that sentence and failed — for a reason
+    that is nothing to do with the behaviour. Invisible until the suite ran
+    somewhere other than the maintainer's laptop; the first CI run found all
+    three.
+    """
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

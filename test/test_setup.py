@@ -441,6 +441,8 @@ class ReloadTest(unittest.TestCase):
             cli.do_auto_reload("off")
         self.assertIn("OFF", out.getvalue())
 
+    @unittest.skipUnless(sys.platform == "darwin",
+                         "the reload path is macOS-only")
     def test_THE_REFUSAL_OFFERS_THE_FREE_OPTION_FIRST(self):
         """Issue #17. The refusal presented a binary — reload by hand, or
         `--i-know` — and both cost every session in the window, two of which

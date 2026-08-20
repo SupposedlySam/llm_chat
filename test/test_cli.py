@@ -1423,6 +1423,28 @@ class DoctorTest(unittest.TestCase):
         self.dirty(False)
         self.assertNotIn("UNCOMMITTED CHANGES", self.report())
 
+    def test_a_CLEAN_direct_consumer_is_STILL_not_told_to_reinstall(self):
+        """The pairing that was missing, and its absence shipped a real bug.
+
+        The dirty-tree warning was first written BETWEEN the `if` above and
+        its `elif`, which silently re-parented that `elif` onto the new
+        condition. On a dirty tree the STALE branch stopped firing; on a clean
+        one it fired alongside "already running the current scripts, nothing
+        to do" — the contradictory advice
+        `test_a_DIRECT_consumer_is_not_told_to_reinstall` exists to prevent.
+
+        That test could not catch it, because the tree it runs in is the
+        maintainer's, and the maintainer's tree is permanently dirty. Every
+        assertion about the CLEAN case has to say `dirty(False)` explicitly or
+        it is asserting about this laptop rather than about the code. CI on a
+        clean checkout failed on its first run."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        self.wired(here, fingerprint="old-stamp")
+        self.dirty(False)
+        text = self.report()
+        self.assertIn("already running the current scripts", text)
+        self.assertNotIn("STALE:", text)
+
     def test_a_VENDORED_consumer_is_not_warned_about_OUR_working_tree(self):
         """The warning is about the tree the HOOKS run from. A consumer wired
         to its own vendored copy is not being served by this one, so our

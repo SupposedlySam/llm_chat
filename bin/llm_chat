@@ -3745,33 +3745,6 @@ def do_doctor(server):
               f"ABSOLUTE PATHS into\nthis checkout, so you are already running "
               f"the current scripts. Nothing to do\nunless a hook is listed "
               f"missing above — re-installing would only refresh the\nrecord.")
-    # "CURRENT" IS NOT THE SAME AS "COMMITTED", and the line above calls the
-    # state reassuring without saying which it means. When the hooks resolve
-    # into a tree somebody is EDITING — which is every maintainer session, and
-    # the ordinary case in this repo — the code serving the session is code
-    # nobody has committed, and a half-saved hook is a live hook. That is not
-    # hypothetical here: a sweep mutating this tree once reached a
-    # neighbouring agent and retired its waker.
-    #
-    # showrunner's post to #learnings is the general form: if your agent runs
-    # ON the tool it is editing, the running copy and the edited copy have to
-    # be different copies, and the DISTANCE between them is a thing to measure
-    # rather than assume. Their remedy is a pinned self-copy. This is the
-    # cheaper half of it — making the distance visible — and it is worth
-    # having on its own, because the expensive half is a design decision about
-    # what consumers run and this is just a fact nobody was being told.
-    if direct and checkout_dirty():
-        print("\n! THE HOOKS SERVING THIS SESSION RUN FROM A TREE WITH "
-              "UNCOMMITTED CHANGES.")
-        print("  So 'current' above means your working copy, not a commit "
-              "anybody blessed.\n  While you are editing these scripts you "
-              "are also being SERVED by them: a\n  half-saved hook takes "
-              "effect on the next tool call, and the wake hook is\n  what "
-              "would have delivered the message telling you it broke.")
-        print("  Not a fault — it is the normal state for whoever maintains "
-              "this checkout,\n  and it is why the sweep runs in copies. "
-              "Worth knowing before you trust a\n  green check about the "
-              "code you are standing on.")
     elif stamp and stamp != current:
         if checkout_dirty():
             print("\nNOTE: that checkout has UNCOMMITTED changes. Re-installing "
@@ -3792,6 +3765,45 @@ def do_doctor(server):
     elif stamp is None and registered:
         print("\nno install stamp — wired before stamping existed; re-run "
               "install.sh to record one")
+
+    # AFTER THE CHAIN ABOVE, NOT INSIDE IT, and that placement is the whole
+    # bug this comment exists to prevent recurring. Written first between the
+    # `if` and its `elif`, which silently re-parented the `elif` onto THIS
+    # condition: on a dirty tree the STALE branch stopped firing, and on a
+    # CLEAN one it fired alongside "you are already running the current
+    # scripts. Nothing to do" — the contradictory-advice defect that
+    # `test_a_DIRECT_consumer_is_not_told_to_reinstall` exists because of.
+    #
+    # It was invisible here because the condition guarding it is "this tree
+    # has uncommitted changes", which is permanently true on the machine that
+    # runs the suite. CI on a clean checkout failed on its first run.
+    #
+    # "CURRENT" IS NOT THE SAME AS "COMMITTED", and the reassuring line above
+    # says which it means for neither. When the hooks resolve into a tree
+    # somebody is EDITING — every maintainer session, and the ordinary case
+    # here — the code serving the session is code nobody has committed, and a
+    # half-saved hook is a live hook. Not hypothetical: a sweep mutating this
+    # tree once reached a neighbouring agent and retired its waker.
+    #
+    # showrunner's post to #learnings is the general form: if your agent runs
+    # ON the tool it is editing, the running copy and the edited copy have to
+    # be different copies, and the DISTANCE between them is a thing to measure
+    # rather than assume. Their remedy is a pinned self-copy; this is the
+    # cheaper half — making the distance visible — and it stands on its own,
+    # because the expensive half is a design decision about what consumers run
+    # and this is just a fact nobody was being told.
+    if direct and checkout_dirty():
+        print("\n! THE HOOKS SERVING THIS SESSION RUN FROM A TREE WITH "
+              "UNCOMMITTED CHANGES.")
+        print("  So 'current' above means your working copy, not a commit "
+              "anybody blessed.\n  While you are editing these scripts you "
+              "are also being SERVED by them: a\n  half-saved hook takes "
+              "effect on the next tool call, and the wake hook is\n  what "
+              "would have delivered the message telling you it broke.")
+        print("  Not a fault — it is the normal state for whoever maintains "
+              "this checkout,\n  and it is why the sweep runs in copies. "
+              "Worth knowing before you trust a\n  green check about the "
+              "code you are standing on.")
 
     shadowed = shadowed_project_rooms(project)
     if shadowed:
