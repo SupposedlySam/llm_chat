@@ -311,5 +311,95 @@ class RepoDamageTest(unittest.TestCase):
         self.assertFalse(gate.report_repo_damage(before, gate.fingerprint_repo()))
 
 
+class VerdictTest(unittest.TestCase):
+    """`killed_by_measurement` — the function that decides every verdict the
+    sweep prints, and until now the only thing in this repo with no test.
+
+    IT IS OUTSIDE THE MUTATION DENOMINATOR BY DESIGN. `discover_sources`
+    excludes `test/` with a stated reason — "test/ measures; it is not the
+    thing measured" — which is honest and stays. Excluded from mutation is not
+    the same as excluded from ASSERTION, though, and that gap is what this
+    closes: no mutation proves these tests would fail, but at least the
+    arithmetic is pinned.
+
+    WRITTEN FROM A LOGGED FAILURE IN A SIBLING PROJECT rather than from a
+    hypothetical. gameloop reported that their equivalent had been printing
+    222, 222 and 171 kills from runs that never finished — because a suite
+    that dies before its summary yields no counts, and a harness that treats
+    "no failures reported" as "nothing survived" turns every assertion that
+    never ran into a kill. They had shipped a fix, told the room it worked,
+    and six producers stayed unmeasured underneath it.
+
+    That cannot happen here, for a structural reason worth stating: kills are
+    counted as a DELTA against a control run, not as a total. A summary-less
+    run yields (False, 0, 0), which is neither more failures nor more errors
+    than the control — so it falls through to "crashed", not to a number.
+    These pin that behaviour so the structure cannot be quietly refactored
+    into the other one.
+    """
+
+    def setUp(self):
+        import mutate
+        self.mutate = mutate
+        self.green = (True, 0, 0)
+
+    def verdict(self, after, before=None):
+        return self.mutate.killed_by_measurement(before or self.green, after)[0]
+
+    def test_A_SUMMARY_LESS_RUN_IS_NOT_A_KILL(self):
+        """gameloop's tell. The suite went red and reported no counts at all,
+        which means it did not finish — and every assertion that never ran
+        would otherwise be counted as having killed the mutant."""
+        self.assertEqual(self.verdict((False, 0, 0)), "crashed")
+
+    def test_a_new_FAILURE_is_a_measurement(self):
+        self.assertEqual(self.verdict((False, 1, 0)), "measured")
+
+    def test_a_new_ERROR_alone_is_not(self):
+        """A crash proves the line is load-bearing, not that anything watches
+        what it does."""
+        self.assertEqual(self.verdict((False, 0, 1)), "crashed")
+
+    def test_a_failure_ALONGSIDE_errors_still_counts_as_measured(self):
+        """One assertion that looked and disagreed is enough. Errors beside it
+        are noise from the same broken program, not evidence against it."""
+        self.assertEqual(self.verdict((False, 1, 9)), "measured")
+
+    def test_a_green_suite_is_a_SURVIVOR(self):
+        self.assertEqual(self.verdict((True, 0, 0)), "survived")
+
+    def test_a_HUNG_suite_is_its_own_verdict(self):
+        """Waiting for a mutation that hangs measures nothing either."""
+        self.assertEqual(self.verdict((None, 0, 0)), "hung")
+
+    def test_counts_are_a_DELTA_not_a_total(self):
+        """The structural reason gameloop's failure cannot occur here. A
+        control run that is already red does not let its own failures be
+        claimed as kills by every mutation after it."""
+        already_red = (False, 3, 0)
+        self.assertEqual(self.verdict((False, 3, 0), before=already_red),
+                         "crashed")
+        self.assertEqual(self.verdict((False, 4, 0), before=already_red),
+                         "measured")
+
+    def test_the_summary_parser_reads_unittests_own_arithmetic(self):
+        """Both halves optional, because unittest omits whichever is zero —
+        and a second implementation of the count would be a second thing to be
+        wrong."""
+        read = dict((kind, int(n)) for kind, n
+                    in self.mutate.VERDICT.findall(
+                        "FAILED (failures=2, errors=1)"))
+        self.assertEqual(read, {"failures": 2, "errors": 1})
+        read = dict((kind, int(n)) for kind, n
+                    in self.mutate.VERDICT.findall("FAILED (errors=3)"))
+        self.assertEqual(read, {"errors": 3})
+
+    def test_an_OK_line_yields_no_counts_at_all(self):
+        """Which is what makes a summary-less run indistinguishable from a
+        clean one in the numbers alone — and why the exit code is carried
+        separately rather than inferred from them."""
+        self.assertEqual(self.mutate.VERDICT.findall("OK (skipped=2)"), [])
+
+
 if __name__ == "__main__":
     unittest.main()
