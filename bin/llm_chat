@@ -4211,6 +4211,83 @@ def do_setup(server, channel, identity, topic, max_messages, in_checkout=False):
     )
 
 
+class Parser(argparse.ArgumentParser):
+    """argparse, with abbreviations off and a refusal that names the near miss.
+
+    ABBREVIATIONS ARE ON BY DEFAULT, and this surface is the worst possible
+    place for them. `--to`, `--to-all` and `--to-none` decide who gets
+    interrupted, and they share a prefix:
+
+        --to-a  ->  --to-all    wakes EVERY member of the room
+        --to-n  ->  --to-none   wakes NOBODY
+
+    Opposite outcomes, one keystroke apart, resolved silently. `audience_for`
+    already refuses two audience flags TOGETHER, on the stated grounds that
+    "silently preferring one leaves the sender holding a wrong belief about
+    who they just woke" — and abbreviation reintroduces exactly that one level
+    lower, where that refusal cannot see it.
+
+    FOUND VIA THE MUTATION HARNESS, not from reading. The mutation that
+    renames `--peek` to `--peek-at` exists to prove the MCP builders and this
+    parser are checked against each other; it was never caught, because
+    `--peek` parses fine as a prefix of `--peek-at`. The correspondence test
+    went green, and the CLI died later on `args.peek` deep in a handler.
+
+    Turning it off makes an abbreviation a usage error — which is only an
+    improvement if the error says what you probably meant, or it has just
+    moved the confusion. Hence `error` below.
+
+    Checked before flipping it: 106 tracked text files scanned against all 26
+    long flags, and nothing in this repo emits an abbreviation.
+    """
+
+    def __init__(self, *args, **kwargs):
+        # THE DEFAULT LIVES ON THE CLASS, not at each call site. `add_parser`
+        # constructs subparsers itself, passing only what it was given — so
+        # `parser_class=Parser` carries this `error` override to every
+        # subcommand and would NOT have carried `allow_abbrev=False`. Setting
+        # it per subparser would be a list to keep complete, and the next verb
+        # added is the one that forgets. Measured: with it only on the top
+        # level, `say room hi --to-a` still parsed.
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
+
+    def error(self, message):
+        near = re.findall(r"--[a-z][a-z0-9-]*", message or "")
+        meant = []
+        for token in near:
+            meant += [f for f in self._long_flags() if f.startswith(token)
+                      and f != token]
+        if meant:
+            message += ("\n  abbreviations are OFF here: `%s` is not a flag, "
+                        "though it is the start of\n  %s. Spell it out — "
+                        "`--to-a` and `--to-n` would otherwise mean --to-all "
+                        "and\n  --to-none, which wake everybody and nobody."
+                        % (near[0], " or ".join("`%s`" % m for m in
+                                                sorted(set(meant)))))
+        super().error(message)
+
+    def _long_flags(self):
+        """Every long flag reachable from here, SUBCOMMANDS INCLUDED.
+
+        `unrecognized arguments` is raised by the TOP-LEVEL parser — the
+        subparser consumed what it recognised and handed the rest back — so a
+        lookup over this parser's own actions sees only `--server` and
+        `--help`, and `--to-a` matches neither. Measured: the refusal fired
+        correctly and the hint explaining it did not, which is the half that
+        makes the refusal worth having.
+        """
+        found, stack = set(), [self]
+        while stack:
+            parser = stack.pop()
+            for action in parser._actions:
+                found.update(s for s in action.option_strings
+                             if s.startswith("--"))
+                if isinstance(action, argparse._SubParsersAction):
+                    stack.extend(action.choices.values())
+        return found
+
+
 def build_parser():
     """The argument surface, built separately from running it.
 
@@ -4222,9 +4299,15 @@ def build_parser():
     Renaming a flag here left every one of those tests green and broke the MCP
     only in a live session. This is what closes that.
     """
-    ap = argparse.ArgumentParser(prog="llm_chat", description=__doc__.split("\n")[0])
+    # `parser_class` is what carries both properties to the SUBparsers, and it
+    # is the half that would otherwise be missed: every flag that matters here
+    # — the audience flags included — lives on a subparser, not on the top
+    # level, so setting allow_abbrev on `ap` alone would leave `--to-a` still
+    # silently meaning `--to-all`.
+    ap = Parser(prog="llm_chat", description=__doc__.split("\n")[0],
+                allow_abbrev=False)
     ap.add_argument("--server", default=DEFAULT_SERVER)
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="cmd", required=True, parser_class=Parser)
 
     for name, helptext in (("open", "create a channel and print the invite"),
                            ("join", "join an existing channel")):

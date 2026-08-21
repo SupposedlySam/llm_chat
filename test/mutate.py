@@ -1440,15 +1440,16 @@ MUTATIONS = [
 
     ("the MCP and the CLI are checked against each other, not each other's "
      "descriptions", "bin/llm_chat",
-     # `--no-advance`, NOT `--peek-at`, and the difference is a finding rather
-     # than a detail. argparse allows abbreviations by default, so `--peek` is
-     # accepted as a prefix of `--peek-at` — the correspondence check passed,
-     # the parse succeeded, and the CLI then died on `args.peek` deep in a
-     # handler. Four tests errored, none failed, and #22 could only call it
-     # unmeasured. A rename that is not a prefix is the drift this check can
-     # actually see. The abbreviation hazard itself is its own issue.
+     # BACK TO `--peek-at`, which is the rename this check could not see until
+     # #23. argparse allowed abbreviations, so `--peek` parsed as a prefix of
+     # `--peek-at`: the correspondence test went green and the CLI died later
+     # on `args.peek` deep in a handler — four tests errored, none failed, and
+     # #22 could only call it unmeasured. It was swapped to `--no-advance`
+     # then, purely because that is not a prefix, with the note that the
+     # abbreviation hazard was its own issue. Abbreviations are off now, so
+     # the harder form is measurable and the placeholder is retired.
      '    p.add_argument("--peek", action="store_true", help="do not advance your cursor")',
-     '    p.add_argument("--no-advance", action="store_true", help="do not advance your cursor")',
+     '    p.add_argument("--peek-at", action="store_true", help="do not advance your cursor")',
      "bin/llm-chat-mcp builds argv this parser rejects, and every argv fixture "
      "in test_mcp.py stays green — both halves were written from the same "
      "belief about what the CLI accepts, so they agree with each other "
@@ -1600,6 +1601,34 @@ MUTATIONS = [
      "the one fact saying WHICH BUILD delivers your messages is in hand at "
      "that line and thrown away, which is exactly how it came to be missing "
      "for as long as it was"),
+
+    ("--to-a does not silently mean --to-all", "bin/llm_chat",
+     '        kwargs.setdefault("allow_abbrev", False)',
+     "        pass",
+     "`--to-a` becomes --to-all and `--to-n` becomes --to-none — opposite "
+     "outcomes one keystroke apart, resolved silently, in the one place this "
+     "project already refuses to guess between audience flags (#23)"),
+
+    ("the abbreviation refusal names what you MEANT", "bin/llm_chat",
+     "        if meant:\n"
+     '            message += ("\\n  abbreviations are OFF here: `%s` is not a '
+     'flag, "',
+     '        if False:\n            message += ("\\n  abbreviations are OFF '
+     'here: `%s` is not a flag, "',
+     "the refusal is bare argparse — `unrecognized arguments: --to-a` and "
+     "nothing more — so turning abbreviations off has moved the confusion "
+     "rather than removed it, which is the only thing that made the change an "
+     "improvement"),
+
+    ("the hint can see flags defined on SUBCOMMANDS", "bin/llm_chat",
+     "                if isinstance(action, argparse._SubParsersAction):\n"
+     "                    stack.extend(action.choices.values())",
+     "                if False:\n"
+     "                    stack.extend(action.choices.values())",
+     "`unrecognized arguments` is raised by the TOP-LEVEL parser, whose own "
+     "actions are only --server and --help, so every hint about a real flag "
+     "goes silent while the refusal keeps firing — measured exactly that way "
+     "before it recursed"),
 
     ("a wake and a note left for the dead are worded APART", "bin/llm_chat",
      '        awake = [m for m in woken if m in live]\n'

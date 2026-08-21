@@ -150,9 +150,30 @@
 ".claude/settings.json":
   - "python3 test/test_settings.py"
 
+# AN ENTRY HERE IS A DECISION RECORD, not a shrug. It says somebody looked at
+# this path and concluded no command could meaningfully FAIL on it. UNCHECKED
+# — the state of anything neither matched above nor listed here — says nobody
+# has decided yet, and that is the honest default: `bin/llm-chat-slack` was
+# UNCHECKED from the day it was written while every commit reported clean, and
+# `.claude/settings.json` matched no rule until that line said so.
+#
+# The distinction matters in both directions. Leaving a path UNCHECKED after
+# somebody HAS decided about it is inaccurate, and it spends the reader's
+# attention on a line that will never become actionable. Listing one here that
+# a command COULD have failed on is worse: it launders a gap into a decision.
+#
+# LICENSE is the first kind. No command can fail on licence text — there is
+# nothing to run — so it is declared rather than left looking undecided.
+# Added on the human's authorization, recorded in .game_loop/log.jsonl:
+# "You can put the decision as unchecked ok for the liscense".
+#
+# `.github/**` is deliberately NOT here. A workflow CAN be checked — its
+# claims are asserted in test_wiring — so it stays UNCHECKED on purpose,
+# reported on every commit that touches it. That was his call too.
 "unchecked-ok":
   - "*.md"
   - "llms.txt"
   - ".gitignore"
   - "pubspec.lock"
   - ".game_loop/**"
+  - "LICENSE"

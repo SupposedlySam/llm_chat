@@ -16,7 +16,7 @@ import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from support import FakeServer, load  # noqa: E402
@@ -35,6 +35,82 @@ class SentinelTest(unittest.TestCase):
 
     def test_they_are_distinct(self):
         self.assertNotEqual(cli.AUDIENCE_ALL, cli.AUDIENCE_NONE)
+
+
+class AbbreviationTest(unittest.TestCase):
+    """`--to-a` must not silently mean `--to-all` (#23).
+
+    argparse allows abbreviations by default, and this surface is the worst
+    place for that: `--to`, `--to-all` and `--to-none` decide who gets
+    interrupted and share a prefix, so `--to-a` and `--to-n` were opposite
+    outcomes one keystroke apart, resolved silently. `audience_for` already
+    refuses two audience flags TOGETHER because "silently preferring one
+    leaves the sender holding a wrong belief about who they just woke" —
+    abbreviation reintroduced exactly that one level lower, where that refusal
+    cannot see it.
+
+    Found through the mutation harness rather than by reading: the rename of
+    `--peek` to `--peek-at` was never caught, because `--peek` parses as a
+    prefix of `--peek-at`.
+    """
+
+    def parse(self, argv):
+        parser = cli.build_parser()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            try:
+                return None, parser.parse_args(argv)
+            except SystemExit:
+                return err.getvalue(), None
+
+    def test_TO_A_DOES_NOT_MEAN_TO_ALL(self):
+        message, args = self.parse(["say", "room", "hi", "--to-a"])
+        self.assertIsNone(args, "--to-a was accepted")
+        self.assertIn("--to-a", message)
+
+    def test_TO_N_DOES_NOT_MEAN_TO_NONE(self):
+        message, args = self.parse(["say", "room", "hi", "--to-n"])
+        self.assertIsNone(args, "--to-n was accepted")
+
+    def test_the_refusal_names_what_you_probably_meant(self):
+        """Turning abbreviations off is only an improvement if the error says
+        what you meant, or it has just moved the confusion. The bare argparse
+        message is `unrecognized arguments: --to-a` and stops there."""
+        message, _ = self.parse(["say", "room", "hi", "--to-a"])
+        self.assertIn("--to-all", message)
+        self.assertIn("abbreviations are OFF", message)
+
+    def test_the_hint_reaches_flags_defined_on_SUBCOMMANDS(self):
+        """`unrecognized arguments` is raised by the TOP-LEVEL parser — the
+        subparser consumed what it recognised and handed the rest back — so a
+        lookup over the top parser's own actions sees only `--server` and
+        matches nothing. Measured: the refusal fired and the hint did not."""
+        message, _ = self.parse(["read", "room", "--pe"])
+        self.assertIn("--peek", message)
+
+    def test_the_full_flags_still_work(self):
+        """Paired, and the point of the whole change: refusing everything
+        would pass every test above and break the tool."""
+        _, args = self.parse(["say", "room", "hi", "--to-all"])
+        self.assertTrue(args.to_all)
+        _, args = self.parse(["say", "room", "hi", "--to-none"])
+        self.assertTrue(args.to_none)
+
+    def test_SUBPARSERS_get_it_too_not_just_the_top_level(self):
+        """Every flag that matters lives on a subparser, so setting
+        allow_abbrev on the root alone left `--to-a` still meaning
+        `--to-all`. Measured that way before `Parser.__init__` carried the
+        default — which is why it is on the CLASS rather than at each
+        `add_parser` call, a list whose next entry is the one that forgets."""
+        import argparse
+        parser = cli.build_parser()
+        subs = [a for a in parser._actions
+                if isinstance(a, argparse._SubParsersAction)]
+        self.assertTrue(subs, "the CLI has no subcommands")
+        for name, sub in subs[0].choices.items():
+            with self.subTest(verb=name):
+                self.assertFalse(sub.allow_abbrev,
+                                 "%s still abbreviates" % name)
 
 
 class AudienceForTest(unittest.TestCase):
