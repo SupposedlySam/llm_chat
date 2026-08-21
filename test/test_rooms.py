@@ -227,6 +227,44 @@ class RoomTest(unittest.TestCase):
         _, text = self.quiet(cli.do_reopen, "http://127.0.0.1:1", "room", None)
         self.assertIn("already open", text)
 
+    def test_THE_CAP_CAN_BE_RAISED_BEFORE_THE_ROOM_SHUTS(self):
+        """The remedy has to be reachable BEFORE the harm, not after it.
+
+        `--max-messages` used to do nothing on an open room — it printed
+        "already open" and returned — so the only way to raise a cap was to
+        let the room close first. That is the shape this project keeps
+        removing: a fix that becomes available only once the thing it
+        prevents has happened.
+
+        It matters most where it is worst. #llm_chat_owner is where agents
+        land when they CANNOT get connected, so the population arriving at a
+        shut door is exactly the one least able to run `reopen`. auditor
+        noticed it at 187 of 200 and said so while there was still room."""
+        self.fake.channel("room", closed=0, max_messages=200,
+                          message_count=187)
+        _, text = self.quiet(cli.do_reopen, "http://127.0.0.1:1", "room", 600)
+        self.assertEqual(self.fake.get_channel("room")["max_messages"], 600)
+        self.assertIn("cap raised", text)
+
+    def test_raising_the_cap_leaves_an_open_room_OPEN(self):
+        """It must not disturb anything else about a room that was fine."""
+        self.fake.channel("room", closed=0, max_messages=200,
+                          message_count=10)
+        self.quiet(cli.do_reopen, "http://127.0.0.1:1", "room", 600)
+        self.assertEqual(self.fake.get_channel("room")["closed"], 0)
+
+    def test_a_cap_BELOW_what_is_already_used_is_refused(self):
+        """Paired with the closed-room version above, and the same reasoning:
+        accepting it would hand back a room that shuts on the next message,
+        which is worse than refusing."""
+        self.fake.channel("room", closed=0, max_messages=200,
+                          message_count=187)
+        with self.assertRaises(SystemExit) as caught:
+            cli.do_reopen("http://127.0.0.1:1", "room", 50)
+        message = str(caught.exception)
+        self.assertIn("187", message)
+        self.assertIn("--max-messages", message)
+
     def test_reopen_refuses_a_capped_room_without_more_room_to_talk(self):
         """Reopening at the cap hands back a room that closes again on the very
         next message, which is worse than refusing."""

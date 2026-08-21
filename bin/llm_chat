@@ -2353,7 +2353,31 @@ def do_reopen(server, name, max_messages=None):
     if chan is None:
         raise SystemExit(f"no such channel: {name}")
     if not chan.get("closed"):
-        print(f"{name} is already open")
+        # RAISING THE CAP ON AN OPEN ROOM IS THE WHOLE POINT OF ASKING EARLY.
+        # This used to print "already open" and return, so `--max-messages`
+        # did nothing until the room had ALREADY closed — the remedy became
+        # available only after the harm it prevents, which is the shape this
+        # project keeps removing from everything else.
+        #
+        # It matters most for the room it is worst in: #llm_chat_owner is
+        # where agents land when they CANNOT get connected, so the population
+        # arriving at a shut door is exactly the one least able to run
+        # `reopen`. auditor noticed it sitting at 187 of 200 and said so
+        # while there was still room to act.
+        if max_messages is None:
+            print(f"{name} is already open")
+            return
+        count = chan.get("message_count", 0)
+        if max_messages <= count:
+            raise SystemExit(
+                f"{name} already holds {count} messages, so a cap of "
+                f"{max_messages} would close it\n  on the next one. Give it "
+                f"room to talk:\n    llm_chat reopen {name} --max-messages "
+                f"{count + DEFAULT_MAX_MESSAGES}")
+        update(server, "channels", eq("id", chan["id"]),
+               {"max_messages": max_messages})
+        print(f"{name} is already open; cap raised to {max_messages} "
+              f"({count} used)")
         return
 
     was = chan.get("closed_reason") or "no reason given"

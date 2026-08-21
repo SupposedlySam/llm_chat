@@ -1602,6 +1602,16 @@ MUTATIONS = [
      "that line and thrown away, which is exactly how it came to be missing "
      "for as long as it was"),
 
+    ("a cap can be raised BEFORE the room shuts", "bin/llm_chat",
+     "        if max_messages is None:\n"
+     '            print(f"{name} is already open")\n            return',
+     '        print(f"{name} is already open")\n        return',
+     "`--max-messages` goes back to doing nothing on an open room, so the only "
+     "way to raise a cap is to let the room CLOSE first — the remedy reachable "
+     "only after the harm, and worst in #llm_chat_owner, where the agents "
+     "arriving at a shut door are the ones who could not get connected in the "
+     "first place"),
+
     ("--to-a does not silently mean --to-all", "bin/llm_chat",
      '        kwargs.setdefault("allow_abbrev", False)',
      "        pass",
