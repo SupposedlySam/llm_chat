@@ -887,6 +887,73 @@ def stale_skill_report(project):
             "migrates it away." % path)
 
 
+MACHINE_SKILL = "~/.claude/skills/llm-chat/SKILL.md"
+
+
+def skill_checkout():
+    """The checkout the MACHINE-WIDE skill tells agents to run, or None."""
+    try:
+        with open(os.path.expanduser(MACHINE_SKILL)) as f:
+            text = f.read()
+    except OSError:
+        return None
+    found = re.findall(r"(\S+)/bin/llm_chat\b", text)
+    return os.path.abspath(found[0]) if found else None
+
+
+def divergent_skill_report():
+    """Say when the machine-wide skill names a DIFFERENT BUILD than this one.
+
+    `~/.claude/skills/` IS NOT PER PROJECT. One file, machine-wide, read by
+    every agent that loads the llm-chat skill — and `install.sh` rewrites it
+    with whatever checkout it was run from, so it is last-writer-wins with
+    nothing recording who won.
+
+    Found by running gameloop's radius questions on this repo: is it tracked,
+    does the installer copy it, does the copy carry the defect. The answers
+    were yes, yes, and yes. The installed skill was pointing at a vendored
+    copy under another project's `.lamp/`, whose CLI has no `who`, no
+    `--since`, and still accepts `--to-a` as `--to-all` — the silent
+    wrong-audience bug closed in #23. Every agent on this machine following
+    the skill was being sent to it.
+
+    `stale_skill_report` above does not cover this: it looks for a leftover
+    PER-REPO copy, which was the previous scheme's problem. The machine-wide
+    file replaced it and nothing was watching the replacement.
+
+    FINGERPRINTS, NOT PATHS. A machine with one checkout, or several of the
+    same build, is fine and stays silent — the same guard the divergent-build
+    line uses, for the same reason: a warning that fires at the wrong
+    population teaches people to skip it.
+    """
+    named = skill_checkout()
+    if not named or named == os.path.abspath(ROOT):
+        return ""
+    if not os.path.isdir(os.path.join(named, "bin")):
+        return ("\n  MACHINE-WIDE SKILL POINTS AT A TREE THAT IS GONE — %s\n"
+                "  Every agent on this machine that loads the llm-chat skill "
+                "is told to run\n  that path. Re-run install.sh from a "
+                "checkout that exists." % named)
+    theirs, mine = wiring_fingerprint(named), wiring_fingerprint(ROOT)
+    if not theirs or not mine or theirs == mine:
+        return ""
+    # DELIBERATELY NOT THE PHRASE THE HOOK WARNING USES. Both are about a
+    # divergent build and they are different findings with different remedies,
+    # so sharing a distinguishing string made them indistinguishable to a
+    # reader skimming and to a test asserting — which is how this first
+    # landed: an existing test for the hook line started failing on the SKILL
+    # line, from real machine state.
+    return ("\n  MACHINE-WIDE SKILL SENDS AGENTS ELSEWHERE — and it is one "
+            "file for the\n  whole machine, not per project.\n"
+            "    skill sends agents to : %s (%s)\n"
+            "    you are running       : %s (%s)\n"
+            "  `install.sh` rewrites that file with whatever checkout it was "
+            "run from, so\n  the last install wins for EVERYBODY. If the "
+            "named copy is older it is\n  missing verbs and checks this one "
+            "has. Re-run install.sh from the checkout\n  you want agents "
+            "sent to." % (named, theirs, os.path.abspath(ROOT), mine))
+
+
 def invite(name, topic, server):
     """The block a human pastes into the other agent.
 
@@ -3664,7 +3731,8 @@ def do_doctor(server):
         print("  server build        current (knows every column this build "
               "writes)")
     print()
-    print(install_report(project) + stale_skill_report(project) + "\n")
+    print(install_report(project) + stale_skill_report(project)
+          + divergent_skill_report() + "\n")
 
     registered, fired, events, hook_trees = hook_report(project)
     for hook in EXPECTED_HOOKS:

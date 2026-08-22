@@ -1602,6 +1602,23 @@ MUTATIONS = [
      "that line and thrown away, which is exactly how it came to be missing "
      "for as long as it was"),
 
+    ("a machine-wide skill naming another BUILD is reported", "bin/llm_chat",
+     "    theirs, mine = wiring_fingerprint(named), wiring_fingerprint(ROOT)\n"
+     "    if not theirs or not mine or theirs == mine:\n        return \"\"",
+     '    return ""',
+     "`~/.claude/skills/` is ONE file for the whole machine and install.sh "
+     "rewrites it with whatever checkout it was run from, so every agent can "
+     "be sent to a stale copy with nobody told — measured here pointing at a "
+     "vendored tree with no `who`, no `--since`, and `--to-a` still meaning "
+     "--to-all"),
+
+    ("the same build at another path stays silent", "bin/llm_chat",
+     "    if not theirs or not mine or theirs == mine:",
+     "    if not theirs or not mine:",
+     "every machine with a second checkout of the SAME build gets the warning "
+     "on every doctor run, which is the fires-at-the-wrong-population failure "
+     "this project has already paid for twice"),
+
     ("the passive pointer names a RANGE, not the whole room",
      "bin/llm-chat-deliver",
      '        bound = ("--since %d" % (min(seqs) - 1)) if seqs else "--all"',
@@ -2356,6 +2373,13 @@ NOT_SWEPT = {
         "an empty answer — and the one thing that could go wrong silently, "
         "a failure read as a hash, is swept where it bites in "
         "divergent_checkouts",
+    "bin/llm_chat:skill_checkout": "all three outcomes asserted directly — a "
+        "path read out of the skill TEXT, a file naming no checkout, and no "
+        "file at all — and the thing that could go wrong silently, naming the "
+        "wrong tree, is swept where it bites in divergent_skill_report. Not "
+        "swept itself because every mutation available to it raises rather "
+        "than measures: dropping the `if found else None` IndexErrors on a "
+        "file with no command in it, which is a crash and not a verdict",
     "bin/llm_chat:_read_json": "a two-line reader whose only decision is that "
         "absent, unparseable and not-a-dict all become None — asserted "
         "through every caller that has a corrupt-file test, and the callers "

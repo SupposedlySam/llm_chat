@@ -485,6 +485,20 @@ class DoctorTest(unittest.TestCase):
         os.environ["CLAUDE_PROJECT_DIR"] = self.project
         self.saved = os.environ.get("CLAUDE_CODE_ENTRYPOINT")
         os.environ["CLAUDE_CODE_ENTRYPOINT"] = "claude-vscode"
+        # THE MACHINE-WIDE SKILL IS NOT THIS PROJECT'S STATE. `doctor` now
+        # reads ~/.claude/skills/llm-chat/SKILL.md, which is one file for the
+        # whole machine and belongs to whoever ran install.sh last — so
+        # without this every assertion in this class depends on that, and one
+        # of them started failing the moment the real file pointed at another
+        # checkout. Same warm-tree coupling the cold-clone run found twice;
+        # the tests that care about the skill say so explicitly.
+        # Kept before stubbing, so the one test that exercises the REAL
+        # reader still can — the same thing that caught me stubbing
+        # `fingerprint_of` in test_hooks an hour earlier.
+        self.real_skill_checkout = cli.skill_checkout
+        cli.skill_checkout = lambda: None
+        self.addCleanup(
+            lambda: setattr(cli, "skill_checkout", self.real_skill_checkout))
 
     def tearDown(self):
         os.environ.pop("CLAUDE_PROJECT_DIR", None)
@@ -1392,6 +1406,108 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("stamp is behind", text)
         self.assertNotIn("STALE:", text)
         self.assertIn("already running the current scripts", text)
+
+    def skill_names(self, checkout):
+        """Stand in for the MACHINE-WIDE skill naming a checkout."""
+        real = cli.skill_checkout
+        cli.skill_checkout = lambda: checkout
+        self.addCleanup(lambda: setattr(cli, "skill_checkout", real))
+
+    def prints(self, table):
+        real = cli.wiring_fingerprint
+        cli.wiring_fingerprint = lambda tree: table.get(os.path.abspath(tree))
+        self.addCleanup(lambda: setattr(cli, "wiring_fingerprint", real))
+
+    def test_A_MACHINE_WIDE_SKILL_NAMING_ANOTHER_BUILD_IS_REPORTED(self):
+        """`~/.claude/skills/` is ONE file for the whole machine, and
+        `install.sh` rewrites it with whatever checkout it was run from — so
+        it is last-writer-wins with nothing recording who won.
+
+        Found by running gameloop's radius questions on this repo. The
+        installed skill was sending every agent on this machine to a vendored
+        copy under another project's `.lamp/`, whose CLI has no `who`, no
+        `--since`, and still accepted `--to-a` as `--to-all` — the silent
+        wrong-audience bug closed in #23.
+
+        `stale_skill_report` does not cover it: that looks for a leftover
+        PER-REPO copy, which was the previous scheme's problem. The
+        machine-wide file replaced it and nothing watched the replacement."""
+        with tempfile.TemporaryDirectory() as other:
+            os.makedirs(os.path.join(other, "bin"))
+            self.skill_names(other)
+            self.prints({os.path.abspath(other): "aaaa",
+                         os.path.abspath(cli.ROOT): "bbbb"})
+            text = cli.divergent_skill_report()
+        # NOT the hook warning's phrase. Two findings with two remedies must
+        # be distinguishable from the words alone, or a test for one trips on
+        # the other — which is exactly what happened when both said
+        # "DIFFERENT BUILD".
+        self.assertIn("SENDS AGENTS ELSEWHERE", text)
+        self.assertIn("whole machine", text)
+
+    def test_the_SAME_build_at_another_path_is_silent(self):
+        """Fingerprints, not paths. A machine with several checkouts of the
+        same build is fine, and a warning that fires at the wrong population
+        is one people learn to skip."""
+        with tempfile.TemporaryDirectory() as other:
+            os.makedirs(os.path.join(other, "bin"))
+            self.skill_names(other)
+            self.prints({os.path.abspath(other): "same",
+                         os.path.abspath(cli.ROOT): "same"})
+            self.assertEqual(cli.divergent_skill_report(), "")
+
+    def test_the_skill_naming_THIS_checkout_is_silent(self):
+        self.skill_names(os.path.abspath(cli.ROOT))
+        self.assertEqual(cli.divergent_skill_report(), "")
+
+    def test_no_machine_wide_skill_at_all_is_silent(self):
+        """Not every install has one, and absence is not a fault."""
+        self.skill_names(None)
+        self.assertEqual(cli.divergent_skill_report(), "")
+
+    def test_a_skill_naming_a_tree_that_is_GONE_says_so(self):
+        """Different remedy: nothing is being run from there at all, and
+        comparing fingerprints against a missing tree would report nothing."""
+        self.skill_names("/no/such/checkout")
+        self.assertIn("GONE", cli.divergent_skill_report())
+
+    def test_the_prescribed_checkout_is_read_from_the_skill_TEXT(self):
+        """The path is the fact that matters and it is in the file; a lookup
+        that guessed from anything else would answer for the wrong copy."""
+        home = tempfile.mkdtemp()
+        where = os.path.join(home, ".claude", "skills", "llm-chat")
+        os.makedirs(where)
+        with open(os.path.join(where, "SKILL.md"), "w") as f:
+            f.write("run /some/tree/bin/llm_chat setup <channel>\n")
+        real = os.path.expanduser
+        os.path.expanduser = lambda p: (p.replace("~", home, 1)
+                                        if p.startswith("~") else real(p))
+        self.addCleanup(lambda: setattr(os.path, "expanduser", real))
+        self.assertEqual(self.real_skill_checkout(), "/some/tree")
+
+    def test_a_skill_file_naming_NO_checkout_reads_as_none(self):
+        """A skill rewritten by hand, or one whose command shape changed. A
+        regex that found nothing must answer "cannot tell" rather than
+        indexing into an empty list."""
+        home = tempfile.mkdtemp()
+        where = os.path.join(home, ".claude", "skills", "llm-chat")
+        os.makedirs(where)
+        with open(os.path.join(where, "SKILL.md"), "w") as f:
+            f.write("talk to other agents. no command here.\n")
+        real = os.path.expanduser
+        os.path.expanduser = lambda p: (p.replace("~", home, 1)
+                                        if p.startswith("~") else real(p))
+        self.addCleanup(lambda: setattr(os.path, "expanduser", real))
+        self.assertIsNone(self.real_skill_checkout())
+
+    def test_NO_skill_file_is_not_an_error(self):
+        """Claude Code without the skill installed is an ordinary state."""
+        home = tempfile.mkdtemp()
+        real = os.path.expanduser
+        os.path.expanduser = lambda p: (p.replace("~", home, 1)
+                                        if p.startswith("~") else real(p))
+        self.addCleanup(lambda: setattr(os.path, "expanduser", real))
+        self.assertIsNone(self.real_skill_checkout())
 
     def dirty(self, yes):
         real = cli.checkout_dirty
