@@ -1670,6 +1670,25 @@ MUTATIONS = [
      "for as long as `since` could only be the cursor or zero, which is what "
      "made the proxy look like the invariant"),
 
+    ("removing NOTHING is not a failure", "bin/llm_chat",
+     '        if "not found" in (res["error"] + body).lower():\n'
+     "            return {}",
+     "        if False:\n            return {}",
+     "`delete` dies on any room that was never spoken in — zonai answers a "
+     "DELETE matching no rows with a 404, and the abort leaves the room "
+     "behind while reporting a table name rather than a cause (#28). Every "
+     "room a 429'd `open` created is in that state"),
+
+    ("only NOTHING MATCHED is swallowed, not every error", "bin/llm_chat",
+     '        if "not found" in (res["error"] + body).lower():\n'
+     "            return {}\n"
+     "        raise SystemExit(res[\"error\"] + \"  \" + body)",
+     "        return {}",
+     "a server that is down, a rejected predicate or a permission failure all "
+     "report success while the rows are still there — which is the same "
+     "told-it-worked-when-it-did-not defect as #27, in the one verb with no "
+     "undo"),
+
     ("a failure AFTER the room exists says the room exists", "bin/llm_chat",
      "    except SystemExit as stop:\n        if not created_here:\n"
      "            raise",

@@ -567,10 +567,30 @@ def remove(server, table, where):
     The one write here with no undo. Every other verb in this file is
     reversible: `leave` sets a flag, `close` sets a flag, `reopen` clears one.
     This is the exception, which is why the only caller refuses without --yes.
+
+    REMOVING NOTHING IS NOT A FAILURE, and treating it as one broke `delete`
+    on any room that had never been spoken in. zonai answers a DELETE that
+    matched no rows with `404 Record not found (table: messages)`; `delete`
+    removes messages, then memberships, then the channel, so the 404 on the
+    empty first step aborted the two that would have worked and left the room
+    behind — reporting a table name rather than a cause, and exiting non-zero
+    while the confirmation text had just promised what it would destroy.
+
+    Found by dogfooding a throwaway room during #27, and filed as #28 because
+    every room created by a 429'd `open` is in exactly that state: the room
+    you were told did not exist was also the room you could not clean up.
+
+    ONLY "NOTHING MATCHED" IS SWALLOWED. A bulk delete whose predicate found
+    no rows has done its job. Any other error — the server down, a rejected
+    predicate, a permission — still raises, because those mean the rows are
+    still there and the caller must not be told otherwise.
     """
     res = call(server, "DELETE", "/db", {"table": table, "where": where})
     if "error" in res:
-        raise SystemExit(res["error"] + "  " + res.get("body", ""))
+        body = res.get("body", "")
+        if "not found" in (res["error"] + body).lower():
+            return {}
+        raise SystemExit(res["error"] + "  " + body)
     return res
 
 

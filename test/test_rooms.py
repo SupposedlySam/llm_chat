@@ -1041,14 +1041,76 @@ class DeleteTest(RoomTest):
 
     SERVER = "http://127.0.0.1:1"
 
-    def room(self, name="doomed", **overrides):
+    def room(self, name="doomed", messages=3, **overrides):
         self.fake.channel(name, **overrides)
         self.fake.tables.setdefault("memberships", []).append(
             {"id": "m1", "channel": name, "identity": "me", "done": 0})
         self.fake.tables.setdefault("messages", []).extend(
             [{"id": "x%d" % i, "channel": name, "from_identity": "me",
-              "body": "hi", "seq": i} for i in range(3)])
+              "body": "hi", "seq": i} for i in range(messages)])
         return name
+
+    def not_found_on(self, table):
+        """Make the server answer a DELETE on `table` the way zonai does when
+        the predicate matched nothing."""
+        real = cli.call
+
+        def answering(server, method, path, body=None, **kw):
+            if method == "DELETE" and (body or {}).get("table") == table:
+                return {"error": "HTTP 404",
+                        "body": '{"error":"Record not found (table: %s)"}'
+                                % table}
+            return real(server, method, path, body, **kw)
+
+        cli.call = answering
+        self.addCleanup(lambda: setattr(cli, "call", real))
+
+    def test_DELETING_A_ROOM_WITH_NO_MESSAGES_WORKS(self):
+        """zonai answers a DELETE that matched no rows with `404 Record not
+        found`, and `delete` removes messages, then memberships, then the
+        channel — so the 404 on an empty first step aborted the two that would
+        have worked and left the room behind.
+
+        Every room created by a 429'd `open` (#27) is in exactly that state,
+        so before this the room you were told did not exist was also the room
+        you could not clean up. Found by dogfooding a throwaway room (#28)."""
+        name = self.room("empty", messages=0)
+        self.not_found_on("messages")
+        self.quiet(cli.do_delete, self.SERVER, name, "me", yes=True)
+        self.assertIsNone(self.fake.get_channel(name),
+                          "the room survived its own deletion")
+
+    def test_a_REAL_delete_failure_still_raises(self):
+        """Only "nothing matched" is swallowed. Any other error means the rows
+        are still there, and the caller must not be told otherwise."""
+        name = self.room("doomed")
+        real = cli.call
+
+        def broken(server, method, path, body=None, **kw):
+            if method == "DELETE":
+                return {"error": "HTTP 500", "body": "server on fire"}
+            return real(server, method, path, body, **kw)
+
+        cli.call = broken
+        self.addCleanup(lambda: setattr(cli, "call", real))
+        with self.assertRaises(SystemExit) as caught:
+            self.quiet(cli.do_delete, self.SERVER, name, "me", yes=True)
+        self.assertIn("500", str(caught.exception))
+        self.assertIsNotNone(self.fake.get_channel(name),
+                             "a failed delete must leave the room")
+
+    def test_a_room_with_messages_still_loses_all_three(self):
+        """Paired with the empty case: swallowing the 404 must not have turned
+        the ordinary path into a no-op."""
+        name = self.room("doomed", messages=3)
+        self.quiet(cli.do_delete, self.SERVER, name, "me", yes=True)
+        self.assertIsNone(self.fake.get_channel(name))
+        self.assertEqual(
+            [m for m in self.fake.tables.get("messages", [])
+             if m["channel"] == name], [])
+        self.assertEqual(
+            [m for m in self.fake.tables.get("memberships", [])
+             if m["channel"] == name], [])
 
     def test_WITHOUT_yes_it_destroys_NOTHING(self):
         """The whole point of the flag. A dry run that deleted anything would
