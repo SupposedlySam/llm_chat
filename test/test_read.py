@@ -42,6 +42,80 @@ class ReadTest(unittest.TestCase):
             got = cli.do_read("http://127.0.0.1:1", channel, identity, **kwargs)
         return got, out.getvalue()
 
+    # ── --since: recovering what a pointer named, not the whole room ────────
+
+    def stocked(self, count=10, seen=0):
+        """A room with `count` messages from somebody else, cursor at `seen`."""
+        self.fake.channel("room")
+        self.fake.membership("room", "me", seen_seq=seen)
+        for seq in range(1, count + 1):
+            self.fake.message("room", seq, "them", "message %d" % seq)
+
+    def test_SINCE_FETCHES_ONLY_WHAT_IT_WAS_POINTED_AT(self):
+        """`since` had two reachable values — your cursor, or ZERO — and
+        nothing between, while the server-side `seq > since` bound could
+        always express any of them.
+
+        That gap made the passive pointer's own remedy cost the whole room:
+        the delivery hook has already consumed what it showed a stub of, so
+        plain `read` says nothing new and the pointer prescribed `--all`,
+        which is seq > 0. auditor measured 466,052 characters to recover
+        three lines."""
+        self.stocked(count=10, seen=10)
+        _, text = self.read(since_seq=7)
+        self.assertIn("message 8", text)
+        self.assertNotIn("message 1\n", text)
+
+    def test_SINCE_NEVER_MOVES_THE_CURSOR_even_without_peek(self):
+        """Re-reading history is not a claim. It implies peek rather than
+        refusing to combine, because the alternative is a recovery command
+        that needs two flags to be safe and the one people forget is the one
+        that costs."""
+        self.stocked(count=10, seen=4)
+        self.read(since_seq=7)
+        self.assertEqual(
+            self.fake.get_membership("room", "me")["seen_seq"], 4)
+
+    def test_SINCE_CANNOT_REWIND_A_CURSOR(self):
+        """The failure auditor predicted when proposing the flag. Reading an
+        older range yields a high_water above the requested bound but BELOW
+        where the cursor sits — and the commit guard compared against `since`
+        rather than against the cursor, so it would have written the smaller
+        number and re-delivered everything between."""
+        self.stocked(count=10, seen=9)
+        self.read(since_seq=2, peek=False)
+        self.assertGreaterEqual(
+            self.fake.get_membership("room", "me")["seen_seq"], 9)
+
+    def test_the_cursor_guard_compares_against_the_CURSOR_not_the_bound(self):
+        """A CURSOR AHEAD OF EVERY REMAINING MESSAGE, which is the only shape
+        that separates the two comparisons.
+
+        The first version of this used `--all` with the cursor at 9 and ten
+        messages: `high_water > since` is 10 > 0, `high_water > seen_seq` is
+        10 > 9, both true, both write 10. It asserted the right value for
+        neither reason and the mutation survived — the fourth time in a day a
+        fixture of mine answered the same for both branches, and the fourth
+        time the sweep caught it rather than the suite.
+
+        `delete` removes messages, so a cursor above the highest surviving
+        seq is a real state. There, `high_water > since` (10 > 0) still writes
+        and REWINDS the cursor from 15 to 10, re-delivering everything in
+        between; `high_water > seen_seq` (10 > 15) correctly declines."""
+        self.stocked(count=10, seen=15)
+        self.read(all_messages=True)
+        self.assertEqual(
+            self.fake.get_membership("room", "me")["seen_seq"], 15,
+            "the cursor was rewound to the highest message that still exists")
+
+    def test_an_ordinary_read_still_advances(self):
+        """Paired with all of the above: a version that never advanced would
+        pass every cursor-safety test here and break delivery entirely."""
+        self.stocked(count=10, seen=4)
+        self.read()
+        self.assertEqual(
+            self.fake.get_membership("room", "me")["seen_seq"], 10)
+
     # ── the cursor moves LAST ───────────────────────────────────────────────
     # Reported as `pending: 0` beside `owed: [{"seq": 41}]` — two facts that
     # cannot both be true. Something read the message, advancing the shared

@@ -1602,6 +1602,32 @@ MUTATIONS = [
      "that line and thrown away, which is exactly how it came to be missing "
      "for as long as it was"),
 
+    ("the passive pointer names a RANGE, not the whole room",
+     "bin/llm-chat-deliver",
+     '        bound = ("--since %d" % (min(seqs) - 1)) if seqs else "--all"',
+     '        bound = "--all"',
+     "recovering the handful of messages a pointer named costs every message "
+     "ever sent in that room — 466,052 characters to reach three lines, over "
+     "the tool-result cap — and it grows without limit, so the recovery path "
+     "costs more than the delivery the truncation exists to avoid"),
+
+    ("--since never advances a cursor", "bin/llm_chat",
+     "    if since_seq is not None:\n        peek = True",
+     "    if False:\n        peek = True",
+     "re-reading history marks unread messages read on the way past, so the "
+     "command a pointer hands you to RECOVER something silently consumes "
+     "whatever else was waiting"),
+
+    ("the cursor guard compares against the CURSOR, not the bound",
+     "bin/llm_chat",
+     '            if not peek and high_water > member.get("seen_seq", 0):',
+     "            if not peek and high_water > since:",
+     "reading an older range yields a high_water above the requested bound "
+     "but BELOW where the cursor sits, so the commit REWINDS it and every "
+     "message in between is delivered again — the two numbers were identical "
+     "for as long as `since` could only be the cursor or zero, which is what "
+     "made the proxy look like the invariant"),
+
     ("a cap can be raised BEFORE the room shuts", "bin/llm_chat",
      "        if max_messages is None:\n"
      '            print(f"{name} is already open")\n            return',

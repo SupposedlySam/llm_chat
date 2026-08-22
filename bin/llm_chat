@@ -2024,16 +2024,41 @@ def do_say(server, name, identity, text, audience=None, thread=None):
 
 
 def do_read(server, name, identity, peek=False, all_messages=False,
-            as_json=False):
+            as_json=False, since_seq=None):
     # Claiming the messages and advancing the cursor is ONE decision and has to
     # be atomic against the other deliverer. Rendering is not, but it now
     # happens inside the lock anyway — see `commit_cursor` below for why the
     # ORDER matters more than the scope.
+    # RE-READING HISTORY MUST NOT MOVE A CURSOR. `--since` is for recovering
+    # something you were POINTED at, so treating it as a claim would mark
+    # unread messages read on the way past, or — worse — write the cursor
+    # backwards. Implied rather than refused, because refusing the
+    # combination would mean the recovery command in the pointer has to carry
+    # two flags to be safe, and the one people forget is the one that costs.
+    if since_seq is not None:
+        peek = True
     with read_lock():
         member = get_membership(server, name, identity)
         if member is None:
             raise SystemExit(f"{identity} has not joined {name}")
-        since = 0 if all_messages else member.get("seen_seq", 0)
+        # THREE REACHABLE VALUES NOW, AND THE THIRD IS THE POINT. `since` had
+        # only two — your cursor, or ZERO — with nothing in between, while the
+        # server-side `seq > since` bound below was always able to express any
+        # of them.
+        #
+        # That gap made the passive-pointer's own remedy cost the whole room.
+        # The delivery hook has ALREADY consumed the messages it showed a stub
+        # of, so your cursor is past them and plain `read` says "nothing new";
+        # the pointer therefore prescribed `--all`, which is `since = 0`. The
+        # only route to three lines you were pointed at was every message ever
+        # sent. Measured by auditor: 466,052 characters to recover three, over
+        # the tool-result cap, spilled to a file and sliced with Python. And it
+        # grows — rooms are append-only, and two caps here just went to 600.
+        #
+        # `--since` is one more reachable value for a variable that already
+        # existed. No schema change, no endpoint, no server work.
+        since = (since_seq if since_seq is not None
+                 else 0 if all_messages else member.get("seen_seq", 0))
 
         fetched = rows(server, "messages",
                        and_(eq("channel", name), gt("seq", since)))
@@ -2069,7 +2094,19 @@ def do_read(server, name, identity, peek=False, all_messages=False,
             same trade in `read_lock`, which fails open because "a wedged
             delivery is worse than a rare duplicate".
             """
-            if not peek and high_water > since:
+            # AGAINST THE MEMBER'S REAL CURSOR, not against `since`. Those
+            # were the same number for as long as `since` could only be the
+            # cursor or zero, and `--since` broke that: reading an older range
+            # gives a `high_water` above the requested bound but BELOW where
+            # the cursor actually sits, and `high_water > since` would then
+            # write it — a rewind, re-delivering everything between. The
+            # invariant was always "the cursor may only ever ADVANCE"; this is
+            # that sentence rather than a proxy for it that happened to agree.
+            #
+            # `--since` also forces peek above, so this is the second of two
+            # independent guards. Predicted by auditor when they proposed the
+            # flag, which is why it is here rather than in a later bug report.
+            if not peek and high_water > member.get("seen_seq", 0):
                 sys.stdout.flush()
                 update(server, "memberships", eq("id", member["id"]),
                        {"seen_seq": high_water})
@@ -4425,6 +4462,10 @@ def build_parser():
     p.add_argument("--peek", action="store_true", help="do not advance your cursor")
     p.add_argument("--all", dest="all_messages", action="store_true",
                    help="the whole transcript, from the beginning")
+    p.add_argument("--since", dest="since_seq", type=int, metavar="SEQ",
+                   help="messages after SEQ only — what a passive pointer "
+                        "names, instead of the whole room. Never advances "
+                        "your cursor")
 
     p = sub.add_parser("leave", help="say you are finished")
     p.add_argument("channel")
@@ -4605,7 +4646,7 @@ def main() -> int:
                audience_for(args.to, args.to_all, args.to_none), args.thread)
     elif args.cmd == "read":
         do_read(server, args.channel, identity, args.peek, args.all_messages,
-                args.as_json)
+                args.as_json, args.since_seq)
     elif args.cmd == "leave":
         do_leave(server, args.channel, identity, args.ask)
     elif args.cmd == "delete":

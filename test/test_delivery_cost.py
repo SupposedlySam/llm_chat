@@ -71,6 +71,39 @@ class RenderTest(unittest.TestCase):
         self.assertIn("not addressed to you", out)
         self.assertIn("llm_chat read ops", out)
 
+    def test_THE_POINTER_NAMES_THE_RANGE_NOT_THE_WHOLE_ROOM(self):
+        """The bound is already in hand, so saying `--all` was throwing it
+        away. `--all` is seq > 0 — every message ever sent — to recover the
+        handful this pointer is about, and it grows without limit because
+        rooms are append-only. auditor measured 466,052 characters to reach
+        three lines: over the tool-result cap, spilled to a file and sliced
+        with Python. The recovery path cost more than the delivery the
+        truncation exists to avoid, which quietly undid the saving."""
+        out = self.render([msg(41, "alice", LONG), msg(42, "bob", LONG)])
+        self.assertIn("--since 40", out)
+        self.assertNotIn("--all", out)
+
+    def test_the_range_starts_below_the_LOWEST_passive_message(self):
+        """`seq > since`, so the bound is one below the first one named — off
+        by one the other way and the pointer omits the message it exists to
+        point at."""
+        out = self.render([msg(7, "alice", LONG), msg(3, "bob", LONG)])
+        self.assertIn("--since 2", out)
+
+    def test_it_falls_back_to_ALL_when_no_seq_is_available(self):
+        """A message shape without a usable seq must not produce `--since
+        None` or a crash. Whole-room is expensive; a broken command is
+        useless."""
+        out = self.render([{"from": "alice", "text": LONG, "to": "other"}])
+        self.assertIn("--all", out)
+
+    def test_the_pointer_still_says_plain_read_will_not_work(self):
+        """Unchanged and load-bearing: this hook has already consumed these
+        messages, so the obvious command returns nothing new."""
+        out = self.render([msg(41, "alice", LONG)])
+        self.assertIn("--peek", out)
+        self.assertIn("already consumed", out)
+
     def test_the_pointer_names_who_spoke(self):
         """Enough to decide whether to go and read it. Who said it is most of
         that decision and costs a word."""

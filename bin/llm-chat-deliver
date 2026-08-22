@@ -534,8 +534,20 @@ def render_channel(channel, identity, waiting):
         # guaranteed not to show them made the text unreachable for anyone who
         # did as they were told. Reported by the agent it happened to, who
         # recovered the text only by already being suspicious of this shape.
+        # THE BOUND IS ALREADY IN HAND, so name it instead of saying `--all`.
+        # `--all` means seq > 0 — the entire room — to recover the handful of
+        # messages this pointer is about. Measured by auditor: 466,052
+        # characters to reach three lines, over the tool-result cap, spilled
+        # to a file and sliced with Python. It grows without limit, because
+        # rooms are append-only.
+        #
+        # So the recovery path cost more than the delivery the truncation
+        # exists to avoid, which quietly undid the saving. One below the
+        # lowest passive seq is exactly the range described above.
+        seqs = [m.get("seq") for m in passive if isinstance(m.get("seq"), int)]
+        bound = ("--since %d" % (min(seqs) - 1)) if seqs else "--all"
         lines.append(f"  ({len(passive)} not addressed to you, from {who} — "
-                     f"`llm_chat read {channel} --all --peek` for the text; "
+                     f"`llm_chat read {channel} {bound} --peek` for the text; "
                      f"plain `read` will say nothing new, because this "
                      f"delivery already consumed them)")
         for m in passive[:3]:
