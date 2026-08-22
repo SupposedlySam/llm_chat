@@ -92,7 +92,7 @@ class ToolsListTest(McpTestCase):
         names = {t["name"] for t in resp["result"]["tools"]}
         self.assertEqual(names, {
             "open", "join", "setup", "say", "sync", "mode", "pending", "read",
-            "leave", "owed", "delete", "reopen", "invite", "channels",
+            "leave", "owed", "delete", "close", "reopen", "invite", "channels",
             "briefing", "identify", "doctor", "who", "fingerprint", "reload",
             "maintenance",
         })
@@ -287,6 +287,25 @@ class ArgvBuildersTest(McpTestCase):
 
     def test_doctor(self):
         self.assertEqual(self.call("doctor", {}), ["doctor"])
+
+    def test_close(self):
+        self.assertEqual(
+            self.call("close", {"channel": "room", "reason": "it is done"}),
+            ["close", "room", "--reason", "it is done"])
+
+    def test_close_carries_the_identity(self):
+        self.assertEqual(
+            self.call("close", {"channel": "room", "reason": "done",
+                                "identity": "me"}),
+            ["close", "room", "--reason", "done", "--as", "me"])
+
+    def test_close_without_a_reason_is_refused_before_the_CLI(self):
+        """The CLI would refuse it too, but a tool call that reaches argv and
+        comes back an argparse error tells the model it called the CLI wrong
+        rather than that it omitted a required field — which is #26's failure
+        mode one layer up."""
+        with self.assertRaises(Exception):
+            self.call("close", {"channel": "room"})
 
     def test_who(self):
         self.assertEqual(self.call("who", {}), ["who"])

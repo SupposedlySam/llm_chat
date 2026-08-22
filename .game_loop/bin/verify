@@ -251,6 +251,36 @@ def ci_gap(root, mapping):
     return missing, ""
 
 
+def vacuous_rules(root, mapping):
+    """Rules whose glob matches NO tracked file — ([], why) when the question cannot be asked.
+
+    A rule that matches nothing runs nothing and fails nothing, so `verify` reports every owed
+    check passed while covering zero files. The count it is derived from — files matched — goes to
+    zero on absence, and zero is the CLEAN score. That is the dangerous direction: a verdict must
+    be derived from something absence makes look WORSE.
+
+    Asked of git rather than the filesystem, so an untracked scratch file cannot make a dead rule
+    look alive — which is the same reason the sweep's source set is asked of git.
+    """
+    try:
+        r = subprocess.run(["git", "-C", root, "ls-files"], capture_output=True, text=True,
+                           timeout=20)
+    except (OSError, subprocess.TimeoutExpired):
+        return [], "git did not answer, so nothing was compared"
+    if r.returncode != 0:
+        return [], "not a git checkout, so there is no tracked set to match against"
+    tracked = [t for t in (r.stdout or "").split("\n") if t.strip()]
+    if not tracked:
+        return [], "no tracked files at all — an empty checkout says nothing about a rule"
+    dead = []
+    for pat in mapping:
+        hits = [t for t in tracked
+                if fnmatch(t, pat) or fnmatch(t, pat.rstrip("/") + "/*")]
+        if not hits:
+            dead.append(pat)
+    return dead, ""
+
+
 def coverage(files, mapping, exclusions):
     """(checked, excluded, unchecked) — the inversion this whole flag exists for.
 
@@ -313,6 +343,35 @@ def report_coverage(staged=False, porcelain=False):
         print("\n  NO RULES AT ALL — `verify` and the commit gate are no-ops here. That is the "
               "shipped\n  default (game_loop does not know your project), and it is not the same "
               "thing as safe.")
+    # EXEMPTIONS TOO, and this was the blind spot in my own version of this check: I shipped it
+    # over RULES and left EXCLUSIONS unexamined, one field away. An exemption matching nothing is
+    # WORSE than a vacuous rule — a rule that matches nothing merely fails to run, but an exemption
+    # that matches nothing is a STANDING AUTHORISATION for a surface that does not exist yet. The
+    # day somebody tracks a file there it arrives ALREADY EXEMPT, and coverage reports clean having
+    # never looked. Found by a consumer pointing this same check at my repo an hour after I wrote it.
+    _dead_x, _why_x = vacuous_rules(REPO, {e: [] for e in exclusions})
+    if _dead_x:
+        print(f"\nEXEMPTIONS THAT MATCH NO TRACKED FILE ({len(_dead_x)}) — each is a decision "
+              "already spent on")
+        print("a surface that does not exist:")
+        for _p in _dead_x:
+            print(f"    {_p}")
+        print("  When a file finally lands under one of these, it arrives EXEMPT and this report")
+        print("  says clean without ever looking. Delete the entry and let the gate ask you then —")
+        print("  which is what it is for.")
+    _dead, _why = vacuous_rules(REPO, mapping)
+    if _dead:
+        print(f"\nRULES THAT MATCH NO TRACKED FILE ({len(_dead)}) — they run nothing and fail "
+              "nothing:")
+        for _p in _dead:
+            print(f"    {_p}")
+        print("  A rule matching zero files reports CLEAN while covering nothing, because the count")
+        print("  it rests on — files matched — goes to zero on absence, and zero is the passing")
+        print("  score. Renaming a directory is enough to do this silently.")
+        print("  Not refused: a rule written ahead of the file it will guard is legitimate. Not")
+        print("  knowing is not.")
+    elif _why:
+        print(f"\n  (could not check for rules matching nothing: {_why})")
     if unchecked:
         print(f"\nUNCHECKED — changed, matched by no rule, so `verify --check` will never mention "
               f"them:")

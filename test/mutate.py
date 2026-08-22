@@ -1670,6 +1670,68 @@ MUTATIONS = [
      "for as long as `since` could only be the cursor or zero, which is what "
      "made the proxy look like the invariant"),
 
+    ("a failure AFTER the room exists says the room exists", "bin/llm_chat",
+     "    except SystemExit as stop:\n        if not created_here:\n"
+     "            raise",
+     "    except SystemExit as stop:\n        if True:\n            raise",
+     "`open` is two writes and a 429 between them leaves the room created "
+     "while the caller sees only the error — so it opens the room again, "
+     "which succeeds and SILENTLY DISCARDS the corrected topic and briefing "
+     "(#27). A dispatched agent lost its only back-channel to this"),
+
+    ("a room that already existed is not called a PARTIAL success",
+     "bin/llm_chat",
+     "        if not created_here:\n            raise",
+     "        if False:\n            raise",
+     "every failure on an existing room claims it was just created, which is "
+     "a new false statement traded for the old one"),
+
+    ("a second open SAYS what it ignored", "bin/llm_chat",
+     "        ignored = [what for what, given in\n"
+     "                   ((\"topic\", topic), (\"briefing\", briefing))\n"
+     "                   if given and chan.get(what) != given]",
+     "        ignored = []",
+     "the corrected house rules a caller passes on the recovery attempt are "
+     "dropped without a word — documented as 'recorded only if the channel is "
+     "new' and still silent at the moment it matters, which the reporter "
+     "caught only because the rendered briefing quoted the attempt they had "
+     "been told failed"),
+
+    ("the remedy `leave` recommends is a REAL verb", "bin/llm_chat",
+     '    p = sub.add_parser("close", help="end a room: transcript kept, '
+     'nobody "\n                                     "woken here again")',
+     '    p = sub.add_parser("closs", help="end a room: transcript kept, '
+     'nobody "\n                                     "woken here again")',
+     "`leave`'s refusal offers `llm_chat close <room> --reason` as its FIRST "
+     "remedy and the parser has no such choice — an agent closing 24 finished "
+     "rooms in a loop got 24 argparse usage errors, which read as 'you called "
+     "it wrong' rather than 'that verb does not exist' (#26)"),
+
+    ("close SAYS SO IN THE ROOM before shutting it", "bin/llm_chat",
+     "    announce(server, name, identity,\n"
+     "             f\"#{name} is now CLOSED — {reason}\\n\"",
+     "    _ = (lambda *a, **k: None)(\n"
+     "             f\"#{name} is now CLOSED — {reason}\\n\"",
+     "`say` refuses on a closed channel, so a closure announced after the "
+     "fact is one nobody in the room ever hears about — they simply find the "
+     "door locked the next time they try to speak"),
+
+    # ANCHORED ON THE REFUSAL, not on the lookup. The membership check is the
+    # same line in four verbs, so the bare form matched four places and the
+    # sweep refused it rather than guess — a correct refusal and a useless
+    # measurement. The sentence below it is what makes this one `close`.
+    ("close refuses a NON-MEMBER", "bin/llm_chat",
+     "    if get_membership(server, name, identity) is None:\n"
+     "        raise SystemExit(\n"
+     "            f\"{identity} is not a member of {name}, so it is not "
+     "yours to \"",
+     "    if False:\n        raise SystemExit(\n"
+     "            f\"{identity} is not a member of {name}, so it is not "
+     "yours to \"",
+     "anyone can end a room they were never in, which is not the same trade "
+     "as `reopen` being open to all — reviving a room is recoverable and "
+     "ending one stops every member being woken"),
+
     ("a cap can be raised BEFORE the room shuts", "bin/llm_chat",
      "        if max_messages is None:\n"
      '            print(f"{name} is already open")\n            return',
@@ -2377,6 +2439,10 @@ NOT_SWEPT = {
         "prove the flag it emits is one this parser accepts",
     "bin/llm-chat-mcp:_build_leave":"both branches asserted directly for "
         "the exact argv produced",
+    "bin/llm-chat-mcp:_build_close": "asserted directly for the exact argv "
+        "produced, with and without an identity, and that a missing reason is "
+        "refused before the CLI is reached; the CLI-correspondence tests "
+        "additionally prove every flag it emits is one the parser accepts",
     "bin/llm-chat-mcp:_build_reopen": "both branches asserted directly for "
         "the exact argv produced",
     "bin/llm-chat-mcp:_build_invite": "trivial, asserted directly",
@@ -2588,13 +2654,45 @@ def swept_functions():
 
 
 def report_unaccounted():
-    """Fail on any candidate that is neither swept nor explicitly excluded."""
+    """Fail on any candidate that is neither swept nor explicitly excluded.
+
+    THE PUBLISHED NUMBERS RECONCILE, and they did not. `excluded` was
+    intersected with the candidate set and `swept` was not, so the line read
+    `candidates 293 — swept 115, excluded 222` and 115 + 222 = 337. `swept`
+    was counting mutations aimed at functions outside the denominator —
+    nested helpers, and the entrypoints' own module-level code — which are
+    real mutations but not candidates.
+
+    Reported by an agent who ran the whole sweep on another machine to check
+    #22 from the outside, read the line, assumed an accounting bug, and went
+    to the source before filing. It is only a display defect and
+    `unaccounted 0` was never affected — the subtraction that produces it
+    deliberately uses the UNintersected set, which is correct, since a
+    mutation covers its target wherever that target lives.
+
+    But it lands in the one tool whose entire claim is that its numbers can be
+    trusted, three lines from a docstring about the hazard of reporting a
+    clean number over a set that had quietly stopped containing the thing. A
+    summary whose own arithmetic does not close invites a reader to distrust
+    the figure it most wants believed.
+
+    So both are printed: the part of `swept` inside the denominator, which
+    adds up, and the total, which is the true number of mutations.
+    """
     everything = set(candidates())
     swept = swept_functions()
     unaccounted = sorted(everything - swept - set(NOT_SWEPT))
-    print("\ncandidates %d — swept %d, excluded with a reason %d, unaccounted %d"
-          % (len(everything), len(swept), len(everything & set(NOT_SWEPT)),
-             len(unaccounted)))
+    here = len(everything & swept)
+    print("\ncandidates %d — swept %d, excluded with a reason %d, "
+          "unaccounted %d  (%d + %d + %d = %d)"
+          % (len(everything), here, len(everything & set(NOT_SWEPT)),
+             len(unaccounted), here, len(everything & set(NOT_SWEPT)),
+             len(unaccounted), len(everything)))
+    outside = len(swept) - here
+    if outside:
+        print("  %d further mutation(s) target functions outside that set — "
+              "nested\n  helpers and module-level code, which are swept but "
+              "are not candidates." % outside)
     gaps = sorted(k for k, why in NOT_SWEPT.items()
                   if why.startswith("SHOULD BE SWEPT") and k in everything)
     if gaps:

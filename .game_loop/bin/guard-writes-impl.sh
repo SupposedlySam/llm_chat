@@ -327,6 +327,29 @@ note() {
   exit 0
 }
 
+MEM_NOTE=$(cat <<'MEMEOF'
+📝 THIS IS RUNG 6 — the last resort on the game_loop ladder.
+
+    1 IMPOSSIBLE  2 LOUD  3 CHECKED  4 AUTOMATED  5 VISIBLE  6 doc/memory
+
+A memory is enforcement by REMEMBERING, which is the thing INV1 refuses. Its own test is: if the
+agent ignored every instruction, would this still hold? A memory is nothing but an instruction to a
+future self, and it surfaces at session start rather than at the moment it is needed.
+
+WHICH KIND IS THIS?
+
+  A FACT ABOUT THE HUMAN   who they are, what they prefer, a URL. A memory is RIGHT here, and
+                           there is no rung 1-5 for a fact about a person.
+
+  A LEARNING ABOUT WORK    a mistake you made, a check that would have caught it. There is nearly
+                           always a rung above 6:
+      game_loop harden --learning ".." --artifact <path> --mechanism ".." --rung <1..6>
+
+Nothing is blocked and this write is going through. What is priced is DEFAULTING to 6 without
+asking whether 1-5 was available.
+MEMEOF
+)
+
 # Record a path this Crawler wrote, so the commit gate can compare the session's actual work against
 # a commit's blast radius (issue #21). Append-only, one repo-relative path per line. This runs at
 # PreToolUse, i.e. BEFORE the write lands, so a denied or failed write still records — the set errs
@@ -528,6 +551,67 @@ PY
 )
     if [ "$verdict" = "yes" ]; then
       record_edit "$fp"                        # an in-repo write IS this session's work (issue #21)
+      # A MEMORY IS RUNG 6, AND RUNG 6 IS THE LAST RESORT ON THIS PROJECT'S OWN LADDER. `harden`
+      # exists to turn a learning into something ENFORCED instead of remembered; a memory is exactly
+      # enforcement-by-remembering, surfaced at session start rather than when it is needed. Raised
+      # by the human, about me, on a day spent shipping gates.
+      #
+      # A NOTE, NEVER A BLOCK. Some memories are correct and have no higher rung: who the human is,
+      # what they prefer, a pointer. There is no rung 1-5 for a fact about a person. What this does
+      # is force the distinction while the file is being written, and RECORD it so that
+      # memories-written-since-the-last-harden is countable rather than an impression.
+      mem_hit=$(FP="$fp" python3 -c '
+import os, sys
+real = os.path.realpath(os.environ["FP"])
+parts = real.split(os.sep)
+if "memory" in parts and ".claude" in parts and real.endswith(".md") \
+        and os.path.basename(real) != "MEMORY.md":
+    sys.stdout.write("yes")
+' 2>/dev/null)
+      if [ -n "$mem_hit" ]; then
+        # RECORD IT, so "memories written since the last harden" is a number rather than an
+        # impression. That ratio is the whole argument: if it climbs while hardens do not, the
+        # ladder is being skipped, and a habit nobody counts is a habit nobody has. The note below
+        # carries the count, because a record nobody reads at the moment of the choice is rung 6
+        # about rung 6.
+        mem_tally=$(GL_DIR="$GAMELOOP_DIR" FP="$fp" python3 <<'PYMEM' 2>/dev/null
+import datetime, json, os
+d = os.environ["GL_DIR"]
+log = os.path.join(d, "log.jsonl")
+try:
+    with open(log, "a") as f:
+        f.write(json.dumps({"t": datetime.datetime.now().isoformat(timespec="seconds"),
+                            "kind": "memory_write",
+                            "file": os.path.basename(os.environ["FP"])}) + "\n")
+except OSError:
+    pass
+n = 0
+try:
+    with open(log) as f:
+        recs = [l for l in f if '"kind"' in l]
+    for line in reversed(recs):
+        try:
+            k = json.loads(line).get("kind")
+        except ValueError:
+            continue
+        if k == "harden":
+            break
+        if k == "memory_write":
+            n += 1
+except OSError:
+    n = 0
+print(n)
+PYMEM
+)
+        if [ -n "$mem_tally" ] && [ "$mem_tally" -gt 1 ] 2>/dev/null; then
+          note "$MEM_NOTE
+
+  $mem_tally memories have been written since the last harden in this repo. If a learning about
+  HOW TO WORK is among them, one of them wanted a rung above 6."
+        else
+          note "$MEM_NOTE"
+        fi
+      fi
       exit 0
     fi
     if [ -n "$verdict" ]; then
@@ -606,6 +690,109 @@ text = re.sub("(?:^|(?<=\\s))(" + MSG_FLAGS + ")(=|\\s+)(" + QSTR + ")",
 sys.stdout.write(text)
 PY
 )
+
+    # 0a. A PERMISSION PROMPT UNDER A MANDATE IS A PARK WITH NO RECOVERY (#79).
+    #    Every other hazard here fails LOUD — the Stop gate refuses with a reason, this guard denies
+    #    with a path, verify names the check. An interactive approval just WAITS: no timeout, no log
+    #    line, and the watchdog cannot help because there is no idle to detect. The process is blocked
+    #    on a prompt, not quiet. An operator comes back hours later to a run that never advanced.
+    #
+    #    That is a property of the PAIR, which only game_loop can see: the permission model is right
+    #    to assume a human is present, and `mandate` exists to say precisely that nobody is. So this
+    #    fires ONLY while a mandate is live — with nobody watching, an unbounded wait is strictly
+    #    worse than an instant error the agent can service itself.
+    #
+    #    Reported by a consumer whose owner happened to be at his desk. It failed silently in their
+    #    favour, which is why they would not have found it either.
+    if [ -n "${STATE_F:-}" ] && [ -f "$STATE_F" ]; then
+      _gl_mandated=$(GL_S="$STATE_F" python3 -c 'import json,os,sys
+try:
+    d=json.load(open(os.environ["GL_S"]))
+except Exception:
+    sys.exit(0)
+m=d.get("mandate") or {}
+# a PARKED mandate is not an unattended run — the human called the break and is by definition present
+print("yes" if m.get("text") and not m.get("parked") else "")' 2>/dev/null)
+      if [ -n "$_gl_mandated" ]; then
+        # RECURSIVE AND FORCE, and they need not share a token: `rm -r -f` is the same command as
+        # `rm -rf`, and a regex demanding one flag carrying both letters misses it. Found by
+        # probing the eleven spellings rather than by reading my own pattern — it passed the four
+        # I had in mind and failed the fifth. Matched against scan_cmd, so a commit message that
+        # merely WRITES ABOUT rm -rf is not a command that runs one.
+        _gl_rmrf=$(SCAN="$scan_cmd" python3 -c '
+import os, shlex, sys
+scan = os.environ["SCAN"]
+# TOKENISE FIRST, THEN SPLIT (#83). Splitting on shell operators BEFORE tokenising tears a quoted
+# string apart: a grep whose SEARCH PATTERN contains the verb, with alternation bars in it, split
+# into pieces and left the verb sitting in command position — so a READ-ONLY grep for this very
+# guard was refused. The first thing anyone does with a new guard is grep for it. guard-sdb.sh
+# already carries this lesson in its header: writing ABOUT a verb is not running it.
+#
+# It reproduced on me while I was FIXING it: the patch command carrying this comment was itself
+# refused, because a heredoc fed to an interpreter is kept for scanning and rightly so.
+try:
+    lex = shlex.shlex(scan, posix=True, punctuation_chars=True)
+    lex.whitespace_split = True
+    toks = list(lex)
+except ValueError:
+    sys.exit(0)          # unbalanced quotes: say nothing rather than guess at a command
+OPS = {";", "&", "&&", "|", "||", "(", ")"}
+PREFIX = {"sudo", "env", "time", "nohup", "command", "exec"}
+at_start, i, hit = True, 0, ""
+while i < len(toks):
+    t = toks[i]
+    if t in OPS:
+        at_start = True
+        i += 1
+        continue
+    if at_start and os.path.basename(t) in PREFIX:
+        i += 1
+        continue
+    if at_start and os.path.basename(t) == "rm":
+        rec = force = False
+        j = i + 1
+        while j < len(toks) and toks[j] not in OPS:
+            o = toks[j]
+            if o.startswith("--"):
+                rec = rec or o == "--recursive"
+                force = force or o == "--force"
+            elif o.startswith("-") and len(o) > 1:
+                rec = rec or "r" in o or "R" in o
+                force = force or "f" in o
+            j += 1
+        if rec and force:
+            hit = "yes"
+        i = j
+        continue
+    at_start = False
+    i += 1
+if hit:
+    sys.stdout.write(hit)
+' 2>/dev/null)
+        if [ -n "$_gl_rmrf" ]; then
+          deny "BLOCKED: \`rm\` with recursive+force, while a MANDATE is live.
+
+This is not a judgement about the delete. It is that an interactive approval is the one hazard in
+an unattended run that fails SILENT — no timeout, no log line, and the watchdog cannot answer it,
+because a run blocked on a prompt is not idle. Your mandate says nobody is watching. If this
+escalates, the run stops here until somebody notices, which may be hours.
+
+There is essentially always a non-prompting way:
+
+    a throwaway directory   don't delete it. \`mktemp -d\` and leave it — the OS reaps /tmp.
+    a git worktree          git worktree remove <path>
+    one known file          rm <path>            (no -r, no -f)
+    a directory you own     rmdir <path>         (refuses if non-empty, which is the point)
+
+If the delete genuinely has to happen this way, say so on the record:
+    ${GAMELOOP_DIR}/bin/game_loop authorize --path rm-rf --reason \"<the human's exact words>\"
+
+WHAT THIS CANNOT SEE (INV6): a delete inside a script, a python3 -c shutil.rmtree, or any MCP tool.
+It reads the Bash command string only. This covers an observed failure, never the class — the full
+prompt surface is not knowable from inside a hook."
+        fi
+      fi
+    fi
 
     # 0. A commit is when a change becomes real. Refuse one whose owed checks (.game_loop/verify.yaml)
     #    have not run SINCE the change. No-op when verify.yaml is empty, so it costs nothing until you
@@ -778,6 +965,31 @@ except OSError:
     pass
 PYLOG
           fi
+          # NEVER PRINT A REMEDY YOU HAVE NOT CHECKED (#92). The old line assumed install.sh sits
+          # at the installed project's root; it never does — install.sh copies only the .game_loop/
+          # payload. On a project with no installer the paste fails, and on one that ships its OWN
+          # install.sh it resolves to THAT, so the remedy would run a different project's installer
+          # against somebody's worktree. Verified: it is game_loop's installer, or it is not offered.
+          _gl_cand="${REPO_REAL}/install.sh"
+          if [ -f "$_gl_cand" ] && grep -q 'game_loop payload' "$_gl_cand" 2>/dev/null; then
+            _gl_install_hint="THE FIX, ready to paste — it provisions that tree with THIS tree's rules, once:
+
+    ${_gl_cand} ${_gl_unharnessed}
+
+(A worktree provisioned this way adopts the parent's verify.yaml rather than a blank one, which
+would be a gate that owes nothing and reports success.)
+"
+          else
+            _gl_install_hint="NO PASTEABLE FIX IS OFFERED HERE, and that is deliberate. game_loop's install.sh is not in
+this tree — the installer only ever copies the .game_loop/ payload, so an installed project does
+not receive it. It lives in the clone this was installed from, and this gate cannot know where that
+is. A printed command that does not exist, or that runs a DIFFERENT project's installer, is worse
+than none.
+
+    to provision that worktree:  run game_loop's own install.sh, from the clone you installed
+                                 from, with ${_gl_unharnessed} as its argument
+"
+          fi
           deny "BLOCKED: this commit lands in a tree that carries no game_loop, so its owed checks cannot be read.
 
     the commit's tree:  ${_gl_unharnessed}
@@ -787,16 +999,9 @@ PYLOG
 DIFFERENT tree's record would answer a question about files this commit does not contain — and report
 confidence either way. That is the false green this gate exists to prevent, so it refuses instead (INV6).
 
-THE FIX, ready to paste — it provisions that tree with THIS tree's rules, once:
-
-    ${REPO_REAL}/.game_loop/bin/../../install.sh ${_gl_unharnessed}
-
-(If game_loop was installed here from elsewhere, use that clone's install.sh. A worktree provisioned
-this way adopts the parent's verify.yaml rather than a blank one, which would be a gate that owes
-nothing and reports success.)
-
+${_gl_install_hint}
 Or commit from the tree the checks describe, or use --no-verify to skip the gate out loud. This
-refusal is now recorded in the PARENT's log either way, so how often it fires is answerable."
+refusal is recorded in the PARENT's log either way, so how often it fires is answerable."
           ;;
       esac
       GAMELOOP_TARGET="${commit_root#root:}"
@@ -1145,7 +1350,7 @@ somebody meets it."
     fi
 
     # 2. Mutation aimed OUTSIDE the allow roots, decided by RESOLVING PATHS — not matching names.
-    offender=$(REPO_REAL="$REPO_REAL" SLUG="$SLUG" CONFIG_F="$CONFIG_F" CONFIG_MERGED="$CONFIG_MERGED" SCAN_CMD="$scan_cmd" python3 - "$payload" <<'PY'
+    offender=$(REPO_REAL="$REPO_REAL" SLUG="$SLUG" CONFIG_F="$CONFIG_F" CONFIG_MERGED="$CONFIG_MERGED" SCAN_CMD="$scan_cmd" GAMELOOP_DIR="$GAMELOOP_DIR" python3 - "$payload" <<'PY'
 import io, json, os, re, shlex, subprocess, sys
 
 payload = json.loads(sys.argv[1])
@@ -1242,6 +1447,29 @@ def offends(raw, cwd):
     return real
 
 
+def policy_name(raw, cwd):
+    """"<name>\t<realpath>" when this path IS a policy file, else None. Same rules as Write/Edit.
+
+    Rule files count only once they EXIST — seeding an absent one is an installer provisioning a
+    tree, not a session rewriting its own gate. config.local.json counts either way: its keys merge
+    with UNION semantics, so anything written there is strictly additive and cannot be narrowed by
+    the project's own config.
+    """
+    p = os.path.expanduser(raw.replace("$HOME", home))
+    if not os.path.isabs(p):
+        p = os.path.join(cwd, p)
+    real = os.path.realpath(p)
+    gl = os.path.realpath(os.environ.get("GAMELOOP_DIR", ""))
+    if not gl:
+        return None
+    for n in ("config.json", "INVARIANTS.md", "verify.yaml"):
+        if real == os.path.join(gl, n) and os.path.exists(real):
+            return n + "\t" + real
+    if real == os.path.join(gl, "config" + ".local.json"):
+        return "config" + ".local.json\t" + real
+    return None
+
+
 def redirect_targets(seg):
     """Redirect targets in one segment, QUOTE-AWARE in both directions: a redirect character inside
     quotes is data (a sed script, prose in a message) and must not be flagged, while a QUOTED target
@@ -1297,6 +1525,7 @@ def redirect_targets(seg):
 
 
 offenders = []
+policy_hits = []
 # Split on shell separators AND newlines. Omitting \n would collapse a multi-line command into one
 # segment whose verb is its first token, so a mutating later line would never be checked.
 for seg in re.split(r"&&|\|\||;|\||\n", cmd):
@@ -1332,11 +1561,50 @@ for seg in re.split(r"&&|\|\||;|\||\n", cmd):
         bad = offends(raw, cwd)
         if bad:
             offenders.append(bad)
+        # THE POLICY FILES, ON THE BASH PATH TOO (#86). Registered on Write/Edit only, the gate that
+        # bounds the session was a suggestion against `>>` — and because nothing was refused,
+        # nothing was logged either, which removes the very evidence #65 exists to preserve.
+        # Same resolved paths as the rule above, so redirects, sed -i, tee and cp/mv are covered by
+        # construction rather than by a second list of verbs to keep in step.
+        pol = policy_name(raw, cwd)
+        if pol:
+            policy_hits.append(pol)
 
 for o in dict.fromkeys(offenders):
     print(o)
+for p_ in dict.fromkeys(policy_hits):
+    print("POLICY\t" + p_)
 PY
 )
+
+    pol_line=$(printf '%s' "$offender" | grep '^POLICY\t' | head -1)
+    offender=$(printf '%s' "$offender" | grep -v '^POLICY\t' | head -1)
+    if [ -n "$pol_line" ]; then
+      pol_name=$(printf '%s' "$pol_line" | cut -f2)
+      pol_real=$(printf '%s' "$pol_line" | cut -f3)
+      consumed=$(consume_authorization "$pol_real")
+      if [ "$consumed" = "yes" ]; then
+        record_edit "$pol_real"
+        exit 0
+      fi
+      deny "BLOCKED: .game_loop/$pol_name is the PROJECT'S POLICY, and a shell write is still a write.
+
+This is the file that decides what you are allowed to do. Write/Edit to it has been refused since
+#65; a redirect, \`tee\`, \`sed -i\` or a copy onto it was not, so the gate that bounds this session
+was a suggestion against \`>>\`.
+
+THE AUDIT IS THE POINT. The refusal below prescribes \`authorize\`, which records a human's words in
+log.jsonl permanently. A write that is never REFUSED never reaches that hatch — so the policy could
+be widened with no entry anywhere saying it happened, which is the evidence this gate exists to
+preserve.
+
+If a HUMAN approved this change, quote them and it goes on the record:
+  \$GAMELOOP_DIR/bin/game_loop authorize --path $pol_real --reason \"<their exact words>\"
+
+WHAT THIS STILL CANNOT SEE (INV6): a \`python3 -c\` that writes the file, a path built from a shell
+variable, or any MCP tool. It reads the command string. Prevention where it is cheap; the file's
+own hash is the detection this does not yet do."
+    fi
 
     if [ -n "$offender" ]; then
       consumed=$(consume_authorization "$offender")

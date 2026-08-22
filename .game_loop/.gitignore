@@ -15,3 +15,4 @@ HANDOFF.md
 triggers.json
 triggers.d/
 write-guard-probe
+config.local.json

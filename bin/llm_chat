@@ -462,6 +462,24 @@ def and_(*conditions):
 # deadlines, so this may add at most ~1.4s; a retry policy generous enough to
 # outlast a long window would turn a throttle into a hang, which is worse than
 # the error it replaces.
+# WHOSE LIMIT IS THIS. Not one llm_chat chose: `lib/src/rate_limit/` is empty
+# and no Dart source here mentions a rate limit at all, so a 429 is zonai's
+# default. Worth knowing before tuning anything below, because the numbers are
+# not ours to change from this side.
+#
+# SCOPE, reported rather than measured here, and flagged as such: a consumer
+# saw 40 consecutive `GET /db/list` return 200 while writes were being
+# refused, which suggests the limiter is WRITE-scoped. One observation from
+# one machine — enough to know reads and writes are not alike, not enough to
+# state a rule. They deliberately did not hammer writes to find the
+# threshold, since that means junk rooms and messages.
+#
+# The same report measured the WINDOW: from a first 429 on a direct `say` to a
+# successful send took >=40s across three attempts spaced 20s apart, with two
+# full attempts refused. That number matters for #24 — an 8s subprocess
+# timeout on the hook path does not cover a 40s window, so a single generous
+# budget would leave hook callers failing anyway after burning their whole
+# deadline first.
 RETRY_WAITS = (0.4, 1.0)
 
 
@@ -770,6 +788,7 @@ def do_join(server, name, identity, topic, max_messages, announce,
             f"  Nothing can be said in it until it is reopened:\n"
             f"    llm_chat reopen {name}"
         )
+    created_here = chan is None
     if chan is None:
         chan = create(server, "channels", {
             "name": name, "topic": topic, "created_by": identity,
@@ -789,20 +808,66 @@ def do_join(server, name, identity, topic, max_messages, announce,
             update(server, "channels", eq("id", chan["id"]),
                    {"briefing": briefing, "briefing_by": identity})
             chan["briefing"], chan["briefing_by"] = briefing, identity
+        # WHAT WAS IGNORED IS SAID, because the caller who passes these has a
+        # reason to think they took effect. "Recorded only if the channel is
+        # new" is documented and still leaves a silent discard at the moment
+        # it matters most: a `open` refused with a 429 that had ALREADY
+        # created the room sends you to open it again, plausibly with
+        # CORRECTED house rules, and that second call drops them without a
+        # word. Reported by an agent it happened to, who caught it only
+        # because the rendered briefing quoted wording they recognised from
+        # the attempt they had been told failed (#27).
+        ignored = [what for what, given in
+                   (("topic", topic), ("briefing", briefing))
+                   if given and chan.get(what) != given]
+        if ignored:
+            print("  NOTE: %s NOT applied — #%s already has %s, and this "
+                  "verb never\n  overwrites what a room already has. The "
+                  "room keeps what it had."
+                  % (" and ".join(ignored), name,
+                     "one" if len(ignored) == 1 else "them"))
 
-    member = get_membership(server, name, identity)
-    if member is None:
-        # Start at the current end, not at zero. Joining a room should not
-        # dump the entire backlog into your context — you can `read --all` if
-        # you want it, but the default is "what happens from now on".
-        create(server, "memberships", {
-            "channel": name, "identity": identity,
-            "seen_seq": chan.get("message_count", 0),
-            "done": b(False), "created_at": now_ms(),
-        })
-    else:
-        # Rejoining after saying you were done is how you come back.
-        update(server, "memberships", eq("id", member["id"]), {"done": b(False)})
+    # THE ROOM EXISTS NOW, AND A LATER FAILURE MUST NOT SAY OTHERWISE.
+    #
+    # `open` is two writes — the channel, then the membership — and a 429
+    # between them left the room created while the caller saw nothing but
+    # `HTTP 429 Rate limit exceeded` and a non-zero exit. It was told the
+    # operation failed when half of it had succeeded.
+    #
+    # Proven by the reporter with two calls carrying different briefings: the
+    # briefing that ended up stored was the one from the call that reported
+    # nothing but the 429 (#27). The cost was not the confusion — it was that
+    # the reasonable recovery is to open it again, which succeeds, reports
+    # `joined`, and silently discards the corrected house rules.
+    #
+    # Re-raising the SAME class is deliberate: `Throttled` vs `SystemExit` is
+    # what lets a caller tell "wait" from "stop", which is the distinction the
+    # reporter used to handle this at all, and #15 is why it exists.
+    try:
+        member = get_membership(server, name, identity)
+        if member is None:
+            # Start at the current end, not at zero. Joining a room should not
+            # dump the entire backlog into your context — you can `read --all`
+            # if you want it, but the default is "what happens from now on".
+            create(server, "memberships", {
+                "channel": name, "identity": identity,
+                "seen_seq": chan.get("message_count", 0),
+                "done": b(False), "created_at": now_ms(),
+            })
+        else:
+            # Rejoining after saying you were done is how you come back.
+            update(server, "memberships", eq("id", member["id"]),
+                   {"done": b(False)})
+    except SystemExit as stop:
+        if not created_here:
+            raise
+        raise type(stop)(
+            "%s\n\n  BUT #%s WAS CREATED before that failed, so this is a "
+            "PARTIAL success.\n  The room exists with its topic and briefing; "
+            "you are not a member of it\n  yet. Do NOT open it again — a "
+            "second open succeeds and silently discards\n  any topic or "
+            "briefing you pass. Join the room that is already there:\n"
+            "    llm_chat join %s --as %s" % (stop, name, name, identity))
 
     if chan.get("broadcast"):
         print(f"  {name} is a BROADCAST room: everyone who identifies is added, "
@@ -2489,6 +2554,62 @@ def do_delete(server, name, identity, yes=False):
     if waiting:
         print(f"  {', '.join(waiting)} had not left. Their next reconcile "
               f"drops the room;\n  a bridge on it stops within one poll.")
+
+
+def do_close(server, name, identity, reason):
+    """End a room deliberately: transcript kept, nobody woken again.
+
+    THIS VERB DID NOT EXIST AND WAS ALREADY BEING RECOMMENDED. `leave`'s
+    refusal — the one that stops a creator abandoning a room with nobody home
+    — offered `llm_chat close <room> --reason "..."` as its FIRST remedy, and
+    the parser had no such choice. Reported by an agent closing 24 finished
+    Crawler rooms in a loop: every one came back an argparse usage error,
+    which reads as "you called it wrong" rather than "that verb does not
+    exist", and with output redirected the whole batch failed silently.
+
+    The refusal was right about the situation and right about the resolution.
+    Its other two options are both wrong for it: `delete` throws the
+    transcript away, and `leave --ask` keeps you a member of an empty room.
+    `reopen` already existed as this verb's inverse, which is the strongest
+    evidence the concept was intended and the verb simply never landed.
+
+    A REASON IS REQUIRED, not optional. Every other closure in this system
+    records why — "hit the 200-message cap", "every member is done" — and
+    `reopen` prints it back when reviving the room. A deliberate closure with
+    no reason would be the one kind that arrives at a future reader as bare
+    absence, which is the exact defect `waker_exit` exists to fix one file
+    over.
+
+    MEMBERSHIP IS REQUIRED, unlike `reopen`. Reviving a room somebody else
+    ended is recoverable and helpful; ending one you were never in is neither.
+    """
+    chan = get_channel(server, name)
+    if chan is None:
+        raise SystemExit(f"no such channel: {name}")
+    if chan.get("closed"):
+        print(f"{name} is already closed — "
+              f"{chan.get('closed_reason') or 'no reason given'}")
+        return
+    if get_membership(server, name, identity) is None:
+        raise SystemExit(
+            f"{identity} is not a member of {name}, so it is not yours to "
+            f"end.\n  Anyone may `reopen` a room — reviving one is "
+            f"recoverable — but closing\n  it stops every member being woken "
+            f"and only somebody in it can know that is right.")
+    # SAID IN THE ROOM BEFORE IT SHUTS, because afterwards nothing can be.
+    # `say` refuses on a closed channel, so a closure announced after the fact
+    # is a closure nobody in the room ever hears about — they simply find the
+    # door locked next time they try to speak.
+    announce(server, name, identity,
+             f"#{name} is now CLOSED — {reason}\n"
+             f"  The transcript stays readable: llm_chat read {name} --all "
+             f"--peek\n  If this was wrong: llm_chat reopen {name}",
+             AUDIENCE_NONE)
+    update(server, "channels", eq("id", chan["id"]),
+           {"closed": b(True), "closed_reason": reason})
+    print(f"closed {name} — {reason}")
+    print(f"  the transcript is kept: llm_chat read {name} --all --peek")
+    print(f"  nobody is woken here again until: llm_chat reopen {name}")
 
 
 def do_reopen(server, name, max_messages=None):
@@ -4593,6 +4714,13 @@ def build_parser():
                         "leaving outright — stays a member; a plain leave "
                         "when you are ready finishes it")
 
+    p = sub.add_parser("close", help="end a room: transcript kept, nobody "
+                                     "woken here again")
+    p.add_argument("channel")
+    p.add_argument("--reason", required=True,
+                   help="why it is over. Required — every other closure here "
+                        "records one, and `reopen` prints it back")
+    p.add_argument("--as", dest="identity")
     p = sub.add_parser("reopen", help="bring a closed channel back")
     p.add_argument("channel")
     p.add_argument("--max-messages", type=int,
@@ -4733,6 +4861,10 @@ def main() -> int:
         return do_owed(server, args.identity, args.as_json)
     if args.cmd == "reopen":
         do_reopen(server, args.channel, args.max_messages)
+        return 0
+    if args.cmd == "close":
+        do_close(server, args.channel,
+                 resolve_identity(args.identity, args.channel), args.reason)
         return 0
     if args.cmd == "reload":
         if args.auto:

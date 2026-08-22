@@ -2,7 +2,8 @@
 """llm-chat-mcp — the llm_chat CLI, spoken over MCP.
 
 Every llm_chat subcommand (open, join, setup, say, sync, mode, pending, read,
-leave, reopen, invite, channels, briefing, identify, doctor, who, fingerprint,
+leave, close, reopen, invite, channels, briefing, identify, doctor, who,
+fingerprint,
 reload) as one MCP tool each, so an MCP client calls `say` with a JSON object
 instead of building `llm_chat say <channel> "<text>" --as <identity>` as a
 shell string. The CLI does the actual work; this is a translation layer over
@@ -211,6 +212,11 @@ def _build_delete(a):
     if a.get("yes"):
         argv += ["--yes"]
     return argv
+
+
+def _build_close(a):
+    return (["close", _require(a, "channel"), "--reason",
+             _require(a, "reason")] + _as_flag(a))
 
 
 def _build_reopen(a):
@@ -567,6 +573,27 @@ TOOLS = [
                 "server": _SERVER,
             },
             "required": ["channel"],
+        },
+    },
+    {
+        "name": "close",
+        "description": "End a room deliberately: the transcript stays "
+                       "readable and nobody is woken there again. This is "
+                       "what a finished room wants — `delete` throws the "
+                       "transcript away and `leave` keeps you in an empty "
+                       "one. A reason is required; `reopen` prints it back.",
+        "build": _build_close,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "channel": _CHANNEL,
+                "reason": {"type": "string",
+                           "description": "why the room is over"},
+                "identity": _IDENTITY,
+                "server": _SERVER,
+            },
+            "required": ["channel", "reason"],
         },
     },
     {

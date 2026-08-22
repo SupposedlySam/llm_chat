@@ -155,6 +155,123 @@
       "change": "the refusal now prints a PASTEABLE install command for the exact unharnessed tree, and records itself in the PARENT's log as kind commit_gate_unharnessed_tree. The refusal itself is unchanged in what it refuses.",
       "consequence": "if you grep your log for how often this gate fires, you will now find entries where before there were none \u2014 the commit tree has no .game_loop/ and therefore no log of its own, so every one of these was previously invisible in the only place a reviewer would look. Nothing is refused that was permitted before.",
       "why_it_qualifies": "a consumer who changed nothing sees different refusal text and new log lines. Reported after four --no-verify commits in one day: the honest remedies were a manual step and an impossibility, so the escape hatch won every time and left no trace of the gate that prompted it. The behaviour gate did NOT fire \u2014 no refusal line matched its regex \u2014 so this entry is a judgement."
+    },
+    {
+      "seq": 14,
+      "sha": "d24b430",
+      "notice": true,
+      "verb": "the write guard, on Bash `rm` with recursive+force, WHILE A MANDATE IS LIVE",
+      "change": "a new refusal. `rm -rf` (and -fr, -r -f, --recursive --force, /bin/rm, behind sudo) is DENIED while an unparked mandate is set. Command position is required, and both flags: `rm -r`, `rm -f`, `rmdir`, a single-file `rm`, and prose mentioning the command are all untouched. With NO mandate, or a PARKED one, nothing changes at all.",
+      "consequence": "if you run cleanup with `rm -rf` inside a mandated run, it now stops with a refusal naming non-prompting alternatives (mktemp -d and leave it, `git worktree remove`, `rmdir`, a plain `rm`) and the `authorize` hatch. Nothing outside a live mandate is affected, so a session that never sets one sees no change.",
+      "why_it_qualifies": "a consumer who changed nothing is refused a command that previously ran. Reported from a real unattended run: the permission layer escalated `rm -rf` to an interactive approval, and their owner happened to be at his desk. Unattended it would have blocked forever \u2014 no timeout, no log line, and the watchdog cannot help because a run waiting on a prompt is not idle. That is the one hazard here that fails SILENT, and it is a property of the PAIR (a mandate says nobody is watching; the permission model assumes somebody is), which only game_loop can see. Refusing converts an unbounded wait into an instant, self-serviceable error."
+    },
+    {
+      "seq": 15,
+      "sha": "7c54835",
+      "notice": true,
+      "verb": "the Stop gate, on a checkpoint whose notes name the next action",
+      "change": "a NEW refusal. Under a live mandate, with nothing armed and nothing reporting as waiting, a checkpoint whose notes name a successor ('Next: X', 'moving on to X', \"I'll start X\") is REFUSED, and the refusal quotes the phrase. A named blocker in the same notes ('blocked on <fact>', 'needs a decision') clears it, as does an armed T3 or a probe reporting waiting.",
+      "consequence": "if you end turns with checkpoints that say what you will do next, those turn-ends now stop instead of handing back. Ordinary progress checkpoints are unaffected, and with no mandate the gate is inert as before. The cheapest way to clear it is to delete the word \u2014 the refusal says outright that this is not the fix, because doing so teaches worse checkpoints while changing nothing about the run.",
+      "why_it_qualifies": "a consumer who changed nothing is refused a turn-end that previously succeeded. Reported with a verbatim case and a table showing that EVERY existing gate passed it, each for a correct reason: the Stop gate saw a declared checkpoint (its contract), the ritual counter saw a real commit, the watchdog saw no idle because the session had stopped rather than gone quiet. The hole was between the gates. The behaviour gate did NOT fire here \u2014 the refusal is a return, not a deny line, so no regex matched \u2014 which makes this entry a judgement rather than a prompted one."
+    },
+    {
+      "seq": 16,
+      "sha": "65ba47d",
+      "notice": true,
+      "verb": "the write guard, on Bash commands that MENTION a recursive-force delete",
+      "change": "a REFUSAL WITHDRAWN. Commands that only write about or search for the verb are no longer blocked \u2014 a grep whose search pattern contains it, prose in an echo, a commit message. The matcher now tokenises before splitting on shell operators, so a quoted string is one token instead of being torn apart by the alternation bars inside it. Every real spelling still denies, including -r -f split across tokens.",
+      "consequence": "if seq 14 was blocking your greps or your commit messages, it stops. Nothing that was allowed becomes refused.",
+      "why_it_qualifies": "a consumer who changed nothing is no longer refused commands that seq 14 blocked yesterday. Reported the day after shipping it, hit while grepping the binary to find where the guard lived \u2014 which is the likeliest first encounter anyone adopting it has. guard-sdb.sh already carried this exact lesson in its header, and it reproduced on me while I was fixing it: the patch command carrying the explanatory comment was itself refused."
+    },
+    {
+      "seq": 17,
+      "sha": "65ba47d",
+      "notice": true,
+      "verb": "the Stop gate, on a checkpoint that ENUMERATES remaining work, and on a reworded second turn-end",
+      "change": "two widenings of seq 15. A checkpoint that lists what is LEFT ('mandate has 4108, 4109, 4111 left') is now a deferral even when it never says 'next' \u2014 both a remaining-word AND a work-item token are required, so an ordinary finding like 'the remaining 19 failures are pre-existing' still passes. And `stop_hook_active` no longer allows a turn-end when NOTHING is on the record since the gate's last refusal.",
+      "consequence": "turn-ends that summarise outstanding work now stop, and answering a block by rewriting the closing message no longer succeeds on the second attempt \u2014 one tool call clears it. The two-block circuit breaker still stands the gate down, and the refusal now says so explicitly. An unreadable log allows, unchanged.",
+      "why_it_qualifies": "a consumer who changed nothing is refused turn-ends that succeeded before. Both measured across two overnight strandings on the reporter's side, where every gate fired correctly, `consecutive` never reached the stand-down bound, and the run still ended: the enforcement budget for a turn-end was exactly one refusal, and the cheapest way to spend it was on prose."
+    },
+    {
+      "seq": 18,
+      "sha": "f9d0a01",
+      "notice": true,
+      "verb": "the write guard, on Bash writes to .game_loop policy files",
+      "change": "a NEW refusal. `.game_loop/verify.yaml`, `config.json`, `INVARIANTS.md` (once they exist) and `config.local.json` (always) are now refused through Bash as well as Write/Edit \u2014 redirects, heredoc appends, `tee`, `sed -i`, and `cp`/`mv` onto the path. Reading, grepping and writing LEDGER.md are unaffected.",
+      "consequence": "if you edit your own policy files with a shell redirect, that stops working and prints the same authorize hatch Write/Edit has printed since #65. Nothing that was refused becomes allowed.",
+      "why_it_qualifies": "a consumer who changed nothing is refused a command that previously succeeded. Reported with a reproduction: the guard was registered on Write/Edit only, so `cat >> .game_loop/verify.yaml` widened the file that bounds the session with exit 0 \u2014 and because nothing was refused, nothing was logged, which removes the very evidence #65 exists to preserve. They found it non-adversarially: the human had approved the change, they reached for a heredoc because they were appending rather than editing, and it simply worked."
+    },
+    {
+      "seq": 19,
+      "sha": "f9d0a01",
+      "notice": true,
+      "verb": "mutate --prove",
+      "change": "two new COULD NOT PROVE outcomes. A test command that reports ZERO selected tests is refused in both directions. And a mutated run that PASSES while printing no recognisable test count AND whose anchor could not be liveness-probed is refused rather than reported as NOT PROVED.",
+      "consequence": "a proof whose test filter matches nothing now stops instead of reporting NOT PROVED, and the refusal prints the tree the test ran in beside the file it mutated. A mutated run that goes RED is unaffected \u2014 redness is self-evidencing, since a command that selected nothing cannot fail.",
+      "why_it_qualifies": "a consumer who changed nothing gets a refusal where they previously got a verdict. Reported from a linked git worktree: --file resolved against their cwd while the test ran in another root, mocha's --grep matched nothing, zero tests were selected, and exit 0 was reported as NOT PROVED for a mutation that demonstrably fails the test."
+    },
+    {
+      "seq": 20,
+      "sha": "e3ef64d",
+      "notice": true,
+      "verb": "the write guard, on a write into the agent-memory directory",
+      "change": "a new NON-BLOCKING note. Writing a memory file under ~/.claude/projects/<slug>/memory/ now prints the harden ladder, names the write as rung 6, and asks whether this is a FACT ABOUT THE HUMAN (where a memory is right) or a LEARNING ABOUT WORK (where a rung above 6 nearly always exists). The write is recorded as kind memory_write, and once several stack up with no harden between them the note carries the count. MEMORY.md, ordinary repo files and scratchpad writes are silent.",
+      "consequence": "if you write agent memories, you will see one extra block of context at that moment. Nothing is blocked and no write is refused. A new log kind (memory_write) appears in log.jsonl.",
+      "why_it_qualifies": "a consumer who changed nothing sees output they did not see before, and a new record kind in their log. Raised by a human about their own agent: rung 6 is what this project's ladder calls the last resort, and a memory is enforcement-by-remembering \u2014 which INV1's own test refuses, since a memory is nothing but an instruction to a future self, surfaced at session start rather than at the moment it is needed."
+    },
+    {
+      "seq": 21,
+      "sha": "207a378",
+      "notice": true,
+      "verb": "mandate --set",
+      "change": "a NEW refusal. Replacing a LIVE mandate with DIFFERENT words is refused; the refusal shows both mandates, names GAME_LOOP_SESSION as the subagent remedy, and points at `mandate --clear` for a deliberate replacement. Re-setting the SAME words still succeeds. The setter's pid, ppid and session ids are now recorded on the mandate.",
+      "consequence": "if you re-bind a mandate with new wording without clearing first, that stops and asks you to say which you mean. A retry or a re-bind after compaction with identical wording is unaffected.",
+      "why_it_qualifies": "a consumer who changed nothing is refused a command that previously succeeded. Reported by a project lead whose dispatched in-process subagent inherited CLAUDE_CODE_SESSION_ID: the worker's `mandate --set` landed in the lead's state file, replaced the lead's mandate silently, and the watchdog then spent several turns instructing the lead to perform the worker's task \u2014 every gate working correctly, enforcing the wrong agent's goal."
+    },
+    {
+      "seq": 22,
+      "sha": "16bb10e",
+      "notice": true,
+      "verb": "every refusal, from every verb",
+      "change": "a refusal now exits 3 instead of 2, and prints its reason to BOTH stdout and stderr instead of stderr alone. Exit 2 remains what argparse usage errors and unhandled exceptions produce. The Stop gate and watchdog are UNAFFECTED \u2014 they exit 2 directly because that is Claude Code's hook protocol for blocking a turn-end, not a game_loop choice.",
+      "consequence": "if you branch on `exit == 2` to detect a refusal, that check now misses; branch on 3, or on non-zero as before. If you parse refusal text off stderr, that still works. If you run with `2>/dev/null` you will now SEE the reason on stdout, where previously you saw nothing at all.",
+      "why_it_qualifies": "a consumer who changed nothing gets a different exit code and output on a stream that was previously empty. Reported after three refuted claims in one evening went unrecorded because a refusal read as success: it exited 2 exactly as a typo does, and its reason lived on the one stream a quiet hook discards. They had written a 36-line wrapper per repo to recover the distinction."
+    },
+    {
+      "seq": 23,
+      "sha": "94c49c3",
+      "notice": true,
+      "verb": "checkpoint",
+      "change": "a NEW refusal. The handback refuses when commits are finished, PUSHED, and ahead of the newest confidence mark \u2014 a clean tree plus HEAD on the remote. Mid-work (any uncommitted change) is silent, unpushed is silent (that has its own gate), and HEAD already marked is silent. `--release-deferred \"<why>\"` lets it through and records the reason as kind release_deferred.",
+      "consequence": "if you finish work, push it, and hand back without marking a confidence level, the checkpoint now stops. Publishing or one flag clears it. Nothing about work-in-progress handbacks changes.",
+      "why_it_qualifies": "a consumer who changed nothing is refused a checkpoint that previously succeeded. This replaces a VISIBLE-rung warning that printed correctly at the same moment and was read past twice in one day, after which the human had to ask twice whether the work was published \u2014 it was not, both times. A consumer had already been stranded by exactly this: they upgraded, did not find the fix, and diagnosed committed-but-not-released themselves."
+    },
+    {
+      "seq": 24,
+      "sha": "d970ba7",
+      "notice": true,
+      "verb": "the commit gate, refusing a commit from a tree that carries no game_loop",
+      "change": "the pasteable remedy is now VERIFIED before it is printed. It is offered only when the installed project's root actually holds game_loop's own install.sh (checked by existence AND a marker in the file). Otherwise the refusal says plainly that it cannot name an installer from here, and gives the two remedies that always work.",
+      "consequence": "if you hit this refusal on an ordinary consumer install, you no longer get a paste-ready command \u2014 because the one printed before did not exist there. Nothing that worked stops working: the game_loop clone still gets its paste.",
+      "why_it_qualifies": "a consumer who changed nothing gets different refusal text, and one that previously contained a broken command. Reported against #74's fix: REPO_REAL is the INSTALLED PROJECT and install.sh only ever copies the .game_loop/ payload, so the path resolved in exactly one place on any machine. Reproduced here on a live consumer (no such file), and worse on two others that ship their OWN install.sh \u2014 where the printed command resolved to a DIFFERENT project's installer."
+    },
+    {
+      "seq": 25,
+      "sha": "bbc4b88",
+      "notice": true,
+      "verb": "install.sh, run from a clone with GAME_LOOP_CHANNEL or GAME_LOOP_REF set",
+      "change": "a NEW refusal, exit 3. Naming a ref while installing from a clone is refused instead of ignored. Nothing is written to the target, and both ways forward are printed: unset the variable to install the clone you are standing in, or run the fetched installer, which honours the ref. An ordinary clone install with no ref named is unaffected.",
+      "consequence": "if you scripted `GAME_LOOP_CHANNEL=stable /path/to/clone/install.sh <target>`, that stops instead of installing the clone's working tree. It never did what the variable said \u2014 it silently installed different bytes \u2014 so the script was already not doing what it looked like.",
+      "why_it_qualifies": "a consumer who changed nothing is refused a command that previously exited 0. Reported and reproduced here: asking for `stable` installed the clone's own HEAD, stamped ALPHA, with nothing said. REF is set from the channel but read only inside the fetch block, which is skipped when a local payload exists."
+    },
+    {
+      "seq": 26,
+      "sha": "bdc7b8e",
+      "notice": true,
+      "verb": "status, and notify --test",
+      "change": "status now prints a WARNING when a mandate is armed and no external wake path is recorded, and `mandate --set` accepts `--wake-path \"<how a signal reaches this session>\"` to record one. A parked mandate is silent. Separately, `notify --test` no longer says the channel 'works' \u2014 it reports that the channel ACCEPTED the page, and states that this establishes neither that a human saw it nor that a wake can reach an idle session.",
+      "consequence": "an armed mandate with nothing declared gains one warning block in status until you record a wake path or park. The notify test page's own text changed, and its output now names what an accepted send does not prove. Nothing is refused either way.",
+      "why_it_qualifies": "a consumer who changed nothing sees a new warning and different notify output. Reported from a run that sat inert for six hours while status said the mandate was armed and the watchdog live, because every gate here fires from INSIDE the session \u2014 which is the thing that stops working when a run goes quiet. The reporter's transport doctor knew; game_loop could not. The declaration is explicitly weaker than a probe and says so."
     }
   ],
   "schema": 1

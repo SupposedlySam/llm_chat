@@ -6,11 +6,13 @@ connected, spoke into an error, and had nothing connecting the two events.
 """
 import io
 import json
+import re
+import shlex
 import os
 import sys
 import tempfile
 import unittest
-from contextlib import redirect_stdout
+from contextlib import redirect_stderr, redirect_stdout
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from support import FakeServer, load  # noqa: E402
@@ -54,6 +56,112 @@ class RoomTest(unittest.TestCase):
         self.assertIsNotNone(chan)
         self.assertEqual(chan["topic"], "a topic")
         self.assertEqual(chan["created_by"], "me")
+
+    # ── #27: a failure after the room exists must not read as "no room" ─────
+
+    def fail_after_channel(self, kind=SystemExit):
+        """Let the channel create succeed, then fail the next write.
+
+        That is the exact shape of the reported 429: `open` is two writes and
+        the limiter refused the second one.
+        """
+        real = cli.create
+        state = {"made": False}
+
+        def once(server, table, fields):
+            if table == "channels":
+                state["made"] = True
+                return real(server, table, fields)
+            raise kind("HTTP 429  Rate limit exceeded")
+
+        cli.create = once
+        self.addCleanup(lambda: setattr(cli, "create", real))
+        return state
+
+    def test_A_429_AFTER_THE_ROOM_IS_CREATED_SAYS_THE_ROOM_EXISTS(self):
+        """The caller was told the operation failed when half of it had
+        succeeded. Proven by the reporter with two calls carrying different
+        briefings: the briefing that ended up stored was the one from the call
+        that reported nothing but `HTTP 429 Rate limit exceeded`."""
+        self.fail_after_channel()
+        with self.assertRaises(SystemExit) as caught:
+            self.quiet(cli.do_join, "http://127.0.0.1:1", "half", "me",
+                       "a topic", 200, False)
+        said = str(caught.exception)
+        self.assertIn("429", said, "the original cause must survive")
+        self.assertIn("PARTIAL", said)
+        self.assertIsNotNone(self.fake.get_channel("half"),
+                             "the room really is there")
+
+    def test_the_partial_failure_names_JOIN_not_open_as_the_recovery(self):
+        """The whole cost of this bug: the reasonable recovery is to open it
+        again, which succeeds and silently discards the corrected house
+        rules. So the refusal has to send you somewhere else."""
+        self.fail_after_channel()
+        with self.assertRaises(SystemExit) as caught:
+            self.quiet(cli.do_join, "http://127.0.0.1:1", "half", "me", None,
+                       200, False)
+        said = str(caught.exception)
+        self.assertIn("llm_chat join half", said)
+        self.assertIn("Do NOT open it again", said)
+
+    def test_the_THROTTLED_class_survives_the_added_context(self):
+        """`Throttled` vs a plain SystemExit is what lets a caller tell "wait"
+        from "stop" — the distinction the reporter used to handle this at all,
+        and the thing #15 exists for. Re-raising the wrong class would trade
+        one silent wrong answer for another."""
+        self.fail_after_channel(kind=cli.Throttled)
+        with self.assertRaises(cli.Throttled):
+            self.quiet(cli.do_join, "http://127.0.0.1:1", "half", "me", None,
+                       200, False)
+
+    def test_a_failure_on_a_room_that_ALREADY_EXISTED_is_left_alone(self):
+        """Nothing partial happened — the room was there before this call, so
+        adding "BUT it was created" would be a new false statement."""
+        self.fake.channel("existing")
+        self.fail_after_channel()
+        with self.assertRaises(SystemExit) as caught:
+            self.quiet(cli.do_join, "http://127.0.0.1:1", "existing", "me",
+                       None, 200, False)
+        self.assertNotIn("PARTIAL", str(caught.exception))
+
+    def test_A_SECOND_OPEN_SAYS_WHAT_IT_IGNORED(self):
+        """"Recorded only if the channel is new" is documented and still left
+        a silent discard at the moment it matters most. The reporter caught it
+        only because the rendered briefing quoted wording they recognised from
+        the attempt they had been told failed."""
+        self.fake.channel("room", topic="first", briefing="rules A")
+        _, text = self.quiet(cli.do_join, "http://127.0.0.1:1", "room", "me",
+                             "second", 200, False, briefing="rules B")
+        self.assertIn("NOT applied", text)
+        self.assertIn("topic and briefing", text)
+        self.assertEqual(self.fake.get_channel("room")["briefing"], "rules A")
+
+    def test_a_second_open_passing_NOTHING_says_nothing(self):
+        """The ordinary case is `join`/`open` with no topic at all, and a
+        notice on every one of those is noise that teaches people to skip the
+        real one."""
+        self.fake.channel("room", topic="first", briefing="rules A")
+        _, text = self.quiet(cli.do_join, "http://127.0.0.1:1", "room", "me",
+                             None, 200, False)
+        self.assertNotIn("NOT applied", text)
+
+    def test_a_second_open_passing_the_SAME_values_says_nothing(self):
+        """Nothing was discarded, so there is nothing to report."""
+        self.fake.channel("room", topic="same", briefing="rules")
+        _, text = self.quiet(cli.do_join, "http://127.0.0.1:1", "room", "me",
+                             "same", 200, False, briefing="rules")
+        self.assertNotIn("NOT applied", text)
+
+    def test_a_room_MISSING_a_briefing_still_receives_one(self):
+        """The fill-in-what-is-missing behaviour is deliberate and must not
+        have been turned into a refusal by the notice."""
+        self.fake.channel("room", topic=None, briefing=None)
+        self.quiet(cli.do_join, "http://127.0.0.1:1", "room", "me", "given",
+                   200, False, briefing="rules")
+        chan = self.fake.get_channel("room")
+        self.assertEqual(chan["topic"], "given")
+        self.assertEqual(chan["briefing"], "rules")
 
     def test_joining_starts_you_at_the_current_end_not_at_message_zero(self):
         """Entering a room must not dump its backlog into your context."""
@@ -107,10 +215,32 @@ class RoomTest(unittest.TestCase):
                        "owner")
         said = str(caught.exception)
         self.assertIn("CREATED", said)
-        self.assertIn("close", said)
-        self.assertIn("delete", said)
         self.assertIn("llm_chat_owner", cli.read_joined(),
                       "the refusal must not half-apply")
+        # EVERY COMMAND IT OFFERS IS PARSED, not merely spelled.
+        #
+        # This asserted `assertIn("close", said)` and passed for months while
+        # `close` was not a verb at all — the word was in the prose, so the
+        # check was satisfied by a sentence ABOUT the remedy rather than by
+        # the remedy existing. lamp-owner named the general form in
+        # #learnings: a guard that matches a word is satisfied by prose about
+        # the thing.
+        #
+        # An agent following the first line got an argparse usage error, and
+        # in a loop over 24 rooms with output redirected the whole batch
+        # failed silently (#26). A remedy string is a promise, and nothing
+        # here was executing it.
+        parser = cli.build_parser()
+        offered = re.findall(r"llm_chat ([a-z]+) llm_chat_owner([^\n]*)", said)
+        self.assertTrue(offered, "the refusal offers no command at all")
+        for verb, rest in offered:
+            # Cut the trailing parenthetical gloss — "(stays a member, asks
+            # the room)" is commentary, not argv, and shlex happily splits it
+            # into words that then read as arguments.
+            argv = [verb, "llm_chat_owner"] + shlex.split(rest.split("(")[0])
+            with self.subTest(command=" ".join(argv)):
+                with redirect_stderr(io.StringIO()):
+                    parser.parse_args(argv)
 
     def test_a_NON_owner_may_still_leave(self):
         """Paired. The rule is about abandoning a help desk you opened, not
@@ -226,6 +356,117 @@ class RoomTest(unittest.TestCase):
         self.fake.channel("room", closed=0)
         _, text = self.quiet(cli.do_reopen, "http://127.0.0.1:1", "room", None)
         self.assertIn("already open", text)
+
+    # ── close: the verb the refusal was already recommending ────────────────
+
+    def test_CLOSE_ENDS_THE_ROOM_AND_RECORDS_WHY(self):
+        """`leave`'s refusal offered `llm_chat close <room> --reason "..."` as
+        its FIRST remedy and the parser had no such choice.
+
+        Reported by an agent closing 24 finished rooms in a loop: every one
+        came back an argparse usage error, which reads as "you called it
+        wrong" rather than "that verb does not exist", and with output
+        redirected the whole batch failed silently. The refusal was right
+        about the situation and right about the resolution; `delete` throws
+        the transcript away and `leave --ask` keeps you in an empty room."""
+        self.fake.channel("room", closed=0)
+        self.fake.membership("room", "me")
+        self.quiet(cli.do_close, "http://127.0.0.1:1", "room", "me", "it is done")
+        chan = self.fake.get_channel("room")
+        self.assertTrue(chan["closed"])
+        self.assertEqual(chan["closed_reason"], "it is done")
+
+    def test_close_SAYS_SO_IN_THE_ROOM_BEFORE_SHUTTING_IT(self):
+        """`say` refuses on a closed channel, so a closure announced after the
+        fact is one nobody in the room ever hears about — they simply find the
+        door locked next time they try to speak."""
+        self.fake.channel("room", closed=0)
+        self.fake.membership("room", "me")
+        self.quiet(cli.do_close, "http://127.0.0.1:1", "room", "me", "it is done")
+        posted = self.fake.tables.get("messages") or []
+        self.assertTrue(posted, "nothing was said in the room")
+        self.assertIn("CLOSED", posted[-1]["text"])
+
+    def test_the_closure_notice_WAKES_NOBODY(self):
+        """It is an announcement that the room is over. Waking every member
+        for it costs each of them a turn to learn they need not come back."""
+        self.fake.channel("room", closed=0)
+        self.fake.membership("room", "me")
+        self.quiet(cli.do_close, "http://127.0.0.1:1", "room", "me", "done")
+        self.assertEqual((self.fake.tables["messages"])[-1]["audience"],
+                         cli.AUDIENCE_NONE)
+
+    def test_close_REFUSES_A_NON_MEMBER(self):
+        """Unlike `reopen`, which anyone may do. Reviving a room somebody else
+        ended is recoverable and helpful; ending one you were never in is
+        neither."""
+        self.fake.channel("room", closed=0)
+        with self.assertRaises(SystemExit) as caught:
+            cli.do_close("http://127.0.0.1:1", "room", "stranger", "because")
+        self.assertIn("not a member", str(caught.exception))
+
+    def test_closing_an_already_closed_room_is_a_no_op_that_says_why(self):
+        self.fake.channel("room", closed=1, closed_reason="the cap")
+        self.fake.membership("room", "me")
+        _, text = self.quiet(cli.do_close, "http://127.0.0.1:1", "room", "me",
+                             "again")
+        self.assertIn("already closed", text)
+        self.assertEqual(self.fake.get_channel("room")["closed_reason"],
+                         "the cap")
+
+    def test_close_refuses_a_room_that_does_not_exist(self):
+        with self.assertRaises(SystemExit) as caught:
+            cli.do_close("http://127.0.0.1:1", "nowhere", "me", "because")
+        self.assertIn("no such channel", str(caught.exception))
+
+    def test_the_transcript_and_the_way_back_are_both_named(self):
+        """A closure that does not say the words are kept reads as a delete,
+        which is the option this verb exists to be gentler than."""
+        self.fake.channel("room", closed=0)
+        self.fake.membership("room", "me")
+        _, text = self.quiet(cli.do_close, "http://127.0.0.1:1", "room", "me",
+                             "done")
+        self.assertIn("read room --all --peek", text)
+        self.assertIn("reopen room", text)
+
+    def test_a_reason_is_REQUIRED_by_the_real_parser(self):
+        """Every other closure here records why — "hit the 200-message cap",
+        "every member is done" — and `reopen` prints it back. A deliberate
+        closure with no reason would be the one kind arriving at a future
+        reader as bare absence."""
+        parser = cli.build_parser()
+        err = io.StringIO()
+        with redirect_stderr(err):
+            with self.assertRaises(SystemExit):
+                parser.parse_args(["close", "room"])
+        self.assertIn("--reason", err.getvalue())
+
+    def test_close_is_REACHABLE_from_the_command_line(self):
+        """Through `main`, not by calling `do_close`. Every other test here
+        holds the function, so a verb wired to the wrong handler — or parsed
+        and never dispatched — would pass all of them and fail for every user.
+        The parser test proves the FLAG parses, never that anything runs."""
+        self.fake.channel("room", closed=0)
+        self.fake.membership("room", "me")
+        cli.remember("room", "me", "http://127.0.0.1:1")
+        argv = sys.argv
+        sys.argv = ["llm_chat", "--server", "http://127.0.0.1:1",
+                    "close", "room", "--reason", "reached", "--as", "me"]
+        try:
+            with redirect_stdout(io.StringIO()):
+                self.assertEqual(cli.main(), 0)
+        finally:
+            sys.argv = argv
+        self.assertEqual(self.fake.get_channel("room")["closed_reason"],
+                         "reached")
+
+    def test_THE_REFUSAL_S_OWN_COMMAND_PARSES(self):
+        """The whole bug: the remedy string named a verb that did not exist.
+        This asserts the two ends agree by parsing what `leave` prints."""
+        parser = cli.build_parser()
+        args = parser.parse_args(["close", "room", "--reason", "leaf work done"])
+        self.assertEqual(args.cmd, "close")
+        self.assertEqual(args.reason, "leaf work done")
 
     def test_THE_CAP_CAN_BE_RAISED_BEFORE_THE_ROOM_SHUTS(self):
         """The remedy has to be reachable BEFORE the harm, not after it.
