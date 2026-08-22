@@ -1602,6 +1602,31 @@ MUTATIONS = [
      "that line and thrown away, which is exactly how it came to be missing "
      "for as long as it was"),
 
+    ("a skill naming TWO checkouts names neither", "bin/llm_chat",
+     "    return named.pop() if len(named) == 1 else None",
+     "    return named.pop() if named else None",
+     "one of several paths is offered as THE checkout agents are sent to, "
+     "which is a coin flip presented as a fact — and `set.pop` makes it a "
+     "different coin flip per run"),
+
+    ("say ECHOES what it stored", "bin/llm_chat",
+     '    if first:\n        shown = first[0] if len(first[0]) <= 72 '
+     'else first[0][:71] + "…"\n        print("  stored: %s" % shown)',
+     "    if False:\n        pass",
+     "a shell-mangled message and an intact one print identically and the "
+     "send succeeded, so there is no error to notice — the incident in "
+     "llms.txt was recovered only by an agent re-reading its own message "
+     "after noticing a sentence had lost its subject, which is the weakest "
+     "detector available"),
+
+    ("the echo reports the LENGTH as well as the first line", "bin/llm_chat",
+     '    print("sent #%d to %s as %s  (%d chars)"\n'
+     "          % (seq, name, identity, len(text or \"\")))",
+     '    print("sent #%d to %s as %s" % (seq, name, identity))',
+     "a truncation that leaves the first line intact prints identically to "
+     "the whole message, so the one corruption the echo cannot show is the "
+     "one it was cheapest to cover"),
+
     ("a machine-wide skill naming another BUILD is reported", "bin/llm_chat",
      "    theirs, mine = wiring_fingerprint(named), wiring_fingerprint(ROOT)\n"
      "    if not theirs or not mine or theirs == mine:\n        return \"\"",

@@ -334,6 +334,70 @@ class RecipientTest(ServerTest):
         self.assertEqual(self.server.tables.get("messages", []), [])
 
 
+class EchoTest(ServerTest):
+    """`say` echoes what it STORED, on the success path.
+
+    It reported routing, cost and a sequence number and not one byte of the
+    text — so a shell-mangled message and an intact one printed identically,
+    and the send genuinely succeeded, so there was no error to notice.
+
+    llms.txt has carried the incident for weeks: an agent found it only by
+    re-reading its own message with `--all` after noticing a sentence had lost
+    its subject. The same paragraph says `--file` "cannot remove it for a
+    caller who does not use it". The design knew the gap and knew the remedy
+    was caller-dependent, and the success path still said nothing.
+
+    gameloop's general form, from the identical shape in a different verb: a
+    verb that echoes its input on FAILURE but not on success has its blind
+    spot exactly where a corrupted input becomes a believed result.
+    """
+
+    def test_THE_STORED_TEXT_IS_ECHOED(self):
+        out = self.say("the sentence that was actually stored")
+        self.assertIn("the sentence that was actually stored", out)
+
+    def test_the_length_is_reported_too(self):
+        """The first line would not show a truncation that keeps it intact;
+        the count does, and costs four characters."""
+        self.assertIn("(37 chars)", self.say("x" * 37))
+
+    def test_two_messages_differing_only_in_the_BODY_print_differently(self):
+        """The property, stated as the thing that failed. Routing, cost and
+        seq are identical for a mangled message and an intact one — that is
+        precisely why the old output could not tell them apart."""
+        intact = self.say("the check fires when nothing went wrong")
+        mangled = self.say("the check  fires when nothing went wrong")
+        self.assertNotEqual(intact, mangled)
+
+    def test_only_the_FIRST_line_is_echoed(self):
+        """These rooms cost context and this is the sender's own output. One
+        line is what catches the reported incident; the whole body would
+        double every send."""
+        out = self.say("first line here\nsecond line must not appear")
+        self.assertIn("first line here", out)
+        self.assertNotIn("second line must not appear", out)
+
+    def test_a_long_first_line_is_truncated_rather_than_dropped(self):
+        """Dropped, a long opening sentence would leave exactly the messages
+        most worth checking with nothing echoed at all."""
+        out = self.say("y" * 200)
+        self.assertIn("y" * 40, out)
+        self.assertIn("…", out)
+
+    def test_an_empty_message_does_not_print_an_empty_stored_line(self):
+        """Nothing was stored worth showing, and a blank `stored:` reads as a
+        message that vanished."""
+        out = self.say("   ")
+        self.assertNotIn("stored:", out)
+
+    def test_the_routing_line_still_says_everything_it_did(self):
+        """Added to, not replaced. The blast radius is why this output exists
+        and the echo must not have cost it."""
+        out = self.say("hi")
+        self.assertIn("sent #", out)
+        self.assertIn("wakes", out)
+
+
 class StoreTest(ServerTest):
     def test_the_audience_is_persisted(self):
         self.say("hi", audience="bob")
@@ -437,10 +501,24 @@ class StoreTest(ServerTest):
         self.say("hi", audience="bob")
         self.assertEqual(self.server.tables["messages"][0]["audience"], "bob")
 
+    def reach_line(self, out):
+        """The line about who was woken, found by CONTENT not by index.
+
+        This was `splitlines()[1]`, which is a claim about layout rather than
+        about the reach line — and it broke the moment `say` gained a line
+        above it. The test's reasoning was always "only the reach line,
+        because the confirmation legitimately names the sender"; that is a
+        statement about which line, so it should select one.
+        """
+        for line in out.splitlines():
+            if any(w in line for w in ("wakes", "passive", "nobody else")):
+                return line
+        self.fail("no reach line in:\n%s" % out)
+
     def test_the_sender_is_never_counted_among_the_woken(self):
         """Only the reach line — the confirmation above it legitimately names
         the sender, and asserting over the whole output caught that instead."""
-        reach = self.say("hi").splitlines()[1]
+        reach = self.reach_line(self.say("hi"))
         self.assertNotIn("alice", reach)
         self.assertIn("bob", reach)
 
