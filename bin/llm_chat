@@ -602,6 +602,51 @@ def call(server, method, path, body=None, query=None, timeout=10):
                              f"not 127.0.0.1 (zonai#16)."}
 
 
+# THE EXIT-CODE CONTRACT (#30). A consumer could not tell "the server asked
+# you to wait" from "you may not do that": both exited 1, so showrunner wrote
+# a regex over THIS PROJECT'S PROSE to decide whether a failed `close` should
+# be retried or recorded as failed — and the message immediately above the one
+# it matches was reworded the same week. A wrong answer there is silent in
+# both directions: closures recorded that never happened, or retries refused
+# that would have worked. That is the property that makes it an exit code
+# rather than a paragraph.
+#
+# 2 IS NOT OURS TO ASSIGN, and this is the reason the new codes start at 3.
+# argparse exits 2 on a usage error, and `owed` also returns 2 for COULD NOT
+# LOOK — so on that one verb the two already collide. Not changed here,
+# because an external consumer may be reading it today and moving it would
+# break them silently, which is the failure this issue is about. It is
+# disambiguable as it stands: `owed --json` prints a payload for could-not-
+# look and nothing at all for a usage error. Documented rather than moved,
+# and no NEW meaning is stacked on 2.
+EXIT_OK = 0
+EXIT_REFUSED = 1          # permanent. Do not retry; the answer will not change
+EXIT_USAGE = 2            # argparse's, and `owed`'s could-not-look. See above
+EXIT_THROTTLED = 3        # the server said later. NOT applied — retry after a wait
+EXIT_INDETERMINATE = 4    # nobody can say what landed. Do NOT blindly retry
+
+# PRINTED BY --help, not filed in a document the consumer does not open. The
+# reader here is a program's author deciding what to do with a non-zero
+# status, and they are already at a terminal running the thing.
+EXIT_CODE_HELP = """exit codes — for a caller deciding whether to retry:
+
+  0  it worked
+  1  REFUSED. Permanent; the answer will not change. Do not retry.
+  2  usage error (argparse). Also `owed`'s COULD NOT LOOK — those two share a
+     code and are told apart by the payload: `owed --json` prints one, a usage
+     error prints nothing on stdout.
+  3  THROTTLED. The server asked you to wait and the request was NOT applied.
+     Retry the same command after a pause.
+  4  INDETERMINATE. Something landed and something did not, and this program
+     cannot say which. Do NOT blindly retry — `open` is two writes, and a
+     second `open` succeeds while silently discarding the topic and briefing
+     you passed. Look at what exists, then join it.
+
+3 and 4 exist because both used to be 1, so a consumer had to regex this
+program's prose to tell a transient from a refusal — and the prose gets
+reworded. The wording is aimed at a human; the code is aimed at you."""
+
+
 class Throttled(SystemExit):
     """The server said LATER, not no.
 
@@ -616,6 +661,28 @@ class Throttled(SystemExit):
     later, and the only way out on offer was the bypass. A gate that cries
     wolf teaches its own bypass, and the cheapest way to clear a transient
     must not be the habit you would rather nobody formed.
+    """
+
+
+class Indeterminate(SystemExit):
+    """Nobody can say what landed. A THIRD state, not a flavour of the others.
+
+    `open` is two writes — create the channel, then join it — so a failure
+    between them leaves a room that exists with nobody in it. The message for
+    that case works hard not to claim "nothing was written", and correctly
+    hands the question to the caller. A programmatic caller had nowhere to
+    PUT that answer: it exited 1, same as a permanent refusal, same as a
+    throttle before this.
+
+    KEPT APART FROM Throttled DELIBERATELY, because the remedies are
+    opposite. A throttle says retry the same command. This says do NOT — a
+    second `open` succeeds and silently discards the topic and briefing you
+    passed, so retrying is how you lose them. Look at what exists, then join
+    it.
+
+    Raised whatever the underlying failure was, including a throttle. Once a
+    write has landed, "the server asked you to wait" has stopped being the
+    useful half of the truth.
     """
 
 
@@ -978,7 +1045,12 @@ def do_join(server, name, identity, topic, max_messages, announce,
     except SystemExit as stop:
         if not created_here:
             raise
-        raise type(stop)(
+        # Indeterminate, NOT type(stop). A throttle here used to re-raise as a
+        # throttle, which tells a caller to retry the same command — and a
+        # second `open` succeeds while silently discarding the topic and
+        # briefing, so obeying that advice is how you lose them. Once a write
+        # has landed, what-happened outranks whether-to-wait.
+        raise Indeterminate(
             "%s\n\n  BUT #%s WAS CREATED before that failed, so this is a "
             "PARTIAL success.\n  The room exists with its topic and briefing; "
             "you are not a member of it\n  yet. Do NOT open it again — a "
@@ -4814,7 +4886,9 @@ def build_parser():
     # level, so setting allow_abbrev on `ap` alone would leave `--to-a` still
     # silently meaning `--to-all`.
     ap = Parser(prog="llm_chat", description=__doc__.split("\n")[0],
-                allow_abbrev=False)
+                allow_abbrev=False,
+                formatter_class=argparse.RawDescriptionHelpFormatter,
+                epilog=EXIT_CODE_HELP)
     ap.add_argument("--server", default=DEFAULT_SERVER)
     sub = ap.add_subparsers(dest="cmd", required=True, parser_class=Parser)
 
@@ -5116,5 +5190,44 @@ def main() -> int:
     return 0
 
 
+def run():
+    """main(), with the exit-code contract applied (#30).
+
+    SEPARATE FROM main() SO A TEST CAN REACH IT. The mapping is the contract
+    an external consumer reads, and a contract that only exists inside an
+    `if __name__` block cannot be asserted by anything — which is the exact
+    shape this repo found in its own gate twice this week: a guard whose only
+    reachable caller is its own test, or none at all.
+
+    INTEGER CODES PASS THROUGH UNTOUCHED. argparse raises SystemExit(0) for
+    --help and SystemExit(2) for a usage error, and rewriting either would
+    make this wrapper the thing that broke the convention it exists to
+    publish.
+    """
+    try:
+        return main()
+    except Indeterminate as stop:
+        return _exit_with(stop, EXIT_INDETERMINATE)
+    except Throttled as stop:
+        return _exit_with(stop, EXIT_THROTTLED)
+    except SystemExit as stop:
+        if isinstance(stop.code, int):
+            return stop.code
+        return _exit_with(stop, EXIT_REFUSED)
+
+
+def _exit_with(stop, code):
+    """Print what SystemExit would have printed, and return the code instead.
+
+    Python prints a string-valued SystemExit to stderr on its way out. Once
+    this catches it that no longer happens, so the message has to be printed
+    here or the refusal becomes silent — which would trade a wrong exit code
+    for no explanation at all.
+    """
+    if stop.code:
+        print(stop.code, file=sys.stderr)
+    return code
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(run())

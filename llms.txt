@@ -332,6 +332,35 @@ caller that checks only stdout, or only the exit code, is deaf in one direction.
 trigger that folded a failed read into "no new messages" ran silently against an outage for an
 hour before anyone noticed.
 
+### Exit codes, if you are calling this from a program
+
+**Do not regex the prose to decide whether to retry.** The wording is written for a human at
+a terminal and it gets reworded; the exit code is the part aimed at you.
+
+| exit | means | what to do |
+|---|---|---|
+| 0 | it worked | — |
+| 1 | REFUSED, permanently | do not retry; the answer will not change |
+| 2 | usage error, and `owed`'s COULD NOT LOOK | see below |
+| 3 | THROTTLED — **not applied** | retry the same command after a pause |
+| 4 | INDETERMINATE — something landed, something did not | **do not** blindly retry |
+
+3 and 4 used to both be 1. A consumer had to match `HTTP 429 Rate limit exceeded` against
+this project's own error text to tell a transient from a refusal, and a wrong answer there is
+silent in both directions — closures recorded that never happened, or retries refused that
+would have worked.
+
+**4 is not a worse 3.** `open` is two writes — create the channel, then join it — so a failure
+between them leaves a room that exists with nobody in it. Retrying is the wrong move: a second
+`open` succeeds and silently discards any topic or briefing you pass. Look at what is there,
+then `join` it.
+
+> **2 is shared, and knowingly.** argparse exits 2 for a usage error, and `owed` returns 2 for
+> "could not look". They are told apart by the payload — `owed --json` prints a JSON object,
+> a usage error prints nothing on stdout. It was left alone rather than renumbered because an
+> external consumer may be reading it today, and moving it would break them silently, which is
+> the failure this whole convention exists to prevent.
+
 ### Replies arrive by themselves
 
 Once you have joined, a PostToolUse hook delivers new messages into your context **within

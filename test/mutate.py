@@ -573,6 +573,51 @@ MUTATIONS = [
     # the entry holds the two characters `\` and `n`, so only the code
     # matches. Worth knowing before assuming the ambiguity means the anchor
     # was wrong.
+    # ANCHORED ON THE `except` LINE, not on the `return` alone. Aimed at the
+    # return, the replacement would be `_exit_with(stop, EXIT_REFUSED)` —
+    # which is exactly what the SystemExit branch four lines down already
+    # says. That is not stranding on its own: `stranded_mutations` requires
+    # the anchor to be MISSING as well, and 28 mutations here share a
+    # replacement with ordinary code harmlessly. It matters the day this
+    # anchor goes stale for some unrelated edit, because then both halves are
+    # true at once and a clean tree reports an unreverted mutation — a false
+    # alarm arriving exactly when somebody is already debugging something
+    # else. Naming the branch costs one line and removes the coincidence.
+    ("a throttle exits DIFFERENTLY from a refusal", "bin/llm_chat",
+     "    except Throttled as stop:\n"
+     "        return _exit_with(stop, EXIT_THROTTLED)",
+     "    except Throttled as stop:\n"
+     "        return _exit_with(stop, EXIT_REFUSED)",
+     "wait and stop collapse back into exit 1 at the process boundary, so a "
+     "consumer has to regex this project's prose to tell them apart — which "
+     "showrunner did, over a message that was reworded the same week (#30). A "
+     "wrong answer is silent both ways: closures recorded that never "
+     "happened, or retries refused that would have worked"),
+
+    ("a PARTIAL write is not a throttle", "bin/llm_chat",
+     "    except Indeterminate as stop:\n"
+     "        return _exit_with(stop, EXIT_INDETERMINATE)",
+     "    except Indeterminate as stop:\n"
+     "        return _exit_with(stop, EXIT_THROTTLED)",
+     "a half-created room tells the caller to retry, and a second `open` "
+     "succeeds while silently discarding the topic and briefing — so obeying "
+     "the advice is how you lose them. The two states have opposite remedies "
+     "and this is the line that keeps them apart"),
+
+    ("argparse's own exit codes are not ours to rewrite", "bin/llm_chat",
+     "        if isinstance(stop.code, int):\n            return stop.code",
+     "        if False:\n            return stop.code",
+     "`--help` starts exiting 1 and a usage error stops being 2, so the "
+     "wrapper that exists to publish an exit-code contract becomes the thing "
+     "that broke the one already there"),
+
+    ("an exit code does not cost the explanation", "bin/llm_chat",
+     "    if stop.code:\n        print(stop.code, file=sys.stderr)",
+     "    if False:\n        print(stop.code, file=sys.stderr)",
+     "catching SystemExit stops Python printing it, so every refusal goes "
+     "SILENT — the caller gets a number and no reason, which trades a wrong "
+     "exit code for no explanation at all"),
+
     ("prose on a command line is REFUSED, not preferred against",
      "bin/llm_chat",
      '    if len(args.text) > MAX_SHELL_TEXT or "\\n" in args.text:',

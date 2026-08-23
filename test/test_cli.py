@@ -5,6 +5,7 @@ happens, so its error handling decides whether a chat outage is a clear message
 or a stack trace in the middle of somebody's refactor — and the zonai wire
 conventions it encodes are each a 500 or a silent wrong answer if got wrong.
 """
+import contextlib
 import io
 import json
 import os
@@ -273,6 +274,97 @@ class CallTest(unittest.TestCase):
         with self.assertRaises(SystemExit) as caught:
             cli.create("http://127.0.0.1:1", "channels", {"name": "x"})
         self.assertNotIsInstance(caught.exception, cli.Throttled)
+
+    def test_THE_EXIT_CODE_TELLS_WAIT_FROM_STOP(self):
+        """#30. The distinction existed in the TYPE and died at the process
+        boundary: both exited 1, so showrunner wrote a regex over this
+        project's prose to decide whether a failed `close` should be retried
+        or recorded as failed — and the message right above the one it matches
+        was reworded the same week.
+
+        A consumer cannot construct this signal itself. It can match a regex,
+        but it cannot know when the regex stopped matching, and a wrong answer
+        is silent in both directions: closures recorded that never happened,
+        or retries refused that would have worked.
+        """
+        real = cli.main
+        cli.main = lambda: (_ for _ in ()).throw(
+            cli.Throttled("HTTP 429 Rate limit exceeded"))
+        self.addCleanup(lambda: setattr(cli, "main", real))
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            self.assertEqual(cli.run(), cli.EXIT_THROTTLED)
+        self.assertIn("429", said.getvalue(),
+                      "the exit code must not cost the explanation")
+
+    def test_a_PERMANENT_refusal_keeps_the_old_code(self):
+        """Paired, and the half that makes the other one mean anything: if
+        every failure returned 3, a caller would retry a refusal forever."""
+        real = cli.main
+        cli.main = lambda: (_ for _ in ()).throw(
+            SystemExit("you have not joined #x"))
+        self.addCleanup(lambda: setattr(cli, "main", real))
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            self.assertEqual(cli.run(), cli.EXIT_REFUSED)
+        self.assertIn("not joined", said.getvalue())
+
+    def test_a_PARTIAL_WRITE_is_its_own_code_not_a_throttle(self):
+        """The third state, which the issue pointed out had nowhere to live.
+
+        `open` is two writes, so a failure between them leaves a room that
+        exists with nobody in it. Reporting that as a throttle tells the
+        caller to retry the same command — and a second `open` SUCCEEDS while
+        silently discarding the topic and briefing, so obeying that advice is
+        how you lose them.
+        """
+        real = cli.main
+        cli.main = lambda: (_ for _ in ()).throw(
+            cli.Indeterminate("BUT #half WAS CREATED before that failed"))
+        self.addCleanup(lambda: setattr(cli, "main", real))
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            self.assertEqual(cli.run(), cli.EXIT_INDETERMINATE)
+        self.assertIn("WAS CREATED", said.getvalue())
+
+    def test_INDETERMINATE_OUTRANKS_THROTTLED_when_both_are_true(self):
+        """`Indeterminate` is raised even when the underlying failure WAS a
+        throttle, and it has to be: once a write has landed, whether to wait
+        has stopped being the useful half of the truth. Ordering asserted
+        because both are SystemExit subclasses and an `except` in the wrong
+        order would silently pick the first."""
+        real = cli.main
+        cli.main = lambda: (_ for _ in ()).throw(
+            cli.Indeterminate("429, and #half WAS CREATED"))
+        self.addCleanup(lambda: setattr(cli, "main", real))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(cli.run(), cli.EXIT_INDETERMINATE)
+
+    def test_argparses_OWN_codes_pass_through_untouched(self):
+        """2 is not ours to assign. argparse exits 0 for --help and 2 for a
+        usage error, and a wrapper that rewrote either would be the thing that
+        broke the convention it exists to publish. Asserted for both, because
+        `if stop.code:` treats 0 as falsy and would have turned --help into a
+        refusal."""
+        for code in (0, cli.EXIT_USAGE):
+            real = cli.main
+            cli.main = lambda c=code: (_ for _ in ()).throw(SystemExit(c))
+            try:
+                with contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(cli.run(), code)
+            finally:
+                cli.main = real
+
+    def test_a_CLEAN_run_returns_what_main_returned(self):
+        real = cli.main
+        cli.main = lambda: cli.EXIT_OK
+        self.addCleanup(lambda: setattr(cli, "main", real))
+        self.assertEqual(cli.run(), cli.EXIT_OK)
+
+    def test_the_four_codes_are_DISTINCT(self):
+        """A contract of four names that collide is a contract of fewer. This
+        is the assertion that would fail if somebody set THROTTLED to 1 to
+        `restore old behaviour`."""
+        codes = [cli.EXIT_OK, cli.EXIT_REFUSED, cli.EXIT_USAGE,
+                 cli.EXIT_THROTTLED, cli.EXIT_INDETERMINATE]
+        self.assertEqual(len(set(codes)), len(codes))
 
     def test_RETRY_AFTER_is_honoured_but_capped(self):
         """The server's own number beats a guess, but a 60s window honoured

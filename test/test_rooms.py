@@ -132,13 +132,37 @@ class RoomTest(unittest.TestCase):
         self.assertIn("llm_chat join half", said)
         self.assertIn("Do NOT open it again", said)
 
-    def test_the_THROTTLED_class_survives_the_added_context(self):
-        """`Throttled` vs a plain SystemExit is what lets a caller tell "wait"
-        from "stop" — the distinction the reporter used to handle this at all,
-        and the thing #15 exists for. Re-raising the wrong class would trade
-        one silent wrong answer for another."""
+    def test_a_PARTIAL_write_outranks_the_throttle_that_caused_it(self):
+        """This asserted `Throttled` until #30, and that was right while
+        `Throttled` and a bare SystemExit were the only two classes: the point
+        was that adding context must not flatten wait into stop.
+
+        A third class changes the answer rather than the reasoning. Throttled
+        tells a caller to retry the same command, and here retrying is the
+        WRONG move — the room now exists, and a second `open` succeeds while
+        silently discarding the topic and briefing, which is the whole defect
+        the surrounding tests were written for. Once a write has landed,
+        whether to wait has stopped being the useful half of the truth.
+
+        So: still not a bare SystemExit, and specifically not a Throttled.
+        """
         self.fail_after_channel(kind=cli.Throttled)
-        with self.assertRaises(cli.Throttled):
+        with self.assertRaises(cli.Indeterminate) as caught:
+            self.quiet(cli.do_join, "http://127.0.0.1:1", "half", "me", None,
+                       200, False)
+        self.assertNotIsInstance(
+            caught.exception, cli.Throttled,
+            "a caller told to wait will retry, and retrying is how the "
+            "briefing gets discarded")
+        self.assertIn("429", str(caught.exception),
+                      "the cause must survive alongside the new verdict")
+
+    def test_a_partial_write_is_indeterminate_even_WITHOUT_a_throttle(self):
+        """Paired, and the reason the class is chosen by WHAT HAPPENED rather
+        than by what failed: a 500 between the two writes leaves exactly the
+        same half-made room."""
+        self.fail_after_channel()
+        with self.assertRaises(cli.Indeterminate):
             self.quiet(cli.do_join, "http://127.0.0.1:1", "half", "me", None,
                        200, False)
 
