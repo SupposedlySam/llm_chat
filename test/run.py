@@ -344,6 +344,101 @@ def run_tests():
     return runner.run(suite()).wasSuccessful()
 
 
+def body_spans(relative):
+    """{"file:func": (first executable line, last line)} for every def in a file.
+
+    NOT (lineno, end_lineno). A function's `def` line runs at IMPORT, so a
+    span starting there reports every function in an imported module as
+    executed — including ones nothing ever calls. That is the check answering
+    a different question than the one asked, which is the defect this whole
+    function exists to find, and I wrote it that way first.
+
+    The docstring is skipped too: it is a constant folded into __doc__ at
+    compile time, not a statement the tracer sees on a call.
+    """
+    path = os.path.join(ROOT, relative)
+    try:
+        with open(path) as f:
+            tree = ast.parse(f.read())
+    except (OSError, SyntaxError, ValueError, UnicodeDecodeError):
+        return {}
+    spans = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        body = node.body
+        if (body and isinstance(body[0], ast.Expr)
+                and isinstance(body[0].value, ast.Constant)
+                and isinstance(body[0].value.value, str)):
+            body = body[1:]
+        if not body:
+            continue                      # nothing but a docstring to run
+        spans["%s:%s" % (relative, node.name)] = (body[0].lineno,
+                                                  node.end_lineno)
+    return spans
+
+
+def inert_exclusions(counts):
+    """Excluded functions the suite NEVER EXECUTES, which is not an exclusion.
+
+    THE FAILURE THIS ENCODES. `test/mutate.py:sweep_in_a_copy` sat in
+    NOT_SWEPT with the reason "asserted directly by stubbing it and checking
+    main() calls it before touching a source file". Both halves true, and
+    together a claim about the CALL SITE — the only test that touched it
+    replaced it with a lambda. The body had never run under a test, and it
+    contains `max(child.wait() for child in running)`, which reduces eight
+    shards to the number `verify` reads. `return 0` there would have made
+    every sweep this project ever ran report success.
+
+    A mutation cannot find this: aimed at that function it is applied inside
+    the copy, whose main() never calls it, so the mutant cannot run itself.
+    The verdict would be SURVIVED, which reads as "undefended" and is a
+    different and much smaller claim than "never executes".
+
+    WHY AN EXCLUSION IS THE RIGHT PLACE TO LOOK. For everything under the
+    coverage floor, this can never fire — 100% line coverage already proves
+    execution. The floor is built from `discover_sources`, which excludes
+    test/ ("test/ measures; it is not the thing measured"), so the gate's own
+    files have no floor. NOT_SWEPT is the only list that names functions in
+    them, and it is exactly where a gap gets to wear the words of a decision.
+
+    WHAT THIS MISSES, stated rather than implied: a function in test/ that
+    nothing sweeps AND nothing excludes is invisible to this, because nothing
+    names it. `report_unaccounted` catches that for the floored files and has
+    no jurisdiction here. Closing it would mean giving test/ a floor of its
+    own, which is a bigger decision than this one and has not been made.
+    """
+    import mutate
+    inert = []
+    for key, why in sorted(mutate.NOT_SWEPT.items()):
+        relative = key.rsplit(":", 1)[0]
+        span = body_spans(relative).get(key)
+        if span is None:
+            continue          # not a function — a file-level or module entry
+        path = os.path.join(ROOT, relative)
+        start, end = span
+        ran = any(os.path.abspath(f) == path and start <= n <= end
+                  for (f, n) in counts)
+        if not ran:
+            inert.append((key, why))
+    return inert
+
+
+def report_inert_exclusions(counts):
+    if not (inert := inert_exclusions(counts)):
+        return False
+    print("\nEXCLUDED, AND NEVER EXECUTED — which is not the same claim:",
+          file=sys.stderr)
+    for key, why in inert:
+        print("  %s\n      excused as: %s" % (key, why), file=sys.stderr)
+    print("\n  An exclusion says a behaviour is covered some other way. Nothing"
+          "\n  ran these at all, so whatever the reason describes, it is not"
+          "\n  this function. Either give it a test or say plainly that it is"
+          "\n  unexecuted — both are honest; the current entry is not.",
+          file=sys.stderr)
+    return True
+
+
 def measure():
     """Run the suite under trace and return {script: (covered, total, missing)}."""
     tracer = trace.Trace(count=1, trace=0,
@@ -365,7 +460,10 @@ def measure():
         hit = {n for (f, n) in counts if os.path.abspath(f) == path}
         missing = sorted(executable - hit)
         report[script] = (len(executable) - len(missing), len(executable), missing)
-    return ok["value"], report
+    # `counts` goes back too, because the same traced run answers a second
+    # question — whether every EXCLUDED function was executed at all — and
+    # tracing the suite twice to ask it would double the gate.
+    return ok["value"], report, counts
 
 
 def main():
@@ -399,9 +497,10 @@ def main():
             return 1
         return 0 if passed else 1
 
-    ok, report = measure()
+    ok, report, counts = measure()
     damaged = (report_repo_damage(before, fingerprint_repo())
-               or report_global_leaks(globals_before))
+               or report_global_leaks(globals_before)
+               or report_inert_exclusions(counts))
     print("\n=== line coverage (executed / executable) ===")
     total_hit = total = 0
     for script, (hit, count, missing) in sorted(report.items()):

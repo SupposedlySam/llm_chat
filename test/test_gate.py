@@ -441,6 +441,245 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(self.mutate.VERDICT.findall("OK (skipped=2)"), [])
 
 
+class InertExclusionTest(unittest.TestCase):
+    """The check that an exclusion names a function something actually runs.
+
+    Written for `sweep_in_a_copy`, whose NOT_SWEPT reason described the call
+    site and was filed as coverage of the body. It found a second one —
+    `probe`, excused as "asserted by running it", which was a HAND-RUN
+    recorded as coverage — on its first execution.
+
+    THE TRAP IT TURNS ON, and I wrote it the wrong way first: a function's
+    `def` line executes at IMPORT. Spanning from `node.lineno` reports every
+    function in an imported module as run, including ones nothing ever calls,
+    so the check would pass on exactly the case it exists to catch. It spans
+    from the first non-docstring statement instead.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.real_root = gate.ROOT
+        gate.ROOT = self.tmp.name
+        self.addCleanup(self.restore)
+        self.path = os.path.join(self.tmp.name, "prog.py")
+        with open(self.path, "w") as f:
+            f.write('def ran():\n'
+                    '    """doc."""\n'
+                    '    return 1\n'
+                    '\n'
+                    'def never():\n'
+                    '    """doc."""\n'
+                    '    return 2\n')
+
+    def restore(self):
+        gate.ROOT = self.real_root
+        self.tmp.cleanup()
+
+    def counts_for(self, *lines):
+        return {(self.path, n): 1 for n in lines}
+
+    def test_the_span_starts_AFTER_the_def_and_the_docstring(self):
+        """The whole check rests on this. `def` runs at import and the
+        docstring is folded into __doc__ at compile time, so neither is
+        evidence that anything CALLED the function."""
+        spans = gate.body_spans("prog.py")
+        self.assertEqual(spans["prog.py:ran"][0], 3)
+        self.assertEqual(spans["prog.py:never"][0], 7)
+
+    def test_a_function_NOTHING_CALLS_is_reported(self):
+        import mutate
+        real = mutate.NOT_SWEPT
+        mutate.NOT_SWEPT = {"prog.py:never": "excused for some reason"}
+        self.addCleanup(lambda: setattr(mutate, "NOT_SWEPT", real))
+        found = gate.inert_exclusions(self.counts_for(3))
+        self.assertEqual([k for k, _ in found], ["prog.py:never"])
+
+    def test_a_function_the_suite_DOES_call_is_not_reported(self):
+        """Paired, so the test above cannot be satisfied by reporting
+        everything — which is what a span anchored on `def` would do in
+        reverse, reporting nothing."""
+        import mutate
+        real = mutate.NOT_SWEPT
+        mutate.NOT_SWEPT = {"prog.py:ran": "excused for some reason"}
+        self.addCleanup(lambda: setattr(mutate, "NOT_SWEPT", real))
+        self.assertEqual(gate.inert_exclusions(self.counts_for(3)), [])
+
+    def test_IMPORTING_the_module_is_not_calling_the_function(self):
+        """The failure the def-line span would have caused, asserted as its
+        own case: line 5 is `def never():`, which runs on import. If that
+        counted, an entirely uncalled function would read as executed."""
+        import mutate
+        real = mutate.NOT_SWEPT
+        mutate.NOT_SWEPT = {"prog.py:never": "excused for some reason"}
+        self.addCleanup(lambda: setattr(mutate, "NOT_SWEPT", real))
+        found = gate.inert_exclusions(self.counts_for(1, 5))
+        self.assertEqual([k for k, _ in found], ["prog.py:never"],
+                         "the def line was counted as a call")
+
+    def test_a_NON_FUNCTION_exclusion_is_skipped_not_reported(self):
+        """NOT_SWEPT also carries file-level and module-level entries. A check
+        that reported those would fire on every run and be switched off."""
+        import mutate
+        real = mutate.NOT_SWEPT
+        mutate.NOT_SWEPT = {"prog.py:not_a_function_here": "whatever",
+                            "no/such/file.py:thing": "whatever"}
+        self.addCleanup(lambda: setattr(mutate, "NOT_SWEPT", real))
+        self.assertEqual(gate.inert_exclusions(self.counts_for(3)), [])
+
+    def test_the_report_NAMES_the_excuse_it_is_contradicting(self):
+        """The reason is the whole point: a reader has to see the sentence
+        that claimed coverage next to the evidence that there is none."""
+        import mutate
+        import contextlib
+        import io
+        real = mutate.NOT_SWEPT
+        mutate.NOT_SWEPT = {"prog.py:never": "excused as thoroughly asserted"}
+        self.addCleanup(lambda: setattr(mutate, "NOT_SWEPT", real))
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            failed = gate.report_inert_exclusions(self.counts_for(3))
+        self.assertTrue(failed)
+        self.assertIn("prog.py:never", buffer.getvalue())
+        self.assertIn("excused as thoroughly asserted", buffer.getvalue())
+
+
+class ProbeTest(unittest.TestCase):
+    """`probe` — the second thing the inert-exclusion check found, one run in.
+
+    Its NOT_SWEPT reason read "all three outcomes asserted by running it —
+    caught, survived, no-anchor and ambiguous, exit codes read unpiped". The
+    suite never called it. Whoever wrote that had run it by hand, which is
+    true and is not a test, and the entry recorded the hand-run as coverage.
+
+    Identical shape to `sweep_in_a_copy` an hour earlier, found by the check
+    written for that one on its FIRST execution — which is the argument for
+    encoding a finding rather than remembering it.
+
+    `run_suite` is stubbed because the real one runs the whole suite twice per
+    probe, and `sole_sweep` because it takes the flock this process's own
+    sweep uses. Everything between them is the real function, including the
+    restore.
+    """
+
+    def setUp(self):
+        import mutate
+        self.mutate = mutate
+        self.tmp = tempfile.TemporaryDirectory()
+        self.real_root = mutate.ROOT
+        self.real_suite = mutate.run_suite
+        self.real_lock = mutate.sole_sweep
+        mutate.ROOT = self.tmp.name
+        mutate.sole_sweep = lambda: None
+        self.runs = []
+        self.addCleanup(self.restore)
+        self.path = os.path.join(self.tmp.name, "prog.py")
+        with open(self.path, "w") as f:
+            f.write("def f():\n    return 1\n")
+
+    def restore(self):
+        self.mutate.ROOT = self.real_root
+        self.mutate.run_suite = self.real_suite
+        self.mutate.sole_sweep = self.real_lock
+        self.tmp.cleanup()
+
+    def results(self, *outcomes):
+        """Feed run_suite one (green, failures, errors) per call."""
+        queue = list(outcomes)
+
+        def fake():
+            self.runs.append(True)
+            return queue.pop(0)
+
+        self.mutate.run_suite = fake
+
+    def probe(self, old="    return 1", new="    return 2"):
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = self.mutate.probe("prog.py", old, new)
+        return code, buffer.getvalue()
+
+    def test_a_measured_kill_is_CAUGHT(self):
+        self.results((True, 0, 0), (False, 1, 0))
+        code, said = self.probe()
+        self.assertEqual(code, 0)
+        self.assertIn("CAUGHT", said)
+
+    def test_a_green_mutant_SURVIVED(self):
+        self.results((True, 0, 0), (True, 0, 0))
+        code, said = self.probe()
+        self.assertEqual(code, 1)
+        self.assertIn("SURVIVED", said)
+
+    def test_a_CRASH_is_not_a_kill(self):
+        """The distinction the whole tool turns on: red by raising is not red
+        by measuring, and the old version printed CAUGHT for both."""
+        self.results((True, 0, 0), (False, 0, 1))
+        code, said = self.probe()
+        self.assertEqual(code, 2)
+        self.assertIn("CRASHED", said)
+
+    def test_an_ALREADY_RED_suite_yields_no_verdict(self):
+        """Without the control run, a suite that is already failing makes
+        every mutation look measured — confidently wrong in the direction of
+        `do not build`."""
+        self.results((False, 1, 0))
+        code, said = self.probe()
+        self.assertEqual(code, 2)
+        self.assertIn("CANNOT TELL", said)
+
+    def test_a_MISSING_anchor_is_not_a_verdict_about_defence(self):
+        self.results()
+        code, said = self.probe(old="    return 99")
+        self.assertEqual(code, 2)
+        self.assertIn("NO ANCHOR", said)
+        self.assertEqual(self.runs, [], "the suite ran without a mutation")
+
+    def test_an_AMBIGUOUS_anchor_is_refused_rather_than_guessed(self):
+        with open(self.path, "w") as f:
+            f.write("def f():\n    return 1\n\ndef g():\n    return 1\n")
+        self.results()
+        code, said = self.probe()
+        self.assertEqual(code, 2)
+        self.assertIn("AMBIGUOUS", said)
+        self.assertEqual(self.runs, [], "the suite ran on a guessed anchor")
+
+    def test_THE_TREE_IS_RESTORED_including_its_mtime(self):
+        """The one nothing was watching, and the most damaging to get wrong.
+        This mutates a file other agents execute by absolute path, and the
+        commit gate reads mtime to decide whether evidence is stale — so a
+        probe that restored the bytes but not the timestamp would silently
+        mark every check owed by this file as out of date."""
+        stat_before = os.stat(self.path)
+        with open(self.path) as f:
+            source_before = f.read()
+        self.results((True, 0, 0), (False, 1, 0))
+        self.probe()
+        with open(self.path) as f:
+            self.assertEqual(f.read(), source_before, "the tree was left mutated")
+        self.assertEqual(os.stat(self.path).st_mtime, stat_before.st_mtime,
+                         "the mtime moved, so the commit gate now sees this "
+                         "file as newer than its evidence")
+
+    def test_the_tree_is_restored_even_when_the_SUITE_RAISES(self):
+        """A probe that dies partway leaves a deliberately broken program in a
+        tree five other agents run out of. That has happened here — a
+        NameError from a mutation reached a neighbouring agent and retired its
+        waker."""
+        def explode():
+            self.runs.append(True)
+            if len(self.runs) == 1:
+                return (True, 0, 0)
+            raise KeyboardInterrupt("killed mid-probe")
+
+        self.mutate.run_suite = explode
+        with self.assertRaises(KeyboardInterrupt):
+            self.probe()
+        with open(self.path) as f:
+            self.assertEqual(f.read(), "def f():\n    return 1\n")
+
+
 class SweepOrchestratorTest(unittest.TestCase):
     """`sweep_in_a_copy` — measured INERT, then given a body that executes.
 

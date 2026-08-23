@@ -539,6 +539,26 @@ MUTATIONS = [
      "escaping into bin/, triggers/ or lib/ is invisible — wcs's finding, and "
      "bin/ is where the mutation sweep edits in place"),
 
+    ("an exclusion must name something the suite RUNS", "test/run.py",
+     "        if not ran:\n            inert.append((key, why))",
+     "        if False:\n            inert.append((key, why))",
+     "an exclusion goes back to being able to describe the CALL SITE, or a "
+     "hand-run, and be filed as coverage of the function. Two entries here "
+     "did exactly that — sweep_in_a_copy, holding the line that carries eight "
+     "shards' verdicts to verify, and probe — and neither was findable by "
+     "mutation, because a survivor and a line that never runs are the same "
+     "green"),
+
+    ("the span skips the def line, which runs at IMPORT", "test/run.py",
+     '        spans["%s:%s" % (relative, node.name)] = (body[0].lineno,\n'
+     "                                                  node.end_lineno)",
+     '        spans["%s:%s" % (relative, node.name)] = (node.lineno,\n'
+     "                                                  node.end_lineno)",
+     "every function in an imported module reads as executed, including ones "
+     "nothing ever calls, so the inert check passes on precisely the case it "
+     "exists to catch — a guard that is silent exactly where it is blind, "
+     "which is the shape it was written to find"),
+
     ("the leak detector is itself defended", "test/run.py",
      '    if not leaked:',
      '    if True:',
@@ -2373,8 +2393,16 @@ NOT_SWEPT = {
         "name Write/Edit, or the refusal is a wall rather than a redirection",
     "triggers/write-through-interpreter:main": "every branch asserted "
         "directly, including the visible escape hatch",
-    "test/mutate.py:probe": "all three outcomes asserted by running it — "
-        "caught, survived, no-anchor and ambiguous, exit codes read unpiped",
+    "test/mutate.py:probe": "all SIX outcomes asserted by tests that call it "
+        "with run_suite and the lock stubbed — caught, survived, crashed, "
+        "already-red, no-anchor, ambiguous — plus that the tree is restored "
+        "bytes AND mtime, and restored even when the suite raises mid-probe. "
+        "NOT swept: probing the prober from inside a sweep nests two of them "
+        "on one flock. THIS REASON USED TO READ 'all three outcomes asserted "
+        "by running it', which was a HAND-RUN recorded as coverage — nothing "
+        "in the suite called this function at all. Caught by "
+        "run.py:inert_exclusions on its first execution, one hour after the "
+        "identical entry for sweep_in_a_copy was found by hand",
     "bin/llm-chat-deliver:addressed_to_me": "every audience form asserted "
         "directly, including that unaddressed WAKES you without being for you",
     "bin/llm-chat-deliver:render_channel": "full-text-for-mine, pointer-for-"
@@ -3018,6 +3046,18 @@ def probe(relative, old, new):
     # failure would make every mutation look measured, and this tool would be
     # confidently wrong in the direction of "do not build".
     before = run_suite()
+    # BAIL BEFORE MUTATING, not after. This check used to sit below the second
+    # run, so an already-red suite cost a whole extra suite AND put a
+    # deliberately broken program into a tree five other agents execute by
+    # absolute path — for a verdict already known to be unattributable. The
+    # comment eight lines up says that window is the hazard this file works
+    # hardest to keep short; the code opened it for no information at all.
+    # Found by writing the first test that ever called this function.
+    if not before[0]:
+        print("CANNOT TELL — the suite was ALREADY red before this mutation "
+              "(%d failed, %d errored).\n  Nothing here can be attributed. "
+              "Fix the suite first." % (before[1], before[2]))
+        return 2
     try:
         with open(path, "w") as f:
             f.write(original.replace(old, new, 1))
@@ -3026,11 +3066,6 @@ def probe(relative, old, new):
         with open(path, "w") as f:
             f.write(original)
         os.utime(path, (stat.st_atime, stat.st_mtime))
-    if not before[0]:
-        print("CANNOT TELL — the suite was ALREADY red before this mutation "
-              "(%d failed, %d errored).\n  Nothing here can be attributed. "
-              "Fix the suite first." % (before[1], before[2]))
-        return 2
     verdict, why = killed_by_measurement(before, after)
     if verdict == "survived":
         print("SURVIVED — nothing defends this. Build the guard, then add a "
