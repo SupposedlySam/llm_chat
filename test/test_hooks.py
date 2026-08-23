@@ -8,6 +8,7 @@ matters at this layer is what the hook does with the answer.
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -207,7 +208,13 @@ class DeliverTest(HookTestCase):
         self.mod.subprocess = FakeSubprocess(many)
         _, out = self.run_hook()
         context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
-        delivered = [l for l in context.splitlines() if "line " in l]
+        # MATCH THE MESSAGE BODIES, NOT ANY LINE MENTIONING THEM. This read
+        # `"line " in l` over the WHOLE context, header included, so the count
+        # was of "lines containing a substring" rather than of messages
+        # delivered. Wording the header as "a one-line reply" pushed it to 16
+        # — the header is not a message, and the assertion could not tell.
+        delivered = [l for l in context.splitlines()
+                     if re.search(r"\bline \d+$", l)]
         self.assertEqual(len(delivered), self.mod.MAX_PER_DELIVERY)
 
     def test_a_missing_hook_is_reported_once_per_session(self):

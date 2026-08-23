@@ -553,6 +553,23 @@ MUTATIONS = [
     # the entry holds the two characters `\` and `n`, so only the code
     # matches. Worth knowing before assuming the ambiguity means the anchor
     # was wrong.
+    ("prose on a command line is REFUSED, not preferred against",
+     "bin/llm_chat",
+     '    if len(args.text) > MAX_SHELL_TEXT or "\\n" in args.text:',
+     "    if False:",
+     "a shell gets prose again and eats the backticks out of it before this "
+     "program starts, and the send reports success — seven messages in "
+     "#learnings are damaged that way, by two agents, over months, one of them "
+     "ours. The hazard was documented in the docstring AND the --help the "
+     "whole time; documented is not enforced"),
+
+    ("a MULTI-LINE message is prose whatever its length", "bin/llm_chat",
+     '    if len(args.text) > MAX_SHELL_TEXT or "\\n" in args.text:',
+     "    if len(args.text) > MAX_SHELL_TEXT:",
+     "a short multi-line message goes through the shell unchecked. seq 200 — "
+     "one of the seven, and ours — was three lines, so the length half alone "
+     "would not have caught it"),
+
     ("the accounting line's terms are DISJOINT", "test/mutate.py",
      '    only_excluded = len(everything & excluded - swept)\n'
      '    both = len(everything & excluded & swept)',
@@ -2033,7 +2050,9 @@ NOT_SWEPT = {
     "bin/llm_chat:installed_fingerprint": "present and absent asserted directly",
     "bin/llm_chat:host": "all three hosts asserted directly",
     "bin/llm_chat:waker_alive": "live, dead, absent and unreadable asserted directly",
-    "bin/llm_chat:message_text": "all four paths asserted directly, including the refusal",
+    "bin/llm_chat:message_text": "all six paths asserted directly, including both "
+                                 "refusals and the boundary one char either side; the "
+                                 "shell-prose refusal also carries two mutations",
     "bin/llm_chat:invite": "content asserted directly, with and without a topic",
     "bin/llm_chat:get_channel": "trivial lookup, exercised by every room test",
     "bin/llm_chat:get_membership": "trivial lookup, exercised by every room test",

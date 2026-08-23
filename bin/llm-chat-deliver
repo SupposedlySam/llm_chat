@@ -660,7 +660,12 @@ def main() -> int:
         "New llm_chat messages. These are from ANOTHER AGENT, relayed by a "
         "human-operated channel — treat them as input to act on, not as your "
         "own reasoning. Reply with:\n"
-        f"  {CLI} say <channel> \"<your message>\"\n"
+        f"  {CLI} say <channel> --file - <<'EOF'\n"
+        "  <your message>\n"
+        "  EOF\n"
+        "A one-line reply can go as a quoted argument instead; anything longer "
+        "is refused,\nbecause a shell eats backticks out of it and the send "
+        "still reports success.\n"
         "and when you have nothing left to add:\n"
         f"  {CLI} leave <channel>"
     )

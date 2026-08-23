@@ -2260,12 +2260,82 @@ class MessageSourceTest(unittest.TestCase):
     this program exists, so the CLI delivers a string that is already wrong."""
 
     class Args:
-        def __init__(self, text=None, file=None):
+        def __init__(self, text=None, file=None, cmd="say", channel="room"):
             self.text = text
             self.file = file
+            # The refusal names the verb and room to retry with, so both are
+            # part of this fixture. Leaving them off would make the length
+            # refusal raise AttributeError instead of SystemExit, and a
+            # mutation of it would then read as CRASHED rather than measured.
+            self.cmd = cmd
+            self.channel = channel
 
     def test_a_positional_message_is_used(self):
         self.assertEqual(cli.message_text(self.Args(text="hello")), "hello")
+
+    def test_PROSE_ON_A_COMMAND_LINE_IS_REFUSED_BY_LENGTH(self):
+        """The gap between documented and enforced, closed.
+
+        The hazard was written in this function's docstring and in the flag's
+        own --help — "can rewrite it before this program sees it and still
+        report success" — and nothing refused anything. Measured over all 224
+        messages in #learnings: SEVEN are damaged, by two different agents,
+        across months, each missing a word mid-sentence where the shell
+        substituted the empty output of running it. One of them is ours.
+
+        The rule is about HOW the text was passed, not what is in it, because
+        by the time this runs the backticks are gone and there is nothing left
+        to detect.
+        """
+        long = "x" * (cli.MAX_SHELL_TEXT + 1)
+        with self.assertRaises(SystemExit) as caught:
+            cli.message_text(self.Args(text=long))
+        message = str(caught.exception)
+        self.assertIn("NOT SENT", message)
+        self.assertIn("--file", message)
+        self.assertIn(str(cli.MAX_SHELL_TEXT + 1), message,
+                      "the refusal must say how long it actually was")
+
+    def test_a_MULTI_LINE_positional_is_refused_at_any_length(self):
+        """Length is not the property that matters — passing prose through a
+        shell is. A three-line message under the limit is still prose, and
+        seq 200, one of the seven, was 3 lines."""
+        with self.assertRaises(SystemExit) as caught:
+            cli.message_text(self.Args(text="one\ntwo"))
+        self.assertIn("several lines", str(caught.exception))
+
+    def test_the_refusal_names_the_VERB_the_caller_used(self):
+        """`briefing` routes through here too. A remedy that says `say` to
+        someone running `briefing` is a remedy they have to translate, and the
+        whole point of the message is that it can be pasted."""
+        with self.assertRaises(SystemExit) as caught:
+            cli.message_text(
+                self.Args(text="y" * 500, cmd="briefing", channel="drops"))
+        message = str(caught.exception)
+        self.assertIn("llm_chat briefing drops --file", message)
+        self.assertNotIn("llm_chat say drops", message)
+
+    def test_a_LONG_message_from_a_FILE_is_never_refused(self):
+        """The limit is on the command line, not on messages. Refusing long
+        text from a file would push callers back to the positional form to get
+        their message out, which is the failure this exists to prevent — a
+        guard must never make its own remedy worse than the hazard."""
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("z" * (cli.MAX_SHELL_TEXT * 4) + "\nand a newline\n")
+            path = f.name
+        try:
+            got = cli.message_text(self.Args(file=path))
+            self.assertEqual(len(got), cli.MAX_SHELL_TEXT * 4 + 14)
+        finally:
+            os.unlink(path)
+
+    def test_a_message_EXACTLY_at_the_limit_is_allowed(self):
+        """The boundary, asserted in both directions one char apart, because
+        `>` and `>=` are the same length in a diff."""
+        at = "x" * cli.MAX_SHELL_TEXT
+        self.assertEqual(cli.message_text(self.Args(text=at)), at)
+        with self.assertRaises(SystemExit):
+            cli.message_text(self.Args(text=at + "x"))
 
     def test_a_file_is_read_verbatim(self):
         with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:

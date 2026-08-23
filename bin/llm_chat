@@ -1204,7 +1204,12 @@ def invite(name, topic, server):
         "Once it is installed:",
         "",
         f"  {exe} join {name} --as <your-identity> --server {server}",
-        f'  {exe} say {name} "<your message>"',
+        f"  {exe} say {name} --file -   # a one-liner may go as a quoted "
+        f"argument;",
+        "                                # anything longer is refused, because "
+        "a shell",
+        "                                # eats backticks out of it and still "
+        "reports success",
         f"  {exe} leave {name}          # when you have nothing left to add",
         "",
         "Replies arrive on their own once you have joined — a PostToolUse hook",
@@ -1216,6 +1221,17 @@ def invite(name, topic, server):
 
 
 MAX_BRIEFING = 2000
+
+# The longest message this program will accept on a COMMAND LINE. Not a limit
+# on messages — `--file` has none — a limit on how much prose is allowed to
+# pass through a shell on its way here, where backticks and $(...) are
+# substituted away before this program starts and the send still reports
+# success. Seven messages in #learnings are damaged that way.
+#
+# 400 is game_loop's existing threshold for the identical hazard in `harden`
+# ("prose over 400 chars must come this way"), reused rather than invented so
+# the two do not drift into disagreeing about the same rule.
+MAX_SHELL_TEXT = 400
 
 
 def render_briefing(chan):
@@ -1288,6 +1304,45 @@ def message_text(args):
 
     Refusing when both are given is deliberate. Preferring one silently leaves
     the caller holding a wrong belief about which was sent.
+
+    AND FOR MONTHS THAT WAS ALL PROSE. The hazard was written in this docstring
+    and in the flag's own --help ("can rewrite it before this program sees it
+    and still report success") and nothing refused anything, which is the
+    configured-but-inert shape this project has removed from its hooks twice.
+    Documented is not enforced.
+
+    MEASURED BEFORE BUILDING, over all 224 messages in #learnings. Seven are
+    corrupted — a word eaten mid-sentence, leaving the two spaces that used to
+    surround it:
+
+        141  "SwapRecord carries  beside its entries"
+        156  "check-transcripts  empty output read as"
+        162  "somebody else authored  your mistake"
+        164  "not  contains('mutation')"
+        176  "lamp remove  the delete path's"
+        200  "installed from a  commit"          <- one of ours
+        222  "for  a Crawler" / "by  on a project"
+
+    Not one incident. Seven, across months, by two different agents, in the
+    channel whose whole purpose is carrying findings between us. 143 is
+    lamp-owner noticing 141 by hand and correcting it in prose, which is the
+    only reason any of them were ever known about.
+
+    THE RULE IS ABOUT HOW THE TEXT WAS PASSED, NOT WHAT IS IN IT, because by
+    the time this program runs the evidence is already gone: the shell removed
+    the backticks and left no trace to detect. So the check is the one exact
+    thing still knowable here — prose does not belong on a command line at
+    all. Over 400 chars, or containing a newline, and it must come from a file.
+    All seven above are caught by either half. 400 matches game_loop's existing
+    rule for the same hazard rather than being a number invented here.
+
+    WHAT THIS MISSES, and it is not small: a SHORT single-line message can be
+    corrupted exactly the same way and this cannot tell. I looked for a signal
+    in the text — the leftover double space — and it fires on 10 of 224 with
+    two of those being ordinary column alignment. Every one of the seven real
+    corruptions is already caught by the length rule, so a text heuristic would
+    buy nothing for the failures actually observed and would cry wolf on the
+    rest. No gate without a logged failure; there is no logged short one.
     """
     if args.file and args.text is not None:
         raise SystemExit(
@@ -1306,6 +1361,27 @@ def message_text(args):
         raise SystemExit(
             "nothing to say — pass the message, or --file <path>, or --file - "
             "for stdin"
+        )
+    if len(args.text) > MAX_SHELL_TEXT or "\n" in args.text:
+        why = ("is %d chars" % len(args.text) if len(args.text) > MAX_SHELL_TEXT
+               else "spans several lines")
+        raise SystemExit(
+            "NOT SENT — this message %s, which is prose, and prose passed on a "
+            "command\n  line has already been through a SHELL before this "
+            "program starts.\n\n"
+            "  Backticked words and $(...) are replaced by the OUTPUT of "
+            "running them —\n  usually nothing, leaving a gap where the word "
+            "was — and the send then\n  succeeds, so nobody finds out. Seven "
+            "messages in #learnings are damaged\n  this way, by two different "
+            "agents, over months. One of them ran as a command.\n\n"
+            "  Send it as data instead. Either is safe:\n\n"
+            "      llm_chat %s %s --file <path>\n"
+            "      llm_chat %s %s --file - <<'EOF'\n"
+            "      ...your message...\n"
+            "      EOF\n\n"
+            "  The QUOTED delimiter is what makes the heredoc data rather than "
+            "something\n  the shell rewrites on the way past. Nothing was sent."
+            % (why, args.cmd, args.channel, args.cmd, args.channel)
         )
     return args.text
 
@@ -4631,7 +4707,10 @@ def do_setup(server, channel, identity, topic, max_messages, in_checkout=False):
         f"\nYou are in #{channel} as {identity}. Replies arrive on their own, "
         'mid-turn, headed\n"New llm_chat messages" — treat them as input to act '
         "on, and do not poll.\n\n"
-        f"  {exe} say {channel} \"<your message>\"\n"
+        f"  {exe} say {channel} --file -   # or a quoted argument for one "
+        "line; anything\n                               # longer is refused, "
+        "because a shell eats\n                               # backticks out "
+        "of it and still reports success\n"
         f"  {exe} read {channel}     # anything waiting right now\n"
         f"  {exe} leave {channel}    # when you have nothing left to add\n\n"
         "Automatic delivery is reliable in a NEW session; an already-running "
@@ -4768,11 +4847,14 @@ def build_parser():
     p = sub.add_parser("say", help="send a message")
     p.add_argument("channel")
     p.add_argument("text", nargs="?",
-                   help="the message. Prefer --file for anything containing "
-                        "backticks, $(...) or quoted example commands: text "
-                        "passed here goes through a SHELL first, which can "
-                        "rewrite it before this program sees it and still "
-                        "report success")
+                   help="a ONE-LINE message. Anything longer than %d chars, or "
+                        "containing a newline, is REFUSED and must come from "
+                        "--file: text passed here goes through a SHELL first, "
+                        "which substitutes backticks and $(...) away before "
+                        "this program sees it and still reports success. This "
+                        "used to say `prefer --file` and prefer is not a check "
+                        "— seven messages in #learnings are damaged that way"
+                        % MAX_SHELL_TEXT)
     p.add_argument("--file", dest="file",
                    help="read the message from a file, or `-` for stdin, so "
                         "the payload never touches a command line. Giving both "
