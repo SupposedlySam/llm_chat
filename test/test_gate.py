@@ -32,6 +32,43 @@ class RepoDamageTest(unittest.TestCase):
             f.write(text)
         return path
 
+    def damage_found(self, before, names=None):
+        """(verdict, report) — and the report goes into a buffer, not stderr.
+
+        `report_repo_damage` PRINTS as a side effect of returning True, which
+        is right for its real caller and pure noise here. Six of these blocks
+        stood above every green suite run:
+
+            THE SUITE MODIFIED THE REPO IT TESTS:
+              bin/llm_chat
+              A test escaped its temp directory. Fix the test, not this check.
+
+        naming files nothing had touched. They cost me ten minutes mid-verify,
+        in a session where a test really had escaped three times, and the
+        suite had exited 0 the whole time. Issue #29. Same shape as the two
+        false positives removed from the ghost check in 24ab166: a report that
+        reads as an alarm, is not one, and has stood long enough to be
+        furniture.
+
+        Fixed HERE and not in the function, because for the real caller the
+        message is the entire point — the boolean says something happened, the
+        text says what. That distinction is lamp-owner's, from #learnings.
+
+        And since the text has to be captured anyway, it gets asserted:
+        `names` is the file the report must NAME. Nothing checked that before,
+        so the report could have listed the wrong path, or none at all.
+        """
+        import contextlib
+        import io
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            verdict = gate.report_repo_damage(before, gate.fingerprint_repo())
+        said = buffer.getvalue()
+        if names is not None:
+            self.assertIn(names, said,
+                          "the report did not name what it found")
+        return verdict, said
+
     def test_a_PROBE_MARKER_APPEARING_MID_RUN_IS_NOT_SUITE_DAMAGE(self):
         """The regression. `llm-chat-deliver` stamps .llm_chat/probe/ on every
         tool call in this repo, so a marker appearing during the run means an
@@ -219,8 +256,8 @@ class RepoDamageTest(unittest.TestCase):
         traded that catch for a quieter gate."""
         before = gate.fingerprint_repo()
         self.write(".llm_chat", "identity.json", text="{}")
-        self.assertTrue(
-            gate.report_repo_damage(before, gate.fingerprint_repo()))
+        found, _ = self.damage_found(before, names="identity.json")
+        self.assertTrue(found)
 
     def test_a_CHANGED_waker_stamp_is_also_not_damage(self):
         """Restamped on every restart, not only created."""
@@ -273,8 +310,9 @@ class RepoDamageTest(unittest.TestCase):
                 os.makedirs(os.path.dirname(path), exist_ok=True)
                 with open(path, "w") as f:
                     f.write("a test escaped and wrote here")
+                found, _ = self.damage_found(before, names=tracked)
                 self.assertTrue(
-                    gate.report_repo_damage(before, gate.fingerprint_repo()),
+                    found,
                     "%s was modified and the guard did not notice" % tracked)
                 os.remove(path)
 
@@ -298,12 +336,14 @@ class RepoDamageTest(unittest.TestCase):
         exactly what it is for."""
         before = gate.fingerprint_repo()
         self.write(".llm_chat", "identity.json")
-        self.assertTrue(gate.report_repo_damage(before, gate.fingerprint_repo()))
+        found, _ = self.damage_found(before, names="identity.json")
+        self.assertTrue(found)
 
     def test_a_real_escape_into_claude_is_still_caught(self):
         before = gate.fingerprint_repo()
         self.write(".claude", "settings.local.json")
-        self.assertTrue(gate.report_repo_damage(before, gate.fingerprint_repo()))
+        found, _ = self.damage_found(before, names="settings.local.json")
+        self.assertTrue(found)
 
     def test_an_unchanged_repo_reports_nothing(self):
         self.write(".claude", "settings.local.json")
