@@ -60,6 +60,19 @@ LOCK = os.path.join(HERE, ".mutate.lock")
 # argument a `%s` still needs, does not measure a behaviour. It measures that
 # the program stops. Reverting the WORDING a fix introduced measures the fix;
 # deleting the branch around it measures nothing.
+#
+# RAISING THIS ABOVE ZERO IS NOT A SETTING CHANGE — two things stop being true
+# the moment it is nonzero, and neither is enforced anywhere else:
+#
+#   1. The comparison in `sweep_exit_code` runs PER SHARD against this global
+#      number. `share_crashed > CEILING` implies `total_crashed > CEILING`, so
+#      at 0 the two are identical; above 0, crashes spread thinly across eight
+#      workers could each sit under the ceiling and total more than it. The
+#      count would have to be aggregated in the parent first.
+#   2. A sweep with permitted crashes reaches the end of `sweep_exit_code` and
+#      prints "Every reverted fix in this share was caught BY A FAILING
+#      ASSERTION" — under a report naming ones that were not. That sentence is
+#      only honest because a crash cannot get past the ceiling today.
 CRASHED_CEILING = 0
 
 # Long enough for the suite plus a heavily loaded machine — eight shards
@@ -531,6 +544,38 @@ MUTATIONS = [
      '    if True:',
      "the rail that catches a test patching a shared module can break with "
      "nothing noticing — found by probing it, which is what the probe is for"),
+
+    # A MUTATION AIMED AT THIS FILE CANNOT SPELL ITS OWN ANCHOR ON ONE LINE.
+    # The first attempt used the bare `if` line and came back AMBIGUOUS with
+    # two matches — the code, and this entry quoting it. Any single-line
+    # anchor for mutate.py has that problem by construction. A MULTI-LINE one
+    # does not: the value below holds a real newline, while the source text of
+    # the entry holds the two characters `\` and `n`, so only the code
+    # matches. Worth knowing before assuming the ambiguity means the anchor
+    # was wrong.
+    ("the accounting line's terms are DISJOINT", "test/mutate.py",
+     '    only_excluded = len(everything & excluded - swept)\n'
+     '    both = len(everything & excluded & swept)',
+     '    only_excluded = len(everything & excluded)\n'
+     '    both = len(everything & excluded & swept)',
+     "the published sum goes back to double-counting the 47 candidates that "
+     "are both swept and excluded — it read `125 + 225 + 0 = 303` with a left "
+     "side of 350, in the one tool whose entire claim is that its numbers can "
+     "be trusted. Reported by an agent who did the addition by hand; nothing "
+     "in the tool did"),
+
+    ("the crash ceiling fires IN A SHARD", "test/mutate.py",
+     '    if len(crashed) > CRASHED_CEILING:\n'
+     '        print("\\n%d mutations CRASHED, and the ceiling is %d. A NEW "',
+     '    if len(crashed) > CRASHED_CEILING and not share:\n'
+     '        print("\\n%d mutations CRASHED, and the ceiling is %d. A NEW "',
+     "the ceiling goes back to being unreachable. `sweep_in_a_copy` sets "
+     "SHARD on all eight workers, so `not share` is false in every process "
+     "that runs the sweep for real — the guard was live only in the tests, "
+     "which reach it BECAUSE they do not set SHARD. It shipped that way with "
+     "100% line coverage and `verify: all owed checks passed ✓` printed over "
+     "a report naming a CRASHED mutation in all three of the run's sweeps"),
+
 
     ("content goes only to whoever it was addressed to",
      "bin/llm-chat-deliver",
@@ -1073,14 +1118,24 @@ MUTATIONS = [
      "it — waiting does not start a server, and an empty unreachable list "
      "(which `all()` calls true) would retry a failure that named no rooms"),
 
+    # ONE MUTATION ON THIS LINE, not two. The raise moved out of `rows` into
+    # `refuse` when the writes were routed through it, so this anchor went
+    # stale and reported SURVIVED — which reads as an undefended behaviour
+    # rather than as a broken measurement. A second mutation written against
+    # the new location would then have shared its anchor, which is the
+    # ambiguity the sweep refuses. Merged instead, with both reasons.
     ("the rate-limit KIND survives to the caller", "bin/llm_chat",
-     "        raise (Throttled if res.get(\"rate_limited\") else "
-     "SystemExit)(problem)",
-     "        raise SystemExit(problem)",
+     "    raise (Throttled if res.get(\"rate_limited\") else SystemExit)"
+     "(problem)",
+     "    raise SystemExit(problem)",
      "the flag `call` already determined is thrown away one line later, so a "
      "transient and an outage reach the turn-end gate as the same thing with "
      "only prose to tell them apart — which is why #18 blocked on a 429 that "
-     "cleared twenty seconds later"),
+     "cleared twenty seconds later. And it is now the ONLY raiser: `rows` "
+     "kept the distinction while `create`, `update` and `remove` lost it, "
+     "which is exactly backwards, because the limiter appears WRITE-scoped "
+     "and the throttled operations were the ones handing back an "
+     "indistinguishable error"),
 
     ("a 429 is retried instead of handed to the caller", "bin/llm_chat",
      "            if e.code == 429 and wait is not None:",
@@ -1670,6 +1725,40 @@ MUTATIONS = [
      "for as long as `since` could only be the cursor or zero, which is what "
      "made the proxy look like the invariant"),
 
+    ("the SLACK BRIDGE is not the CLI", "triggers/undocumented-surface",
+     '    return bare == tool or bare.endswith("/" + tool)',
+     "    return bare.endswith(tool)",
+     "`@llm_chat list` and the typo example `@llm_chat lsit` come back as CLI "
+     "commands that do not exist — two standing false positives in a report "
+     "whose only job is to be acted on, and a list that is mostly noise stops "
+     "being read"),
+
+    ("formatting is stripped before the name is matched",
+     "triggers/undocumented-surface",
+     '    bare = word.strip("`\'\\"*()[]\\\\,.:;")',
+     "    bare = word",
+     "a remedy written as \"`llm_chat close`\" — the way nearly every remedy "
+     "in this repo is written — stops being recognised as the CLI at all, so "
+     "the ghost check goes quiet about the source strings it exists to read. "
+     "This is the REGRESSION the exact-match fix introduced, and a mutation "
+     "is the only thing that would have caught it, because removing the "
+     "strip makes the report SHORTER and a shorter report reads like progress"),
+
+    ("a hook gives up on a throttle sooner than a direct caller",
+     "bin/llm_chat",
+     "    return HOOK_RETRY_WAITS if os.environ.get(HOOK_ENV) else RETRY_WAITS",
+     "    return RETRY_WAITS",
+     "a hook retries inside a subprocess timeout that cannot outlast the "
+     "window — measured at >=40s against an 8s kill — so it spends its whole "
+     "deadline to fail the same way, while the next poll would have collected "
+     "the message for free (#24)"),
+
+    ("the throttle advice travels WITH the error", "bin/llm_chat",
+     '    if res.get("advice"):\n        problem += "\\n" + res["advice"]',
+     "    if False:\n        problem += \"\\n\" + res[\"advice\"]",
+     "a bare `HTTP 429 Rate limit exceeded` leaves a caller unable to tell "
+     "whether the write landed — which is #27 exactly, a case where it had"),
+
     ("removing NOTHING is not a failure", "bin/llm_chat",
      '        if "not found" in (res["error"] + body).lower():\n'
      "            return {}",
@@ -1679,11 +1768,15 @@ MUTATIONS = [
      "behind while reporting a table name rather than a cause (#28). Every "
      "room a 429'd `open` created is in that state"),
 
+    # THE REPLACEMENT MUST NOT BE ORDINARY CODE. This one was a bare
+    # `return {}`, which is a line the tree legitimately contains — so the
+    # stranded-mutation check found it in a clean tree and refused to run,
+    # reporting a sweep that had been killed when none had. A mutation's
+    # replacement is a fingerprint as well as a change.
     ("only NOTHING MATCHED is swallowed, not every error", "bin/llm_chat",
      '        if "not found" in (res["error"] + body).lower():\n'
-     "            return {}\n"
-     "        raise SystemExit(res[\"error\"] + \"  \" + body)",
-     "        return {}",
+     "            return {}\n        refuse(res)",
+     '        if True:\n            return {}\n        refuse(res)',
      "a server that is down, a rejected predicate or a permission failure all "
      "report success while the rows are still there — which is the same "
      "told-it-worked-when-it-did-not defect as #27, in the one verb with no "
@@ -2483,6 +2576,11 @@ NOT_SWEPT = {
         "an empty answer — and the one thing that could go wrong silently, "
         "a failure read as a hash, is swept where it bites in "
         "divergent_checkouts",
+    "bin/llm_chat:throttled_advice": "both branches asserted directly, and "
+        "asserted to be OPPOSITE — the hook's message is reassurance that "
+        "something else will collect this, the direct caller's is a warning "
+        "that nothing will and nothing was written. The branch it turns on is "
+        "swept in retry_waits, which reads the same variable",
     "bin/llm_chat:skill_checkout": "all three outcomes asserted directly — a "
         "path read out of the skill TEXT, a file naming no checkout, and no "
         "file at all — and the thing that could go wrong silently, naming the "
@@ -2697,16 +2795,52 @@ def report_unaccounted():
 
     So both are printed: the part of `swept` inside the denominator, which
     adds up, and the total, which is the true number of mutations.
+
+    AND IT STILL DID NOT ADD UP, for a second reason the first fix did not
+    look for. Intersecting `swept` with the denominator fixed one overcount
+    and left another: the two sets OVERLAP. 47 candidates are swept AND carry
+    a NOT_SWEPT reason — entries whose reason reads "asserted directly", kept
+    deliberately as a note that the function is covered twice over. Adding the
+    two sets counts each of those once each. The line went on reading
+    `125 + 225 + 0 = 303`, whose left side is 350.
+
+    A partition has to be DISJOINT to be summed, which is the thing neither
+    version checked. So the middle term is now "excluded AND NOT swept", the
+    overlap is reported on its own line rather than folded into either, and
+    the closing sum is ASSERTED rather than printed — `report_unaccounted`
+    fails if its own arithmetic does not close. The first fix printed a sum
+    and trusted it; a number that is only displayed cannot notice it is
+    wrong, and this is the one tool whose whole claim is that its numbers can
+    be trusted.
     """
     everything = set(candidates())
     swept = swept_functions()
-    unaccounted = sorted(everything - swept - set(NOT_SWEPT))
+    excluded = set(NOT_SWEPT)
+    unaccounted = sorted(everything - swept - excluded)
     here = len(everything & swept)
-    print("\ncandidates %d — swept %d, excluded with a reason %d, "
-          "unaccounted %d  (%d + %d + %d = %d)"
-          % (len(everything), here, len(everything & set(NOT_SWEPT)),
-             len(unaccounted), here, len(everything & set(NOT_SWEPT)),
-             len(unaccounted), len(everything)))
+    # DISJOINT BY CONSTRUCTION: swept, then excluded-and-not-swept, then what
+    # neither claims. Subtracting `swept` in the middle term is what makes the
+    # three sum to the denominator.
+    only_excluded = len(everything & excluded - swept)
+    both = len(everything & excluded & swept)
+    print("\ncandidates %d — swept %d, excluded with a reason and NOT swept "
+          "%d,\nunaccounted %d  (%d + %d + %d = %d)"
+          % (len(everything), here, only_excluded, len(unaccounted),
+             here, only_excluded, len(unaccounted),
+             here + only_excluded + len(unaccounted)))
+    if here + only_excluded + len(unaccounted) != len(everything):
+        print("\nTHIS TOOL'S OWN ARITHMETIC DOES NOT CLOSE: the three groups "
+              "above sum to\n%d, and there are %d candidates. They are meant "
+              "to partition the set, so\none of them is counting something "
+              "twice or missing something. Nothing else\nhere is trustworthy "
+              "until that is explained."
+              % (here + only_excluded + len(unaccounted), len(everything)),
+              file=sys.stderr)
+        return True
+    if both:
+        print("  %d of the excluded also carry a mutation — their reason says "
+              "the\n  behaviour is asserted directly, and the mutation was "
+              "kept anyway. Counted\n  under `swept` above, not twice." % both)
     outside = len(swept) - here
     if outside:
         print("  %d further mutation(s) target functions outside that set — "
@@ -2890,6 +3024,77 @@ def probe(relative, old, new):
     return 0
 
 
+def sweep_exit_code(crashed, survivors, share):
+    """The sweep's verdict, as a function, because as a branch it never ran.
+
+    A CEILING, NOT A PASS. Thirteen mutations were killing their tests by
+    raising rather than by being measured — a debt that existed invisibly for
+    as long as the sweep was reporting `caught` about a suite it never ran.
+    Blocking every commit until all of them are rewritten would be a gate
+    nobody can satisfy, and a gate nobody can satisfy gets switched off;
+    letting them pass silently is how they got here. So: they are named, they
+    do not count as caught, and the number may only go DOWN.
+
+    THE CEILING USED TO BE GUARDED BY `if crashed and not share:` AND SO NEVER
+    FIRED IN PRODUCTION. `sweep_in_a_copy` sets SHARD on every worker it
+    spawns, and the sweep always runs through it, so `not share` was false in
+    every process that ever evaluated the condition. The only caller reaching
+    it was the test suite, which calls into this with no SHARD set. The
+    result: 100% line coverage, `verify: all owed checks passed ✓`, and one
+    CRASHED mutation named in the output of all three sweeps of the run that
+    finally caught it. A guard whose only caller is its own test is not a
+    guard — and coverage cannot tell the two apart, because the line really
+    was executed.
+
+    It is a FUNCTION now for that reason and not for tidiness. The decision
+    was unreachable from a test at the value of `share` production uses, so
+    the only thing that could have caught this was reading the log of a
+    twenty-minute sweep closely enough to notice the exit code disagreed with
+    the report. That is not a check.
+
+    WHAT THE SHARDED CHECK STILL MISSES, stated because a share sees its own
+    crashes and not the whole list: comparing a SHARE's count against the
+    global ceiling can only under-report. `share_crashed > CEILING` implies
+    `total_crashed > CEILING`, so this never fails a run that should pass —
+    but with a ceiling above 0, crashes spread thinly across eight shards
+    could each sit under it and total more. At CEILING = 0 the two are
+    identical, which is the only reason this is sufficient today. Raising the
+    ceiling means aggregating in the parent before comparing.
+    """
+    if len(crashed) > CRASHED_CEILING:
+        print("\n%d mutations CRASHED, and the ceiling is %d. A NEW "
+              "behaviour is being\nmeasured by an exception rather than "
+              "by an assertion — fix it here rather\nthan raising the "
+              "number." % (len(crashed), CRASHED_CEILING))
+        return 1
+    if crashed and not share:
+        print("\n(%d of a permitted %d — this number may only go down.)"
+              % (len(crashed), CRASHED_CEILING))
+    if survivors:
+        return 1
+    # REACHED ONLY WHEN NOTHING CRASHED, and that is the early return above
+    # doing it rather than a condition here. This sentence used to print
+    # unconditionally, six lines below a report naming a mutation that was NOT
+    # caught by an assertion — the skimmable summary saying the opposite of
+    # the detail, and the detail is the half that gets scrolled past. Both
+    # were symptoms of one cause: the ceiling did not fire in a shard, so
+    # control carried on past it.
+    #
+    # A SECOND GUARD HERE WOULD BE DEAD CODE AT CRASHED_CEILING = 0. I wrote
+    # one, and the mutation that reverts it SURVIVED — not because nothing
+    # defends it but because nothing can reach it. The warning that belongs
+    # here instead is at the constant, where someone would raise it.
+    print("Every reverted fix in this share was caught BY A FAILING "
+          "ASSERTION.")
+    # THE ACCOUNTING IS A PROPERTY OF THE WHOLE LIST, not of a share, so one
+    # worker owns it. Printed by every shard it would be eight identical
+    # reports of the same set, and eight chances to read a repeat as a
+    # confirmation.
+    if share and not share.startswith("0/"):
+        return 0
+    return 1 if report_unaccounted() else 0
+
+
 def main():
     if "--probe" in sys.argv:
         ap = argparse.ArgumentParser(prog="mutate.py --probe")
@@ -2999,36 +3204,7 @@ def main():
               "defended:" % len(survivors))
         for name, why in survivors:
             print("  - %s: %s" % (name, why))
-    if crashed and not share:
-        # A CEILING, NOT A PASS. Thirteen mutations were killing their tests
-        # by raising rather than by being measured — a debt that existed
-        # invisibly for as long as the sweep was reporting `caught` about a
-        # suite it never ran. Blocking every commit until all of them are
-        # rewritten would be a gate nobody can satisfy, and a gate nobody can
-        # satisfy gets switched off; letting them pass silently is how they
-        # got here.
-        #
-        # So: they are named, they do not count as caught, and the number may
-        # only go DOWN. A new one fails this immediately.
-        if len(crashed) > CRASHED_CEILING:
-            print("\n%d mutations CRASHED, and the ceiling is %d. A NEW "
-                  "behaviour is being\nmeasured by an exception rather than "
-                  "by an assertion — fix it here rather\nthan raising the "
-                  "number." % (len(crashed), CRASHED_CEILING))
-            return 1
-        print("\n(%d of a permitted %d — this number may only go down.)"
-              % (len(crashed), CRASHED_CEILING))
-    if survivors:
-        return 1
-    print("Every reverted fix in this share was caught BY A FAILING "
-          "ASSERTION.")
-    # THE ACCOUNTING IS A PROPERTY OF THE WHOLE LIST, not of a share, so one
-    # worker owns it. Printed by every shard it would be eight identical
-    # reports of the same set, and eight chances to read a repeat as a
-    # confirmation.
-    if share and not share.startswith("0/"):
-        return 0
-    return 1 if report_unaccounted() else 0
+    return sweep_exit_code(crashed, survivors, share)
 
 
 if __name__ == "__main__":

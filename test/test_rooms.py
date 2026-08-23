@@ -93,6 +93,33 @@ class RoomTest(unittest.TestCase):
         self.assertIsNotNone(self.fake.get_channel("half"),
                              "the room really is there")
 
+    def test_THE_THROTTLE_ADVICE_DOES_NOT_CONTRADICT_THE_PARTIAL_NOTICE(self):
+        """One error message must not assert both halves of a contradiction.
+
+        The throttle advice said "NOT sent — nothing was written", which is a
+        present-indicative claim about STATE attached to an OUTCOME. `open` is
+        two writes, so throttling the second produced, in one message:
+
+            Throttled, and NOT sent — nothing was written.
+            BUT #half WAS CREATED before that failed…
+
+        False in the direction that stops somebody acting — a reader who
+        believes the first sentence re-opens the room, which the second
+        forbids because a second open silently discards their topic and
+        briefing.
+
+        lamp-owner's tell from #learnings: a clause in the present indicative
+        about something other than the failure itself is a claim needing the
+        same evidence as any other, and it is usually attached to a code path
+        reachable in more states than the author had in mind."""
+        self.fail_after_channel(kind=cli.Throttled)
+        with self.assertRaises(SystemExit) as caught:
+            self.quiet(cli.do_join, "http://127.0.0.1:1", "half", "me", None,
+                       200, False)
+        said = str(caught.exception)
+        self.assertIn("WAS CREATED", said)
+        self.assertNotIn("nothing was written", said)
+
     def test_the_partial_failure_names_JOIN_not_open_as_the_recovery(self):
         """The whole cost of this bug: the reasonable recovery is to open it
         again, which succeeds and silently discards the corrected house
@@ -1073,10 +1100,22 @@ class DeleteTest(RoomTest):
 
         Every room created by a 429'd `open` (#27) is in exactly that state,
         so before this the room you were told did not exist was also the room
-        you could not clean up. Found by dogfooding a throwaway room (#28)."""
+        you could not clean up. Found by dogfooding a throwaway room (#28).
+
+        THE try/except IS LOAD-BEARING — do not simplify it back to a bare
+        call. Reverting the swallow makes `do_delete` RAISE, which unittest
+        counts as an ERROR, not a failure; the sweep's verdict for this
+        behaviour was `CRASHED, not measured`, meaning the assertion below
+        never ran and nothing here actually checked the room was gone. Turning
+        the raise into `self.fail` is what makes this a measurement.
+        """
         name = self.room("empty", messages=0)
         self.not_found_on("messages")
-        self.quiet(cli.do_delete, self.SERVER, name, "me", yes=True)
+        try:
+            self.quiet(cli.do_delete, self.SERVER, name, "me", yes=True)
+        except SystemExit as stop:
+            self.fail("delete aborted on a room with nothing to delete: %s"
+                      % stop)
         self.assertIsNone(self.fake.get_channel(name),
                           "the room survived its own deletion")
 

@@ -401,5 +401,164 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(self.mutate.VERDICT.findall("OK (skipped=2)"), [])
 
 
+class AccountingClosesTest(unittest.TestCase):
+    """The published sum must equal its own left side, and both must equal the
+    candidate count.
+
+    This line has been wrong twice, each time for a different reason and each
+    time while looking right. First `swept` was not intersected with the
+    denominator: `115 + 222 = 337` printed as `= 293`. That was fixed by
+    intersecting — and it still read `125 + 225 + 0 = 303`, whose left side is
+    350, because the two sets OVERLAP: 47 candidates are swept AND carry a
+    NOT_SWEPT reason.
+
+    Both versions printed a sum computed from the denominator rather than
+    from the terms, so the displayed equals sign was decorative. It could
+    never disagree with itself, which is the only thing that would have shown
+    either bug. This reads the line the tool actually prints and does the
+    addition, against the REAL candidate set rather than a fixture — a
+    fixture here would only pin whatever grouping I happened to write.
+    """
+
+    def test_the_three_groups_PARTITION_the_candidate_set(self):
+        import io
+        import contextlib
+        import re
+        import mutate
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            failed = mutate.report_unaccounted()
+        said = buffer.getvalue()
+        found = re.search(r"candidates (\d+) .*?\((\d+) \+ (\d+) \+ (\d+) = "
+                          r"(\d+)\)", said, re.S)
+        self.assertIsNotNone(found, "no accounting line in:\n%s" % said)
+        total, a, b, c, printed = (int(g) for g in found.groups())
+        self.assertEqual(a + b + c, printed,
+                         "the printed sum is not the sum of its own terms")
+        self.assertEqual(printed, total,
+                         "the groups do not add up to the candidate set")
+        self.assertFalse(failed, "the real tree has unaccounted candidates")
+
+    # THE CLOSURE CHECK ITSELF IS NOT TESTED HERE, deliberately, and this note
+    # is the reason rather than an omission.
+    #
+    # As written the three terms are a partition of the candidate set by
+    # construction — swept, excluded-minus-swept, and neither — so no stubbing
+    # of `candidates` or `swept_functions` can make them disagree. Any test
+    # that appeared to check the failure branch would be asserting a value it
+    # had arranged, which is how the two bugs above survived in the first
+    # place: a sum computed from the denominator can never contradict itself.
+    #
+    # It fires on exactly one thing: someone editing the terms so they overlap
+    # again, which is what happened twice. That is measured by the mutation
+    # `the accounting line's terms are DISJOINT`, which reverts the middle
+    # term to the overlapping form and must turn this suite red. The mutation
+    # is the test. Writing a second, stubbed one would add a green light
+    # without adding a check.
+
+
+class CrashCeilingTest(unittest.TestCase):
+    """The ceiling must fire IN A SHARD, because a shard is the only thing
+    that ever evaluates it.
+
+    It was written `if crashed and not share:`. `sweep_in_a_copy` sets SHARD
+    on all eight workers, so in production `share` is always truthy and the
+    ceiling never ran. Nothing noticed for as long as it was that way: the
+    line had 100% coverage — from these tests, which reached it precisely
+    because they did NOT set SHARD — and `verify` printed `all owed checks
+    passed ✓` over a report naming a CRASHED mutation.
+
+    So every case here is exercised at BOTH values of `share`. A test that
+    only passes the unsharded value re-creates the exact blindness, and would
+    look identical in the coverage table.
+    """
+
+    def setUp(self):
+        import mutate
+        self.mutate = mutate
+        self.crash = [("some behaviour", "1 test(s) ERRORED and none FAILED")]
+        # report_unaccounted reads the real MUTATIONS list against the real
+        # tree and is a whole-list property; this test is about the verdict,
+        # so it is pinned rather than exercised.
+        self.real_unaccounted = mutate.report_unaccounted
+        mutate.report_unaccounted = lambda: False
+        self.addCleanup(
+            lambda: setattr(mutate, "report_unaccounted",
+                            self.real_unaccounted))
+
+    def code(self, crashed, survivors, share):
+        import io
+        import contextlib
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            got = self.mutate.sweep_exit_code(crashed, survivors, share)
+        return got, buffer.getvalue()
+
+    SHARES = (None, "0/8", "3/8")
+
+    def test_a_CRASH_OVER_THE_CEILING_FAILS_IN_EVERY_SHARD(self):
+        """The regression, stated as the thing that was false: a worker with
+        SHARD set returned 0 while naming a mutation nothing measured."""
+        self.assertEqual(self.mutate.CRASHED_CEILING, 0,
+                         "this test assumes the ceiling is zero; a sharded "
+                         "count cannot be compared against a higher one")
+        for share in self.SHARES:
+            got, said = self.code(self.crash, [], share)
+            self.assertEqual(got, 1, "share=%r let a crash pass" % share)
+            self.assertIn("ceiling", said)
+
+    def test_it_does_not_ALSO_claim_everything_was_caught(self):
+        """The summary that contradicted the report six lines above it, and
+        the reason there is no separate guard for it.
+
+        My first fix was a second branch here, so the sentence could not print
+        beside a crash. The mutation reverting that branch SURVIVED — and the
+        reason is the point: at CRASHED_CEILING = 0 the ceiling returns before
+        control ever reaches the summary, so the branch was unreachable and
+        this assertion passed without exercising anything. It holds now
+        because of the early return above, which the ceiling test covers.
+
+        Deleted rather than kept, because an unreachable guard reads as a
+        defended one. The condition under which it would be needed is written
+        beside CRASHED_CEILING, where someone would change it.
+        """
+        for share in self.SHARES:
+            got, said = self.code(self.crash, [], share)
+            self.assertEqual(got, 1)
+            self.assertNotIn("Every reverted fix", said,
+                             "share=%r claimed a clean sweep" % share)
+            self.assertIn("CRASHED", said,
+                          "share=%r did not name what crashed" % share)
+
+    def test_a_CLEAN_share_still_passes(self):
+        """The other direction, and the reason the fix is not just `return 1`
+        wherever `crashed` is truthy: eight workers each have to be able to
+        report success, and only shard 0 owns the accounting."""
+        for share in self.SHARES:
+            got, said = self.code([], [], share)
+            self.assertEqual(got, 0, "share=%r failed a clean sweep" % share)
+            self.assertIn("Every reverted fix", said)
+
+    def test_a_SURVIVOR_fails_in_every_shard_too(self):
+        """Unlike the ceiling this one was always right, and it is pinned here
+        because it sits in the same function and would be easy to lose while
+        moving the crash rule around it."""
+        for share in self.SHARES:
+            got, _ = self.code([], [("a behaviour", "green")], share)
+            self.assertEqual(got, 1, "share=%r let a survivor pass" % share)
+
+    def test_only_shard_ZERO_owns_the_whole_list_accounting(self):
+        """Eight identical reports of the same set is eight chances to read a
+        repeat as a confirmation."""
+        seen = []
+        self.mutate.report_unaccounted = lambda: seen.append(True) or False
+        self.code([], [], "3/8")
+        self.assertEqual(seen, [], "a non-zero shard re-ran the accounting")
+        self.code([], [], "0/8")
+        self.code([], [], None)
+        self.assertEqual(len(seen), 2,
+                         "shard 0 and the unsharded run must both account")
+
+
 if __name__ == "__main__":
     unittest.main()
