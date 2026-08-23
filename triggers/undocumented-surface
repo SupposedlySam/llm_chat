@@ -112,6 +112,43 @@ def nested(path, verbs):
     return sorted(v for v in verbs if verbs_from_help(path, v))
 
 
+def is_the_tool(word, tool):
+    """Is this token an invocation of the CLI, or something else ending in it?
+
+    `endswith` matched `@llm_chat`, which is the SLACK BRIDGE — a different
+    surface with its own verbs, deliberately not CLI subcommands. So
+    `@llm_chat list` and the typo example `@llm_chat lsit` were both reported
+    as commands that do not exist, which is true and beside the point: they
+    were never claimed to be CLI commands.
+
+    Two false positives standing in a check's output is not a cosmetic
+    problem. It is the whole problem — nobody acts on a list that is mostly
+    noise, and a check nobody acts on has stopped being a check. Both of them
+    had been there long enough to be part of the furniture.
+
+    The tool is the bare name, or a path ending in it. `@name`, `x-name` and
+    `name-mcp` are not.
+
+    FORMATTING IS STRIPPED FIRST, and leaving that out was a REGRESSION I
+    introduced and then caught by sweeping the predicate rather than trusting
+    the three ghosts it had removed. `endswith` accepted a backticked
+    "`llm_chat" because it ends with the name; the exact match rejected it —
+    so tightening the rule silently blinded the ghost check to the most common
+    way this repo writes a remedy in a source string. Two false positives
+    removed, a whole family of true ones lost.
+
+    `@` IS NOT FORMATTING and is deliberately absent from the strip set: it is
+    what distinguishes the Slack bridge from the CLI, which is the whole point
+    of this function. Nor is `-` or `/`.
+
+    lamp-owner's rule, arriving the hour I needed it: when you find a defect by
+    probing, sweep the predicate before declaring it fixed. The probe tells you
+    what is wrong, never what your fix also changed.
+    """
+    bare = word.strip("`'\"*()[]\\,.:;")
+    return bare == tool or bare.endswith("/" + tool)
+
+
 def named_in_strings(path, tool):
     """Commands named in a module's STRING LITERALS — not its docstrings.
 
@@ -155,7 +192,7 @@ def named_in_strings(path, tool):
         # sentence that happens to contain the tool's name.
         for line in node.value.splitlines():
             words = line.strip().split()
-            if len(words) >= 2 and words[0].rstrip(":").endswith(tool):
+            if len(words) >= 2 and is_the_tool(words[0].rstrip(":"), tool):
                 if re.fullmatch(r"[a-z][a-z0-9_-]*", words[1]):
                     found.add(words[1])
     return found
@@ -304,7 +341,7 @@ def invented(verbs, sources, docs, tool):
                        + re.findall(r"^\s{4}(\S.*)$", text, re.M)):
             words = quoted.replace("./", "").split()
             for i, word in enumerate(words[:-1]):
-                if word.endswith(tool) and words[i + 1].isidentifier():
+                if is_the_tool(word, tool) and words[i + 1].isidentifier():
                     named.add(words[i + 1])
     return sorted(n for n in named if n not in verbs)
 
@@ -457,16 +494,25 @@ def main(argv=None):
               "they are correct or merely mentioned)")
         return 0
 
-    print("UNDOCUMENTED SURFACE — shipped, and absent from %s:"
-          % ", ".join(args.docs))
-    for verb in missing_verbs:
-        print("  command  %s" % verb)
-    for option in missing_options:
-        print("  option   %s" % option)
-    print("\n  A reader starts from those files. Anything not in them exists "
-          "only for\n  whoever already knew to look. This checks that a name "
-          "APPEARS — never\n  that the prose is right, or that it still "
-          "describes what the code does.")
+    # ONLY WHEN THERE IS SOMETHING UNDER IT. This heading printed
+    # unconditionally on the failure path, so a run whose only finding was a
+    # GHOST announced "UNDOCUMENTED SURFACE — shipped, and absent from
+    # README.md, llms.txt:" followed by nothing at all. A heading with no
+    # findings under it is itself a false finding, in a report whose entire
+    # job is to be believed — and it appeared the moment the option list was
+    # cleared, which is exactly when somebody is checking whether they are
+    # done.
+    if missing_verbs or missing_options:
+        print("UNDOCUMENTED SURFACE — shipped, and absent from %s:"
+              % ", ".join(args.docs))
+        for verb in missing_verbs:
+            print("  command  %s" % verb)
+        for option in missing_options:
+            print("  option   %s" % option)
+        print("\n  A reader starts from those files. Anything not in them "
+              "exists only for\n  whoever already knew to look. This checks "
+              "that a name APPEARS — never\n  that the prose is right, or "
+              "that it still describes what the code does.")
     return 0
 
 

@@ -696,6 +696,61 @@ class ReportTest(unittest.TestCase):
         self.assertIn("A reader starts from those files", out)
 
 
+class ToolTokenTest(unittest.TestCase):
+    """`@llm_chat` is the SLACK BRIDGE, not the CLI.
+
+    `endswith(tool)` matched it, so `@llm_chat list` and the typo example
+    `@llm_chat lsit` were both reported as CLI commands that do not exist —
+    true, and beside the point: they were never claimed to be CLI commands.
+    Two standing false positives is not cosmetic. It is the whole problem,
+    because nobody acts on a list that is mostly noise.
+    """
+
+    def test_the_bare_name_is_the_tool(self):
+        self.assertTrue(check.is_the_tool("llm_chat", "llm_chat"))
+
+    def test_a_PATH_ending_in_the_name_is_the_tool(self):
+        self.assertTrue(
+            check.is_the_tool("/x/bin/llm_chat", "llm_chat"))
+
+    def test_the_SLACK_BRIDGE_is_not_the_tool(self):
+        self.assertFalse(check.is_the_tool("@llm_chat", "llm_chat"))
+
+    def test_a_name_that_merely_ENDS_in_it_is_not_the_tool(self):
+        """`x-llm_chat` and `llm_chat-mcp` are different programs, and a
+        suffix match cannot tell any of them apart."""
+        self.assertFalse(check.is_the_tool("x-llm_chat", "llm_chat"))
+        self.assertFalse(check.is_the_tool("llm_chat-mcp", "llm_chat"))
+
+    def test_a_BACKTICKED_remedy_is_still_the_tool(self):
+        """The regression the exact match introduced, and the reason the
+        tests above are not enough on their own.
+
+        Every one of them asserts a REJECTION. Tightening `endswith` into
+        `==` makes all four greener, and it also stopped `` `llm_chat ``
+        from matching — which is how nearly every remedy in this repo is
+        written inside a source string. The check went quieter and read as
+        fixed. Only sweeping the predicate over the shapes it ACCEPTS
+        showed the family of true positives that had gone with the two
+        false ones.
+        """
+        for word in ("`llm_chat", '"`llm_chat', "**`llm_chat", "'llm_chat",
+                     "(llm_chat", "[llm_chat", "`bin/llm_chat"):
+            self.assertTrue(
+                check.is_the_tool(word, "llm_chat"), word)
+
+    def test_the_STRIP_SET_leaves_the_bridge_distinguishable(self):
+        """`@`, `-` and `/` are load-bearing, not formatting.
+
+        Stripping any of them would undo the fix above: `@llm_chat` would
+        become the CLI again. The strip set exists to remove markup, and
+        markup is the only thing in it.
+        """
+        for word in ("@llm_chat", "x-llm_chat", "`@llm_chat`"):
+            self.assertFalse(
+                check.is_the_tool(word, "llm_chat"), word)
+
+
 class EntryPointTest(unittest.TestCase):
     def test_it_is_executable(self):
         path = os.path.join(os.path.dirname(os.path.dirname(

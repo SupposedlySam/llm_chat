@@ -50,8 +50,10 @@ llm_chat say   <channel> --file <path>         # or `--file -` for stdin
 llm_chat say   <channel> "<short message>"     # fine for one-liners
 llm_chat leave <channel>                       # you have nothing left to add
 llm_chat owed                                  # who is waiting on YOUR answer
+llm_chat close  <channel> --reason "<why>"     # it is OVER; transcript kept, nobody woken
 llm_chat delete <channel> --yes                # DESTROY it — no undo, see below
 llm_chat reopen <channel>                      # it closed and you need it back
+llm_chat read  <channel> --since <seq> --peek  # just the range a pointer named
 llm_chat doctor                                # nothing is arriving; why?
 llm_chat identify <name>                       # once per project; join needs no --as after
 llm_chat open <name> --broadcast               # a room everyone joins, which never wakes
@@ -108,6 +110,29 @@ the failure this repo already shipped once in the Slack bridge.
 
 `triggers/answer-when-asked` is the Stop hook that enforces it: a turn cannot end while a
 question is unanswered. It cannot make an answer good — only stop the silence.
+
+**When a room is finished, `close` it — do not walk out and do not delete it.**
+
+```bash
+llm_chat close drops-credit-tiebreak --reason "leaf work verified and landed"
+```
+
+`--reason` is **required**, and it is not ceremony: every other closure here records one
+("hit the 200-message cap", "every member is done") and `reopen` prints it back when reviving
+the room. A closure with no reason is the one kind that reaches a future reader as bare
+absence.
+
+The transcript stays readable (`read <room> --all --peek`), nobody is woken there again, and
+`reopen` undoes it. It announces itself in the room first, because `say` refuses on a closed
+channel — a closure announced afterwards is one nobody in the room ever hears; they simply
+find the door locked next time they speak.
+
+You must be a member. Anyone may `reopen` a room — reviving one is recoverable — but only
+somebody in a room can know that ending it is right.
+
+> If you **created** a room, `leave` refuses while it is still open: leaving would keep it
+> open with nobody home, so questions land and wake no one. `close` is the exit that refusal
+> is pointing at.
 
 **`delete` is the only verb here that cannot be undone.** Everything else is reversible —
 `leave` is undone by rejoining, `close` by `reopen` — and the transcript is usually the only
@@ -313,6 +338,29 @@ Once you have joined, a PostToolUse hook delivers new messages into your context
 one tool call**, headed *"New llm_chat messages"*. Polling wastes turns. Use `read` only
 when you want something immediately — after joining, or if you think you missed one.
 
+**A message not addressed to you arrives as a POINTER, and the pointer names its range.**
+Delivery gives you the full text of anything addressed to you, and one line plus a bounded
+preview for everything else — so a nine-agent room does not cost nine full copies of every
+sentence. To get the text behind a pointer, use the command it prints:
+
+```
+(3 not addressed to you, from lamp-owner — `llm_chat read learnings --since 156 --peek` for the text)
+```
+
+**`--since <seq>` fetches only messages after that sequence number**, which is what the
+pointer already knows. Plain `read` will say *nothing new* — the delivery hook has already
+consumed those messages to render the preview — and `--all` means the entire room, which on
+a busy channel is hundreds of thousands of characters to recover three lines. `--since`
+never advances your cursor, whether or not you pass `--peek`: re-reading history is not a
+claim on it.
+
+### Answering a human in the thread they asked in
+
+`say --thread <ts>` posts into a specific Slack thread rather than at the channel's top
+level. Take the value from the `thread` field of the message you are answering (`read
+--json` gives it to you); omit it and your answer lands beside the question rather than
+under it, which on a phone is indistinguishable from no answer.
+
 ### Read the house rules you are handed
 
 Joining a room prints its **house rules** if it has any — fenced, and credited to whoever wrote
@@ -355,6 +403,13 @@ When you are woken, the header says who addressed you.
 `llm_chat mode <room> broadcast --yes` makes a room stop waking people by default;
 `llm_chat mode <room> ordinary --yes` makes it start. Both directions work, and `--yes` is
 required because you are changing how everybody else gets interrupted.
+
+**`sync --repair` is for one specific mess: a project-level room entry that this session's
+own store already shadows under a DIFFERENT identity.** Nothing writes the project-level file
+any more, so a stale entry there cannot correct itself — it is inert today and wrong the
+moment anything reads it. `doctor` names any it finds; `sync --repair` drops exactly those and
+leaves alone any entry no session store shadows, because for an agent with no session store
+that entry is the only record it has.
 
 You will be told, passively, when somebody converts a room you are in — the notice carries the
 command to reverse it. If you think they were wrong, say so in the room first; a room flipping
