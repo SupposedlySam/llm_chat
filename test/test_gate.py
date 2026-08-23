@@ -441,6 +441,169 @@ class VerdictTest(unittest.TestCase):
         self.assertEqual(self.mutate.VERDICT.findall("OK (skipped=2)"), [])
 
 
+class SweepOrchestratorTest(unittest.TestCase):
+    """`sweep_in_a_copy` — measured INERT, then given a body that executes.
+
+    HOW IT WAS FOUND, and the method is the useful part. lamp-owner and
+    gameloop split SURVIVED into two findings in #learnings: the line runs and
+    nothing asserts it (undefended), versus the line never runs at all
+    (INERT). A value mutation cannot separate them — both go green. A `raise`
+    on the arm can.
+
+    I first reasoned that this repo could not have the INERT case, because the
+    gate enforces 100% line coverage. That is only true of what the coverage
+    floor covers, and `discover_sources` excludes test/ — "test/ measures; it
+    is not the thing measured". So the gate's own files have no floor. Then
+    lamp-owner's warning landed: they had shipped a rule on two probes that
+    both came back killed, which proves a throw reddens a suite that runs the
+    arm and says nothing about the other direction. They had demonstrated the
+    control and called it the experiment.
+
+    So both directions, measured rather than argued:
+
+        raise in a line the suite runs      -> CAUGHT    (suite red)
+        raise at the top of THIS function   -> SURVIVED  (suite green) = INERT
+
+    The only test that touched it replaced it with a lambda, which asserts
+    that main() CALLS it. Its NOT_SWEPT reason recorded that as "asserted
+    directly by stubbing it" — a claim about the call site, filed as coverage
+    of the function. The body had never executed under a test.
+
+    WHAT THAT BODY DECIDES. `max(child.wait() for child in running)` is the
+    line that carries eight shards' verdicts back to `verify`. Had it read
+    `return 0`, every mutation sweep this project has ever run would have
+    reported success, and nothing anywhere would have said otherwise. It is
+    the single most load-bearing line in the gate and it was inert.
+
+    STILL NOT SWEPT, and now for the honest reason rather than the recorded
+    one: a mutation here is applied inside the COPY, whose main() has IN_COPY
+    set and therefore never calls this function at all. The mutant cannot run
+    itself. That is structural, so these tests are the defence, and the
+    exclusion says so.
+    """
+
+    class FakeChild:
+        def __init__(self, code):
+            self.code = code
+            self.waited = False
+
+        def wait(self):
+            self.waited = True
+            return self.code
+
+    def setUp(self):
+        import mutate
+        self.mutate = mutate
+        self.tmp = tempfile.TemporaryDirectory()
+        self.real = {name: getattr(mutate, name)
+                     for name in ("subprocess", "ROOT")}
+        mutate.ROOT = self.tmp.name
+        self.spawned = []
+        self.children = []
+        self.copy_code = 0
+        outer = self
+
+        class FakeSubprocess:
+            PIPE = None
+
+            @staticmethod
+            def run(argv, **kw):
+                # The copy step. Make the destination so the caller's later
+                # use of the path is not fiction.
+                if argv[0] in ("rsync", "cp"):
+                    os.makedirs(argv[-1], exist_ok=True)
+                return type("Done", (), {"returncode": outer.copy_code,
+                                         "stderr": "no rsync here"})()
+
+            @staticmethod
+            def Popen(argv, cwd=None, env=None, **kw):
+                outer.spawned.append((argv, cwd, env))
+                child = outer.FakeChild(
+                    outer.child_codes[len(outer.spawned) - 1]
+                    if len(outer.spawned) <= len(outer.child_codes) else 0)
+                outer.children.append(child)
+                return child
+
+        self.child_codes = []
+        mutate.subprocess = FakeSubprocess
+
+    def tearDown(self):
+        for name, value in self.real.items():
+            setattr(self.mutate, name, value)
+        self.tmp.cleanup()
+
+    def run_it(self, child_codes):
+        import contextlib
+        import io
+        self.child_codes = child_codes
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = self.mutate.sweep_in_a_copy()
+        return code, buffer.getvalue()
+
+    def test_EVERY_SHARD_IS_WAITED_ON_BEFORE_A_VERDICT_IS_RETURNED(self):
+        """The comment says this; nothing checked it. Returning early leaves
+        copies mutating files in the background and reports a result that had
+        not finished being measured."""
+        self.run_it([0, 0, 0, 0, 0, 0, 0, 0])
+        self.assertTrue(self.children, "no shards were started at all")
+        self.assertTrue(all(c.waited for c in self.children),
+                        "a shard was not waited on")
+
+    def test_ONE_FAILING_SHARD_FAILS_THE_WHOLE_SWEEP(self):
+        """The line that carries eight verdicts back to `verify`. If this
+        returned 0 regardless, every sweep this project has run would have
+        reported success and nothing would have contradicted it."""
+        code, _ = self.run_it([0, 0, 1, 0, 0, 0, 0, 0])
+        self.assertEqual(code, 1, "a red shard did not fail the sweep")
+
+    def test_an_ALL_GREEN_sweep_returns_zero(self):
+        """Paired, so the test above cannot be satisfied by always failing."""
+        code, _ = self.run_it([0] * 8)
+        self.assertEqual(code, 0)
+
+    def test_each_shard_is_told_WHICH_shard_it_is(self):
+        """The share drives `my_share`, and it is also the variable the crash
+        ceiling turns on — a worker that did not know its index would take the
+        whole list, and eight workers would each sweep everything."""
+        self.run_it([0] * 8)
+        shares = [env[self.mutate.SHARD] for _, _, env in self.spawned]
+        self.assertEqual(sorted(shares),
+                         sorted("%d/%d" % (i, len(shares))
+                                for i in range(len(shares))))
+        self.assertTrue(all(env[self.mutate.IN_COPY] == "1"
+                            for _, _, env in self.spawned),
+                        "a shard was not told it is running inside a copy")
+
+    def test_each_shard_runs_the_COPY_not_the_live_tree(self):
+        """The whole reason this function exists. Other agents run
+        bin/llm_chat out of the live tree by absolute path, and a mutation
+        applied there is a deliberately broken program in their hands — that
+        is how a NameError once reached a neighbouring agent and retired its
+        waker."""
+        self.run_it([0] * 8)
+        for argv, cwd, _ in self.spawned:
+            self.assertNotEqual(cwd, self.mutate.ROOT,
+                                "a shard ran in the live tree")
+            # NOT argv[-1] — the child inherits this process's own sys.argv
+            # tail, so under unittest the last element is a test name. The
+            # script is the element that ends in mutate.py, and asserting on
+            # position rather than on identity is how I wrote it wrong first.
+            script = [a for a in argv if a.endswith("mutate.py")]
+            self.assertEqual(len(script), 1, "no single script in %r" % (argv,))
+            self.assertTrue(script[0].startswith(cwd),
+                            "a shard ran a script from outside its own copy")
+
+    def test_a_FAILED_COPY_stops_rather_than_sweeping_a_partial_tree(self):
+        """Both copiers failing means there is no tree to measure. Carrying on
+        would sweep whatever happened to land, and report a number about it."""
+        self.copy_code = 3
+        code, said = self.run_it([0] * 8)
+        self.assertEqual(code, 1)
+        self.assertIn("could not copy", said)
+        self.assertEqual(self.spawned, [], "shards ran on a failed copy")
+
+
 class AccountingClosesTest(unittest.TestCase):
     """The published sum must equal its own left side, and both must equal the
     candidate count.
