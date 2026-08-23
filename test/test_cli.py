@@ -160,6 +160,120 @@ class CallTest(unittest.TestCase):
         found = cli.call("http://127.0.0.1:1", "GET", "/p")
         self.assertTrue(found.get("rate_limited"))
 
+    def in_hook(self, yes):
+        real = os.environ.get(cli.HOOK_ENV)
+        if yes:
+            os.environ[cli.HOOK_ENV] = "1"
+        else:
+            os.environ.pop(cli.HOOK_ENV, None)
+        self.addCleanup(lambda: (os.environ.__setitem__(cli.HOOK_ENV, real)
+                                 if real is not None
+                                 else os.environ.pop(cli.HOOK_ENV, None)))
+
+    def test_A_HOOK_GIVES_UP_SOONER_THAN_A_DIRECT_CALLER(self):
+        """#24. The distinction is not who is calling — it is whether the
+        caller will NATURALLY retry. The hooks poll, so a throttled read there
+        is retried by construction; a direct `say` has nothing coming back for
+        it and the turn is its only budget.
+
+        Retrying inside an 8s subprocess timeout cannot outlast a window
+        measured at >=40s anyway, so a hook that waits just spends its whole
+        deadline to fail the same way."""
+        self.in_hook(True)
+        self.throttle(times=99)
+        cli.call("http://127.0.0.1:1", "GET", "/p")
+        hook_attempts = self.attempts["n"]
+        self.attempts["n"] = 0
+        self.in_hook(False)
+        self.throttle(times=99)
+        cli.call("http://127.0.0.1:1", "GET", "/p")
+        self.assertLess(hook_attempts, self.attempts["n"])
+
+    def test_THE_DEFAULT_IS_THE_DIRECT_BUDGET(self):
+        """The interactive caller is the one that cannot opt in — it does not
+        know the variable exists. A hook that forgets to set it is still
+        bounded by its own subprocess timeout, so forgetting costs a kill at
+        8s, which is what would have happened anyway."""
+        self.in_hook(False)
+        self.assertEqual(cli.retry_waits(), cli.RETRY_WAITS)
+
+    def test_THE_REASSURANCE_ITSELF_SURVIVED_THE_FIX(self):
+        """lamp-owner's "check the other half stays", and it is a CONTROL
+        rather than a test of the new wording.
+
+        The fix removed "nothing was written" because it contradicted the
+        partial-success notice. The temptation was to delete the consoling
+        sentence outright — but it is correct and useful for a single-write
+        verb, and removing it makes every ordinary throttle more alarming
+        than it should be. Replacing a wrong sentence with a missing one is
+        not a fix.
+
+        This asserts the half that must NOT have changed, and it is phrased
+        so that it passes on the unfixed code too — which is what makes it a
+        control instead of a restatement of the diff."""
+        self.in_hook(False)
+        self.assertIn("asking you to wait", cli.throttled_advice())
+        self.assertIn("not refusing you", cli.throttled_advice())
+
+    def test_the_two_paths_give_OPPOSITE_advice(self):
+        """The half that makes the split worth having. The hook's message is
+        reassurance — something else will pick this up. The direct caller's is
+        a warning: nothing will, and nothing was written."""
+        self.in_hook(True)
+        self.assertIn("next poll", cli.throttled_advice())
+        self.in_hook(False)
+        self.assertIn("not applied", cli.throttled_advice())
+
+    def test_the_advice_travels_WITH_the_error(self):
+        """Attached by `call` and appended by `refuse`, so a caller cannot get
+        the error without the remedy. A bare "HTTP 429" leaves a direct caller
+        unable to tell whether the write landed — and #27 was a case where it
+        had.
+
+        ASSERTED ON THE RAISED EXCEPTION, not on the dict `call` returns. The
+        first version checked `found["advice"]`, which is the ATTACH — so
+        deleting the append in `refuse` left it green and the mutation
+        survived. What a caller actually sees is the exception text."""
+        self.in_hook(False)
+        self.throttle(times=99)
+        with self.assertRaises(cli.Throttled) as caught:
+            cli.rows("http://127.0.0.1:1", "channels")
+        self.assertIn("not applied", str(caught.exception))
+        self.assertIn("429", str(caught.exception),
+                      "the original cause must survive alongside the remedy")
+
+    def test_call_ATTACHES_the_advice_for_a_caller_that_reads_the_dict(self):
+        """Paired with the above: the two halves are attach and append, and
+        one test covering both is a test covering neither."""
+        self.in_hook(False)
+        self.throttle(times=99)
+        found = cli.call("http://127.0.0.1:1", "GET", "/p")
+        self.assertIn("not applied", found.get("advice", ""))
+
+    def test_A_THROTTLED_WRITE_IS_ALSO_NAMED_not_just_a_read(self):
+        """`rows` raised `Throttled` and `create`/`update`/`remove` raised a
+        bare `SystemExit`, so the distinction #15 exists for was preserved on
+        READS and lost on WRITES — exactly backwards, since the limiter
+        appears to be write-scoped. #27 was a 429 on `open`, which is two
+        writes, and the caller could only tell wait from stop because the
+        channel lookup happened first and went through `rows`."""
+        self.throttle(times=99)
+        with self.assertRaises(cli.Throttled):
+            cli.create("http://127.0.0.1:1", "channels", {"name": "x"})
+        self.throttle(times=99)
+        with self.assertRaises(cli.Throttled):
+            cli.update("http://127.0.0.1:1", "channels", None, {"a": 1})
+
+    def test_a_NON_throttle_write_failure_is_still_a_plain_SystemExit(self):
+        """Paired: turning every write failure into `Throttled` would tell a
+        caller to wait for a server that is never coming back."""
+        real = cli.call
+        cli.call = lambda *a, **kw: {"error": "HTTP 500", "body": "on fire"}
+        self.addCleanup(lambda: setattr(cli, "call", real))
+        with self.assertRaises(SystemExit) as caught:
+            cli.create("http://127.0.0.1:1", "channels", {"name": "x"})
+        self.assertNotIsInstance(caught.exception, cli.Throttled)
+
     def test_RETRY_AFTER_is_honoured_but_capped(self):
         """The server's own number beats a guess, but a 60s window honoured
         literally inside a Stop hook is a hang."""

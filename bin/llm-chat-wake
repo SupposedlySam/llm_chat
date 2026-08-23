@@ -870,6 +870,11 @@ def wake_landing(event="unknown"):
 
 
 def main() -> int:
+    # The waker is the other half of the hook path — it POLLS, so a throttled
+    # read here is retried by its own next pass. In main() rather than at
+    # import, for the reason spelled out in llm-chat-deliver: at module level
+    # it leaks into any test process that loads this file. See #24.
+    os.environ["LLM_CHAT_IN_HOOK"] = "1"
     # THE WATCH MODE IS CHECKED FIRST, and before stdin is touched. This
     # process is spawned detached with no payload coming, so reading stdin
     # would be a wait for something nobody is going to send.

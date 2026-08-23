@@ -562,6 +562,21 @@ def main() -> int:
     # The hook is handed the tool-call payload on stdin. Leaving it unread can
     # break the pipe on the caller; the session id in it is what keeps the
     # upgrade notice to once per session.
+    # EVERYTHING THIS PROCESS SPAWNS IS THE HOOK PATH, so this is set once
+    # rather than threaded through nine `subprocess.run` call sites — a list
+    # complete today and complete by accident, the defect this repo has
+    # already removed from a file scan and from its verify rules.
+    #
+    # IN main(), NOT AT IMPORT. At module level it fired the moment a test
+    # loaded this file and stayed set for the whole process, so an unrelated
+    # test asserting the DIRECT retry budget saw the hook's. A module-level
+    # environment mutation is global, sticky, and invisible to the thing it
+    # breaks. Here it happens only when this really is running as a hook.
+    #
+    # It tells the CLI to give up on a throttle quickly and say the next poll
+    # will collect it, rather than retrying inside a subprocess timeout that
+    # cannot outlast the window anyway (#24).
+    os.environ["LLM_CHAT_IN_HOOK"] = "1"
     session_id = None
     # WHICH EVENT INVOKED US, because this hook is no longer registered on one.
     # SessionStart was added for #20 — a session that starts deaf after a host
