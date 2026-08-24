@@ -356,6 +356,17 @@ MUTATIONS = [
      "room you are done with owes nothing. showrunner's lockout report sat "
      "three hours in #llm_chat_owner for exactly this reason"),
 
+    ("two collapses that CANCEL are one three-way", "bin/llm_chat",
+     "    stub_is_mine = any(name == mine and not has for name, has in sessions)",
+     "    stub_is_mine = any(not has for name, has in sessions)",
+     "a human at a terminal is told THIS SESSION IS THE STUB. With no session "
+     "id the two `any(...)` calls collapse in OPPOSITE directions and cancel, "
+     "so the alarm they gate together cannot fire and control reaches the "
+     "`elif not mine` that says the true thing. The replacement reads like the "
+     "same question and removes the cancellation — the obligation is on the "
+     "PAIR and every check anyone would naturally write is per-expression "
+     "(auditor)"),
+
     ("the test and the message agree on what can be MISSING", "bin/llm_chat",
      '    owner_of_record = (recorded or {}).get("identity")',
      '    owner_of_record = recorded["identity"] if recorded else None',

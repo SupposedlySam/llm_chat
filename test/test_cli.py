@@ -1741,6 +1741,61 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(cli.live_sessions(self.project),
                          [("aaa", True), ("bbb", False)])
 
+    def sessions_report(self, mine):
+        real = cli.session_id
+        cli.session_id = lambda: mine
+        out = io.StringIO()
+        try:
+            with contextlib.redirect_stdout(out):
+                cli.report_sessions(self.project)
+        finally:
+            cli.session_id = real
+        return out.getvalue()
+
+    def test_A_HUMAN_AT_A_TERMINAL_IS_NEVER_CALLED_THE_STUB(self):
+        """A three-way assembled from two two-ways, pinned as a PAIR.
+
+        `report_sessions` decides with
+
+            stub_is_mine = any(name == mine and not has ...)
+            others_hold  = any(name != mine and has ...)
+
+        With no session id those collapse in OPPOSITE directions — the first
+        toward no, the second toward yes — so the alarm they gate together
+        cannot fire and control reaches `elif not mine:`, which says the true
+        thing. The correctness lives in the pair, and every check anyone would
+        naturally write is per-expression. auditor's point, and the reason
+        this test exists rather than a comment alone.
+
+        The tidy that breaks it reads like the same question:
+        `any(not has for name, has in sessions)`. There IS a stub, others DO
+        hold rooms, so a human at a terminal is told they are the stub —
+        false — and the branch that would have handled them never runs.
+
+        ONLY THE FIRST HALF IS DEFENDED, measured rather than assumed: I
+        mutated `others_hold` to drop its `name != mine` and it SURVIVED.
+        `stub_is_mine` is true only when MY row has has=False, and such a row
+        contributes nothing to `any(... and has)` under either spelling — so
+        that clause cannot change the conjunction. It states intent and
+        nothing depends on it, which is written at the code rather than
+        claimed here.
+        """
+        self.session("aaa", {"room": {"identity": "me"}})
+        self.session("bbb")
+        said = self.sessions_report(mine=None)
+        self.assertIn("human at a terminal", said)
+        self.assertNotIn("THIS SESSION IS THE STUB", said,
+                         "a caller with no session id was called the stub")
+
+    def test_a_session_that_REALLY_IS_THE_STUB_is_still_told(self):
+        """The positive control, without which the test above is satisfied by
+        a function that never alarms at all."""
+        self.session("aaa", {"room": {"identity": "me"}})
+        self.session("bbb")
+        said = self.sessions_report(mine="bbb")
+        self.assertIn("THIS SESSION IS THE STUB", said)
+        self.assertNotIn("human at a terminal", said)
+
     def test_a_project_that_never_had_a_session_is_not_an_error(self):
         with tempfile.TemporaryDirectory() as tmp:
             self.assertEqual(cli.live_sessions(tmp), [])

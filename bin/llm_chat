@@ -4214,6 +4214,35 @@ def report_sessions(project):
         here = "  (this session)" if mine and name == mine else ""
         held = "holds rooms" if has_identity else "NO IDENTITY — a stub, in no rooms"
         print("  %s%s  %s" % (name, here, held))
+    # THESE TWO CANCEL, AND THAT IS LOAD-BEARING — do not simplify either one
+    # without the other. With no session id in the environment:
+    #
+    #     stub_is_mine   collapses toward NO   (name == None is False)
+    #     others_hold    collapses toward YES  (name != None is True)
+    #
+    # so the alarm they gate together cannot fire, and control reaches the
+    # `elif not mine:` below, which says the true thing. The obvious tidy —
+    # `stub_is_mine = any(not has for name, has in sessions)`, which reads
+    # like the same question — removes the cancellation, and a human at a
+    # terminal is then told THIS SESSION IS THE STUB, which is false, while
+    # the elif that would have handled them never runs.
+    #
+    # The obligation is on the PAIR and every check anyone would naturally
+    # write is per-expression, so it is named here and pinned by
+    # test_cli.py:test_A_HUMAN_AT_A_TERMINAL_IS_NEVER_CALLED_THE_STUB.
+    # auditor's point: a cancellation spanning two expressions with nothing
+    # naming it survives exactly until somebody improves one of them.
+    #
+    # ONLY THE FIRST HALF IS LOAD-BEARING, and this comment said "either half"
+    # until I mutated the second and it SURVIVED. The reason is worth keeping,
+    # because it is not obvious from reading: `stub_is_mine` is true only when
+    # MY row has has=False — and a row with has=False contributes nothing to
+    # `any(... and has)` under either spelling. So `name != mine` in
+    # `others_hold` cannot change the outcome of the conjunction below. It is
+    # kept because it states the intent ("somebody ELSE holds them") and costs
+    # nothing, not because anything depends on it. Claiming a test defends it
+    # would have been the same overclaim as an exclusion entry describing a
+    # call site.
     stub_is_mine = any(name == mine and not has for name, has in sessions)
     others_hold = any(name != mine and has for name, has in sessions)
     if stub_is_mine and others_hold:
