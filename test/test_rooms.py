@@ -344,6 +344,45 @@ class RoomTest(unittest.TestCase):
                          "showrunner",
                          "owner leaving deleted showrunner's local record")
 
+    def test_a_RECORD_WITH_NO_IDENTITY_does_not_crash_leave(self):
+        """The test and the message disagreed about what could be missing.
+
+        The comparison reads `identity` with `.get`, so it admits the key may
+        be absent — and a record without it fails that comparison (None is not
+        "owner") and lands in the else branch, which subscripted the same key
+        and raised KeyError.
+
+        Reachable through a hand-edited or truncated joined.json, which this
+        program already goes out of its way to tolerate elsewhere: a corrupt
+        one does not take the whole mapping down. Crashing `leave` on it would
+        undo that for the one verb you would reach for to get out.
+
+        Found by reading all thirteen candidates from a sweep for auditor's
+        collapsed-three-way rule. This is not one of those — it is what the
+        reading turned up on the way past.
+        """
+        self.fake.channel("room")
+        self.fake.membership("room", "owner", done=0)
+        cli.remember("room", "showrunner", "http://127.0.0.1:1")
+        joined = cli.read_joined()
+        joined["room"].pop("identity")
+        with open(cli.joined_path(), "w") as f:
+            json.dump(joined, f)
+        # CAUGHT AND TURNED INTO A FAILURE. The defect makes `leave` RAISE, and
+        # unittest counts a raise as an ERROR — so a bare call here measures
+        # nothing: the assertions below would never run and the sweep could
+        # only report "crashed, not measured". Same trap as the delete test.
+        try:
+            _, said = self.quiet(cli.do_leave, "http://127.0.0.1:1", "room",
+                                 "owner")
+        except KeyError as gone:
+            self.fail("leave died on a record missing %s" % gone)
+        self.assertIn("nobody named", said,
+                      "a record with no identity must be described, not "
+                      "subscripted")
+        self.assertIn("room", cli.read_joined(),
+                      "an unreadable record is still somebody's — leave it")
+
     def test_room_closes_only_once_every_member_is_done(self):
         self.fake.channel("room")
         self.fake.membership("room", "me", done=0)

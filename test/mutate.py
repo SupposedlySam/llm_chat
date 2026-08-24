@@ -356,10 +356,20 @@ MUTATIONS = [
      "room you are done with owes nothing. showrunner's lockout report sat "
      "three hours in #llm_chat_owner for exactly this reason"),
 
+    ("the test and the message agree on what can be MISSING", "bin/llm_chat",
+     '    owner_of_record = (recorded or {}).get("identity")',
+     '    owner_of_record = recorded["identity"] if recorded else None',
+     "`leave` raises KeyError on a joined.json record with no identity — the "
+     "comparison reads the key with `.get`, so it admits the key may be "
+     "absent, and a record without it fails that comparison and lands in the "
+     "one branch that subscripts it. This program tolerates a corrupt joined "
+     "file everywhere else; crashing the verb you would reach for to get out "
+     "is the worst place to stop"),
+
     ("leaving does not clobber another identity's local record",
      "bin/llm_chat",
-     "    recorded = read_joined().get(name)\n"
-     "    if recorded is None or recorded.get(\"identity\") == identity:\n"
+     "    owner_of_record = (recorded or {}).get(\"identity\")\n"
+     "    if recorded is None or owner_of_record == identity:\n"
      "        forget(name)",
      "    forget(name)",
      "`leave --as owner` deletes a joined.json record that says `showrunner`, "

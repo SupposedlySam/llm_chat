@@ -2883,12 +2883,27 @@ def do_leave(server, name, identity, ask=False):
     # same shape as every other defect this week, and this one was written by
     # a departing identity on behalf of one that had not departed.
     recorded = read_joined().get(name)
-    if recorded is None or recorded.get("identity") == identity:
+    # THE TEST AND THE MESSAGE MUST AGREE ABOUT WHAT CAN BE MISSING. The test
+    # reads `identity` with `.get`, so it admits the key may be absent — and
+    # the else branch then subscripted it, which raises. A record with no
+    # identity fails the comparison (None == "me" is False) and lands in
+    # exactly the branch that cannot survive it.
+    #
+    # Reachable only through a hand-edited or truncated joined.json, which is
+    # a file this program already goes out of its way to tolerate — a corrupt
+    # one does not take the whole mapping down. Crashing `leave` on it would
+    # undo that for the one verb you would reach for to get out.
+    #
+    # Found by sweeping auditor's rule for collapsed three-way comparisons:
+    # this was not one, but reading all thirteen candidates is what put the
+    # line in front of me.
+    owner_of_record = (recorded or {}).get("identity")
+    if recorded is None or owner_of_record == identity:
         forget(name)
     else:
         print(f"  (this project's local record for #{name} belongs to "
-              f"{recorded['identity']}, not\n  {identity} — left it alone, so "
-              f"they keep their membership)")
+              f"{owner_of_record or 'nobody named'}, not\n  {identity} — left "
+              f"it alone, so they keep their membership)")
 
     members = rows(server, "memberships", eq("channel", name))
     # A room where everyone has said they are finished closes itself, so a
