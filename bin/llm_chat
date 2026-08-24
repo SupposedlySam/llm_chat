@@ -592,14 +592,31 @@ def call(server, method, path, body=None, query=None, timeout=10):
                 found["advice"] = throttled_advice()
             return found
         except urllib.error.URLError:
-            # AFTER HTTPError, which subclasses it. Not retried: nothing is
-            # listening, and waiting will not change that.
+            # AFTER HTTPError, which subclasses it. Not retried HERE: nothing
+            # is listening, and spinning inside one invocation will not change
+            # that.
+            #
+            # `unreachable` IS A DIFFERENT QUESTION FROM THAT, and conflating
+            # the two is a defect I shipped. "Do not retry inside this
+            # process" is about our own budget; "the caller should never try
+            # again" is about the world. The comment above answered the first
+            # and the exit-code table published the second, so a server that
+            # was merely down exited 1 — which llms.txt documents as
+            # "permanently refused, the answer will not change". A consumer
+            # following that records a closure that never happened. Nothing is
+            # MORE retryable than a server nobody has started yet.
+            #
+            # A FLAG, not a phrase. `refuse` must not decide this by matching
+            # the sentence below: prose gets reworded, and a consumer regexing
+            # our prose is the entire defect #30 was filed about. Putting that
+            # same match inside the program would only move it.
             return {"error": f"no llm_chat server at {server} — start one "
                              f"with `cd {ROOT} && ./zonai serve --port "
                              f"7717`.\n"
                              f"  If it IS running, check the address: zonai "
                              f"binds [::1] only on macOS, so use localhost, "
-                             f"not 127.0.0.1 (zonai#16)."}
+                             f"not 127.0.0.1 (zonai#16).",
+                    "unreachable": True}
 
 
 # THE EXIT-CODE CONTRACT (#30). A consumer could not tell "the server asked
@@ -624,6 +641,7 @@ EXIT_REFUSED = 1          # permanent. Do not retry; the answer will not change
 EXIT_USAGE = 2            # argparse's, and `owed`'s could-not-look. See above
 EXIT_THROTTLED = 3        # the server said later. NOT applied — retry after a wait
 EXIT_INDETERMINATE = 4    # nobody can say what landed. Do NOT blindly retry
+EXIT_UNREACHABLE = 5      # nothing is listening. Nothing sent; start it and retry
 
 # PRINTED BY --help, not filed in a document the consumer does not open. The
 # reader here is a program's author deciding what to do with a non-zero
@@ -641,10 +659,19 @@ EXIT_CODE_HELP = """exit codes — for a caller deciding whether to retry:
      cannot say which. Do NOT blindly retry — `open` is two writes, and a
      second `open` succeeds while silently discarding the topic and briefing
      you passed. Look at what exists, then join it.
+  5  UNREACHABLE. Nothing is listening on that address, so nothing was sent.
+     Start the server and retry. Distinct from 3: a throttle means the server
+     is healthy and asked you to wait; this means it is not there.
 
-3 and 4 exist because both used to be 1, so a consumer had to regex this
-program's prose to tell a transient from a refusal — and the prose gets
-reworded. The wording is aimed at a human; the code is aimed at you."""
+3, 4 and 5 exist because all three used to be 1, so a consumer had to regex
+this program's prose to tell a transient from a refusal — and the prose gets
+reworded. The wording is aimed at a human; the code is aimed at you.
+
+5 was itself 1 for a day AFTER 3 and 4 landed, which is worth admitting here:
+the branch that catches an unreachable host is commented "not retried", and
+that is about this program's own budget inside one invocation, not about
+whether YOU should try again. Two questions, one sentence, and the table
+answered the wrong one."""
 
 
 class Throttled(SystemExit):
@@ -661,6 +688,31 @@ class Throttled(SystemExit):
     later, and the only way out on offer was the bypass. A gate that cries
     wolf teaches its own bypass, and the cheapest way to clear a transient
     must not be the habit you would rather nobody formed.
+    """
+
+
+class Unreachable(SystemExit):
+    """Nothing is listening. Nothing was sent, and nothing is wrong with you.
+
+    SHIPPED AS EXIT 1 FOR A DAY, which llms.txt documents as "REFUSED,
+    permanently — the answer will not change", and which I told showrunner in
+    #30 meant record it as failed. A server that has not been started yet is
+    the MOST retryable failure there is. A spin-down running while zonai was
+    briefly down would have recorded closures that never happened — the exact
+    silent wrong answer #30 was filed about, reintroduced by the fix for #30.
+
+    HOW IT GOT THERE, because the shape keeps recurring here: the comment at
+    the URLError branch says "not retried: nothing is listening, and waiting
+    will not change that". That is true, and it is about the CLI's OWN retry
+    budget inside one invocation. Whether the CALLER should ever try again is
+    a different question with a different answer, and the exit-code table
+    answered the second using the first's reasoning.
+
+    KEPT APART FROM Throttled because the remedies differ. A throttle means
+    the server is there and healthy and asked you to wait — retry the same
+    command shortly. This means it is not there: retrying on a timer is
+    reasonable, but something has to start it, and a consumer that can say so
+    out loud is more useful than one that quietly waits forever.
     """
 
 
@@ -707,6 +759,12 @@ def refuse(res):
     problem = res["error"] + "  " + res.get("body", "")
     if res.get("advice"):
         problem += "\n" + res["advice"]
+    # UNREACHABLE FIRST. A host that never answered cannot also have said 429,
+    # so the order is not ambiguous today — it is fixed anyway because both
+    # flags come off the same dict and a future path setting both would
+    # otherwise pick whichever `if` came first by accident.
+    if res.get("unreachable"):
+        raise Unreachable(problem)
     raise (Throttled if res.get("rate_limited") else SystemExit)(problem)
 
 
@@ -5208,6 +5266,8 @@ def run():
         return main()
     except Indeterminate as stop:
         return _exit_with(stop, EXIT_INDETERMINATE)
+    except Unreachable as stop:
+        return _exit_with(stop, EXIT_UNREACHABLE)
     except Throttled as stop:
         return _exit_with(stop, EXIT_THROTTLED)
     except SystemExit as stop:

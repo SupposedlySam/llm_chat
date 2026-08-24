@@ -358,13 +358,76 @@ class CallTest(unittest.TestCase):
         self.addCleanup(lambda: setattr(cli, "main", real))
         self.assertEqual(cli.run(), cli.EXIT_OK)
 
-    def test_the_four_codes_are_DISTINCT(self):
-        """A contract of four names that collide is a contract of fewer. This
+    def test_the_codes_are_DISTINCT(self):
+        """A contract of five names that collide is a contract of fewer. This
         is the assertion that would fail if somebody set THROTTLED to 1 to
         `restore old behaviour`."""
         codes = [cli.EXIT_OK, cli.EXIT_REFUSED, cli.EXIT_USAGE,
-                 cli.EXIT_THROTTLED, cli.EXIT_INDETERMINATE]
+                 cli.EXIT_THROTTLED, cli.EXIT_INDETERMINATE,
+                 cli.EXIT_UNREACHABLE]
         self.assertEqual(len(set(codes)), len(codes))
+
+    def test_AN_UNREACHABLE_SERVER_IS_NOT_A_PERMANENT_REFUSAL(self):
+        """The defect this project shipped for a day, in the fix for #30.
+
+        A server nobody has started is the most retryable failure there is,
+        and it exited 1 — which llms.txt documents as "permanently refused,
+        the answer will not change", and which I told showrunner meant record
+        it as failed. A spin-down running while zonai was briefly down would
+        record closures that never happened.
+
+        Asserted on `call`'s own dict AND on the exit code, because the two
+        are separate steps and a test on one is not a test on the other — the
+        attach-versus-append lesson from #24, in the same function.
+        """
+        found = cli.call("http://127.0.0.1:1", "GET", "/db/list")
+        self.assertTrue(found.get("unreachable"),
+                        "the flag the exit code is derived from is missing")
+        # CAUGHT AS SystemExit, THEN TYPE-ASSERTED. `assertRaises(Unreachable)`
+        # re-raises anything else, so reverting the fix made this ERROR rather
+        # than FAIL and the sweep could only report "crashed, not measured" —
+        # the assertion that was going to check the type never ran. Every
+        # subclass test in this file has the same trap.
+        with self.assertRaises(SystemExit) as caught:
+            cli.rows("http://127.0.0.1:1", "channels")
+        self.assertIsInstance(caught.exception, cli.Unreachable)
+
+    def test_the_unreachable_flag_is_a_FLAG_not_a_phrase(self):
+        """`refuse` must not decide this by matching the error sentence.
+        Prose gets reworded — that is the whole reason #30 exists — and a
+        consumer regexing our wording is the defect. Putting the same match
+        inside the program only moves it.
+
+        So: a dict carrying the flag and NO recognisable wording still
+        raises Unreachable, and one carrying the wording but no flag does
+        not."""
+        with self.assertRaises(SystemExit) as caught:
+            cli.refuse({"error": "totally different words", "body": "",
+                        "unreachable": True})
+        self.assertIsInstance(caught.exception, cli.Unreachable)
+        with self.assertRaises(SystemExit) as caught:
+            cli.refuse({"error": "no llm_chat server at http://x — start one",
+                        "body": ""})
+        self.assertNotIsInstance(caught.exception, cli.Unreachable)
+
+    def test_an_unreachable_host_exits_FIVE(self):
+        real = cli.main
+        cli.main = lambda: (_ for _ in ()).throw(
+            cli.Unreachable("no llm_chat server at http://localhost:7717"))
+        self.addCleanup(lambda: setattr(cli, "main", real))
+        with contextlib.redirect_stderr(io.StringIO()) as said:
+            self.assertEqual(cli.run(), cli.EXIT_UNREACHABLE)
+        self.assertIn("no llm_chat server", said.getvalue())
+
+    def test_unreachable_is_told_apart_from_THROTTLED(self):
+        """Paired, and the pair is the point: both mean try again later, and
+        they call for different things from the caller. A throttle means the
+        server is healthy and asked you to wait. This means nothing is there
+        and somebody has to start it — a consumer that can say so is more use
+        than one that quietly waits forever."""
+        self.assertNotEqual(cli.EXIT_UNREACHABLE, cli.EXIT_THROTTLED)
+        self.assertFalse(issubclass(cli.Unreachable, cli.Throttled))
+        self.assertFalse(issubclass(cli.Throttled, cli.Unreachable))
 
     def test_RETRY_AFTER_is_honoured_but_capped(self):
         """The server's own number beats a guess, but a 60s window honoured

@@ -594,6 +594,26 @@ MUTATIONS = [
      "wrong answer is silent both ways: closures recorded that never "
      "happened, or retries refused that would have worked"),
 
+    ("an UNREACHABLE server is not a permanent refusal", "bin/llm_chat",
+     "    if res.get(\"unreachable\"):\n        raise Unreachable(problem)",
+     "    if False:\n        raise Unreachable(problem)",
+     "a server nobody has started exits 1 again — the code llms.txt documents "
+     "as `do not retry; the answer will not change`, and the one #30's own "
+     "comment told showrunner to record as failed. A spin-down running while "
+     "zonai is briefly down then records closures that never happened. This "
+     "shipped that way for a day AFTER 3 and 4 landed, because the branch is "
+     "commented `not retried` — which is about this program's budget inside "
+     "one invocation, not about whether the caller should ever try again"),
+
+    ("unreachable is a FLAG, not a phrase to match", "bin/llm_chat",
+     '                             f"not 127.0.0.1 (zonai#16).",\n'
+     '                    "unreachable": True}',
+     '                             f"not 127.0.0.1 (zonai#16)."}',
+     "the exit code has nothing to derive itself from, so the only way back "
+     "to it is matching the error sentence — which is exactly what #30 was "
+     "filed about a consumer doing, moved inside the program where it is "
+     "harder to see and just as fragile"),
+
     ("a PARTIAL write is not a throttle", "bin/llm_chat",
      "    except Indeterminate as stop:\n"
      "        return _exit_with(stop, EXIT_INDETERMINATE)",

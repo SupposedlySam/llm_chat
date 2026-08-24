@@ -6,6 +6,7 @@ also where the LIVE hooks write while anyone is working here — so it could
 report the session's own activity as suite damage, and did.
 """
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -750,7 +751,20 @@ class SweepOrchestratorTest(unittest.TestCase):
                 # The copy step. Make the destination so the caller's later
                 # use of the path is not fiction.
                 if argv[0] in ("rsync", "cp"):
-                    os.makedirs(argv[-1], exist_ok=True)
+                    # THE DESTINATION BY NAME, NOT BY POSITION. `argv[-1]`
+                    # is the copy today for both rsync and cp, and it is an
+                    # unwritten assertion that nobody ever appends a flag to
+                    # a command line built 600 lines away. That exact
+                    # assumption broke the script assertion below on its
+                    # first run yesterday, and auditor found the same shape
+                    # in their gate and in this repo's `say` check in one
+                    # week: selecting by POSITION when the claim is about
+                    # IDENTITY. The copy is the argument named repoN.
+                    dest = [a for a in argv
+                            if re.search(r"/repo\d+/?$", a)]
+                    self.assertEqual(len(dest), 1,
+                                     "no single copy path in %r" % (argv,))
+                    os.makedirs(dest[0], exist_ok=True)
                 return type("Done", (), {"returncode": outer.copy_code,
                                          "stderr": "no rsync here"})()
 
