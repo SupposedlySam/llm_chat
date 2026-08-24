@@ -1388,6 +1388,103 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("here", live)
         self.assertIn("there", live)
 
+    def held_by(self, rows):
+        """Stub live_identities with {identity: [session, ...]}."""
+        real = cli.live_identities
+        cli.live_identities = lambda: rows
+        self.addCleanup(lambda: setattr(cli, "live_identities", real))
+
+    def as_session(self, sid):
+        real = cli.session_id
+        cli.session_id = lambda: sid
+        self.addCleanup(lambda: setattr(cli, "session_id", real))
+
+    def warned(self, room="llm_chat_owner", identity="owner"):
+        buffer = io.StringIO()
+        with contextlib.redirect_stderr(buffer):
+            cli.warn_if_another_session_holds(room, identity)
+        return buffer.getvalue()
+
+    def test_ANOTHER_SESSION_IN_THIS_ROOM_UNDER_THIS_NAME_IS_SAID(self):
+        """The incident. auditor's shell had cd'd into this checkout to read a
+        function; bash keeps its cwd between calls, identity resolves per
+        CALLING PROJECT, and their next send posted as `owner`. It succeeded,
+        and #198 in #llm_chat_owner is permanently attributed to an agent that
+        did not write it. Nothing objected."""
+        self.as_session("mine")
+        self.held_by({"owner": [
+            {"sessionId": "theirs", "cwd": "/Users/x/dev",
+             "llm_chat_how": ["joined #llm_chat_owner"]}]})
+        said = self.warned()
+        self.assertIn("owner", said)
+        self.assertIn("llm_chat_owner", said)
+        self.assertIn("wrong directory", said,
+                      "the note must name the cause, not just the collision")
+
+    def test_the_ROOMS_OWN_AGENT_is_not_warned_about_ITSELF(self):
+        """Paired, and the half that decides whether this is usable at all: a
+        note that fires on every ordinary send is furniture."""
+        self.as_session("mine")
+        self.held_by({"owner": [
+            {"sessionId": "mine", "cwd": "/Users/x/dev/llm_chat",
+             "llm_chat_how": ["joined #llm_chat_owner"]}]})
+        self.assertEqual(self.warned(), "")
+
+    def test_the_SAME_NAME_in_ANOTHER_ROOM_is_not_a_collision(self):
+        """The measurement that set the scope. `who` reports `owner` held by
+        THREE live sessions right now — lamp's, game_loop's and this one —
+        because every repo's agent calls itself owner in its own owner-room.
+        Warning on "another session holds this identity" would fire on almost
+        every send here. Warning on "another session has JOINED THIS ROOM as
+        this name" fired once in this repo's history, on the send that was
+        actually wrong."""
+        self.as_session("mine")
+        self.held_by({"owner": [
+            {"sessionId": "lamps", "cwd": "/Users/x/dev/lamp",
+             "llm_chat_how": ["joined #lamp_owner"]},
+            {"sessionId": "loops", "cwd": "/Users/x/dev/game_loop",
+             "llm_chat_how": ["declared", "joined #game_loop_owner"]}]})
+        self.assertEqual(self.warned(), "")
+
+    def test_an_UNASKABLE_HOST_says_nothing_rather_than_guessing(self):
+        """None is not evidence of anybody. Turning it into a warning would
+        rebuild the always-fires version by another route."""
+        self.as_session("mine")
+        self.held_by(None)
+        self.assertEqual(self.warned(), "")
+
+    def test_NOT_KNOWING_MY_OWN_SESSION_IS_NOT_EVIDENCE_OF_ANOTHER(self):
+        """The defect the first version shipped with, caught by its own noise.
+
+        With no CLAUDE_CODE_SESSION_ID — a human at a terminal, a script, or a
+        test that popped the variable — every live holder compares as "a
+        different session", because `None != "73ce3b55…"` is true. The first
+        suite run printed this note ten times, naming MY OWN session as the
+        stranger. An unknown compared against a known always reads as
+        different, which is the loudest possible answer from the least
+        possible information.
+        """
+        self.as_session(None)
+        self.held_by({"owner": [
+            {"sessionId": "73ce3b55", "cwd": "/Users/x/dev/llm_chat",
+             "llm_chat_how": ["joined #llm_chat_owner"]}]})
+        self.assertEqual(self.warned(), "")
+
+    def test_it_WARNS_rather_than_refuses(self):
+        """auditor's own reasoning, not mine going soft: identity-by-calling-
+        project is deliberate, and a hard block would break the vendored-
+        consumer case the doorbell was fixed for. The narrow thing worth
+        saying is not "who are you" but "somebody else is already here under
+        that name"."""
+        self.as_session("mine")
+        self.held_by({"owner": [
+            {"sessionId": "theirs", "cwd": "/Users/x/dev",
+             "llm_chat_how": ["joined #llm_chat_owner"]}]})
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertIsNotNone(
+                cli.warn_if_another_session_holds("llm_chat_owner", "owner"),
+                "it must report having warned, and must not raise")
+
     def test_who_PRINTS_how_each_row_was_attributed(self):
         self.declared("sid-1", "orchestrator")
         self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "sid-1"}])

@@ -594,6 +594,39 @@ MUTATIONS = [
      "wrong answer is silent both ways: closures recorded that never "
      "happened, or retries refused that would have worked"),
 
+    ("a name NOBODY TYPED is treated as inferred", "bin/llm_chat",
+     '               identity_inferred=getattr(args, "identity", None) is None)',
+     "               identity_inferred=False)",
+     "the collision note is wired to a flag that is never true, so it can "
+     "never fire — the guard is present, tested, and unreachable from "
+     "production, which is a shape this repo has now found three times in a "
+     "week. The check runs only on an INFERRED name because asking the host "
+     "costs 230ms and the suite makes enough sends to add twelve minutes to "
+     "every gate run"),
+
+    ("a send under ANOTHER LIVE SESSION'S name is said", "bin/llm_chat",
+     "    if not others:\n        return None",
+     "    if True:\n        return None",
+     "a message posted under an identity a different live session is holding "
+     "in that very room goes out silently — which is how #198 in "
+     "#llm_chat_owner came to be permanently attributed to an agent that did "
+     "not write it. auditor's shell had kept its cwd in this checkout and "
+     "identity resolves per calling project, so nothing was wrong except that "
+     "nobody said anything"),
+
+    ("the collision is scoped to THIS ROOM", "bin/llm_chat",
+     '    here = "joined #%s" % name\n'
+     "    others = [s for s in live.get(identity, [])\n"
+     "              if here in (s.get(\"llm_chat_how\") or [])",
+     '    here = "joined #%s" % name\n'
+     "    others = [s for s in live.get(identity, [])\n"
+     "              if True",
+     "the note fires whenever ANY other live session holds the name, and "
+     "`who` reports `owner` held by three sessions right now — lamp's, "
+     "game_loop's and this one — because every repo's agent calls itself "
+     "owner in its own owner-room. It would fire on nearly every send here, "
+     "and a warning that always fires is furniture nobody reads"),
+
     ("an UNREACHABLE server is not a permanent refusal", "bin/llm_chat",
      "    if res.get(\"unreachable\"):\n        raise Unreachable(problem)",
      "    if False:\n        raise Unreachable(problem)",

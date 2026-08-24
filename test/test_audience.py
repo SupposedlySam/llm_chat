@@ -681,6 +681,72 @@ class DispatchTest(ServerTest):
             sys.argv = argv
         self.assertEqual(json.loads(out.getvalue())[0]["from"], "alice")
 
+    def test_an_INFERRED_send_actually_consults_the_holder_check(self):
+        """The other half of the wiring, and the coverage floor found it.
+
+        The test below stubs `do_say`, so it proves `main` computes the flag
+        and proves nothing about what `do_say` does with it — the call inside
+        the branch was reported as never executed. Two tests, because one
+        covering both is one covering neither.
+        """
+        cli.session_id_real = cli.session_id
+        cli.session_id = lambda: "mine"
+        self.alive({"alice": [{"sessionId": "theirs", "cwd": "/elsewhere",
+                               "llm_chat_how": ["joined #room"]}]})
+        try:
+            said = io.StringIO()
+            with redirect_stderr(said):
+                with redirect_stdout(io.StringIO()):
+                    cli.do_say("srv", "room", "alice", "hi",
+                               identity_inferred=True)
+            self.assertIn("also in #room", said.getvalue())
+
+            said = io.StringIO()
+            with redirect_stderr(said):
+                with redirect_stdout(io.StringIO()):
+                    cli.do_say("srv", "room", "alice", "hi",
+                               identity_inferred=False)
+            self.assertEqual(said.getvalue(), "",
+                             "a name the caller typed must not cost a host "
+                             "query or a note")
+        finally:
+            cli.session_id = cli.session_id_real
+
+    def test_NO_as_FLAG_REACHES_do_say_AS_INFERRED(self):
+        """The wiring, which is the half a unit test on the guard cannot see.
+
+        `warn_if_another_session_holds` costs 230ms because it asks the host,
+        so it runs only when the identity was INFERRED — nobody typed it, it
+        came from whichever project the shell was standing in, which is the
+        mechanism that put #198 under the wrong name. That decision is made
+        here, at the call site, and a guard whose only caller is its own test
+        is a shape this repo has now found three times.
+        """
+        seen = {}
+        real = cli.do_say
+        real_for = cli.identity_for
+        cli.do_say = lambda *a, **kw: seen.update(kw)
+        # Stubbed because WHICH name gets resolved is a different question,
+        # already covered elsewhere. What this pins is that `main` derives
+        # `identity_inferred` from whether --as was PRESENT, and it must hold
+        # whatever the resolver returns.
+        cli.identity_for = lambda *a, **kw: "alice"
+        argv = sys.argv
+        try:
+            sys.argv = ["llm_chat", "say", "room", "hi"]
+            cli.main()
+            self.assertIs(seen.get("identity_inferred"), True,
+                          "a send with no --as must be treated as inferred")
+            seen.clear()
+            sys.argv = ["llm_chat", "say", "room", "hi", "--as", "alice"]
+            cli.main()
+            self.assertIs(seen.get("identity_inferred"), False,
+                          "a name the caller typed is not a guess")
+        finally:
+            sys.argv = argv
+            cli.do_say = real
+            cli.identity_for = real_for
+
     def test_the_verb_reaches_do_pending(self):
         self.say("for bob", audience="bob")
         argv = sys.argv

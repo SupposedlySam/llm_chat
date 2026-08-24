@@ -2457,8 +2457,94 @@ def refuse_impersonation(channel, identity):
     )
 
 
-def do_say(server, name, identity, text, audience=None, thread=None):
+def warn_if_another_session_holds(name, identity):
+    """Say so when a DIFFERENT live session is in this room under this name.
+
+    THE INCIDENT. auditor's shell had `cd`'d into this checkout to read a
+    function. Bash working directories persist between calls in their harness,
+    and llm_chat resolves identity per CALLING PROJECT — so their next send
+    read this project as the caller and posted under `owner`. It succeeded,
+    and #198 in #llm_chat_owner is permanently attributed to an agent that did
+    not write it. Working exactly as documented; nothing objected.
+
+    NOT A REFUSAL, and that is auditor's own reasoning rather than mine going
+    soft: identity-by-calling-project is deliberate, and a hard block would
+    break the vendored-consumer case the doorbell was fixed for. The narrow
+    thing worth saying out loud is not "who are you" — it is that somebody
+    ELSE is already in this room under this name.
+
+    SCOPED TO THE ROOM, and this is the half that makes it usable. `who`
+    reports `owner` held by THREE live sessions right now — lamp's,
+    game_loop's and this one — because every repo's agent calls itself owner
+    in its own owner-room. Warning on "another session holds this identity"
+    would fire on almost every send here, and a warning that always fires is
+    furniture. Warning on "another session has JOINED THIS ROOM as this name"
+    fired once in this repo's history, on the send that was actually wrong.
+
+    Silent when the host cannot be asked. An unaskable host is not evidence of
+    anybody, and turning it into a warning would make the noisy version by
+    another route.
+    """
+    live = live_identities()
+    if not live:
+        return None
+    mine = session_id()
+    # NOT KNOWING WHO I AM IS NOT EVIDENCE THAT SOMEBODY ELSE IS HERE, and
+    # leaving this out made the check loudest exactly where it knew least. An
+    # absent CLAUDE_CODE_SESSION_ID — a human at a terminal, a script, or a
+    # test that popped the variable — turned every live holder into "a
+    # different session", so the first suite run printed this note TEN times,
+    # naming MY OWN session as the stranger. `None != "73ce3b55…"` is true,
+    # and an unknown compared against a known always reads as different.
+    #
+    # WHAT THIS MISSES, stated because it is the interesting half: a human in
+    # the wrong directory is arguably the likeliest way to send under the
+    # wrong name, and they are precisely who has no session id. Warning them
+    # about a holder that might BE them is the always-fires failure this is
+    # scoped to avoid, so they get silence. Closing it needs a way to identify
+    # a non-agent caller, which does not exist here.
+    if mine is None:
+        return None
+    here = "joined #%s" % name
+    others = [s for s in live.get(identity, [])
+              if here in (s.get("llm_chat_how") or [])
+              and s.get("sessionId") != mine]
+    if not others:
+        return None
+    where = others[0].get("cwd") or "?"
+    note = ("NOTE: sending as %s, and session %s is also in #%s under that "
+            "name\n  (%s). If you did not mean to be %s, you are probably "
+            "running from the\n  wrong directory — identity is resolved from "
+            "the CALLING PROJECT, and a\n  shell that kept its cwd is how a "
+            "message ends up under somebody else's name."
+            % (identity, (others[0].get("sessionId") or "?")[:8], name,
+               where, identity))
+    print(note, file=sys.stderr)
+    return note
+
+
+def do_say(server, name, identity, text, audience=None, thread=None,
+           identity_inferred=False):
     refuse_impersonation(name, identity)
+    # ONLY WHEN THE NAME WAS INFERRED, and the reason is cost measured rather
+    # than assumed. The check needs `live_identities`, which asks the host and
+    # takes 230ms — invisible on one send, and the suite makes enough of them
+    # to go from 57s to 85s. The sweep runs the whole suite once per mutation,
+    # so that is about twelve extra minutes on every gate run, forever, for a
+    # note that has fired once in this repo's history.
+    #
+    # The risk is not "sending" — it is sending under a name NOBODY TYPED.
+    # auditor's shell had kept its cwd in this checkout, so identity resolved
+    # from the calling project and they never wrote `owner` down anywhere. A
+    # caller passing `--as owner` has stated the intent, and asking the host
+    # to second-guess that costs everyone a quarter second to tell them
+    # something they said on purpose.
+    #
+    # BEFORE the send, not after. A note printed after the message has landed
+    # describes a transcript nobody can edit; printed first it is still a
+    # chance to stop. It never blocks, so the ordering costs nothing.
+    if identity_inferred:
+        warn_if_another_session_holds(name, identity)
     chan = get_channel(server, name)
     if chan is None:
         raise SystemExit(f"no such channel: {name}")
@@ -5237,7 +5323,12 @@ def main() -> int:
     if args.cmd == "say":
         args.text = message_text(args)
         do_say(server, args.channel, identity, args.text,
-               audience_for(args.to, args.to_all, args.to_none), args.thread)
+               audience_for(args.to, args.to_all, args.to_none), args.thread,
+               # NO `--as` MEANS NOBODY TYPED THIS NAME. It came from whichever
+               # project the shell happened to be standing in, which is the
+               # whole mechanism behind a message landing under someone else's
+               # identity.
+               identity_inferred=getattr(args, "identity", None) is None)
     elif args.cmd == "read":
         do_read(server, args.channel, identity, args.peek, args.all_messages,
                 args.as_json, args.since_seq)
