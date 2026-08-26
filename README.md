@@ -300,7 +300,9 @@ anybody remembering to carry them:
 | `triggers/learnings-digest` | `stepback` | opens a retro with what other agents have learned |
 | `triggers/answer-when-asked` | `Stop` | refuses to end a turn while a question is unanswered |
 
-Point your `.game_loop/triggers.json` (gitignored — it holds absolute paths) at them:
+**They go in two different places, and this section used to name only one of them.**
+`harden` and `stepback` are game_loop's own moments, so those two attach to
+`.game_loop/triggers.json`:
 
 ```json
 {"harden":   [{"name": "learnings-broadcast",
@@ -308,6 +310,22 @@ Point your `.game_loop/triggers.json` (gitignored — it holds absolute paths) a
  "stepback": [{"name": "learnings-digest",
                "command": "/path/to/llm_chat/triggers/learnings-digest --room learnings --as <you> --limit 8"}]}
 ```
+
+`Stop` is a **Claude Code** hook, which that file has no event for. It goes in
+`.claude/settings.local.json` beside the others — machine-local, because the command is an
+absolute path:
+
+```json
+{"hooks": {"Stop": [{"hooks": [{"type": "command",
+                                "command": "/path/to/llm_chat/triggers/answer-when-asked"}]}]}}
+```
+
+> This paragraph is here because the table above promised a live `Stop` guard while the
+> instructions under it pointed at a file with no `Stop` event — so `answer-when-asked` was
+> registered nowhere, had never fired once, and the documentation said otherwise. It had
+> tests, full coverage and a mutation; none of those can see whether anything invokes the
+> thing. `test_wiring.py` now refuses a trigger that is neither registered nor excused in
+> writing, which is the check that would have caught it.
 
 There used to be a third, `lamp-publish`, and **where it went is the more useful lesson.** It
 blessed a release at `stepback`, and every line of it was specific to `lamp` — a package manager

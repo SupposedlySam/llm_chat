@@ -568,5 +568,133 @@ class ContinuousIntegrationTest(unittest.TestCase):
         self.assertIn("does NOT run the mutation sweep", text)
 
 
+NOT_A_HOOK = {
+    "issue-watch":
+        "a long-running watcher started BY HAND — `sh triggers/issue-watch` — "
+        "not a hook. It prints its current open set as a positive control on "
+        "the first line precisely because nothing invokes it on a schedule, "
+        "so a silent one is visibly broken rather than quietly absent.",
+}
+
+
+class EveryTriggerIsCLASSIFIEDTest(unittest.TestCase):
+    """A shipped trigger is registered somewhere, or excused here in writing.
+
+    THE FAILURE THIS ENCODES, and it is not hypothetical. README.md says:
+
+        | `triggers/answer-when-asked` | `Stop` | refuses to end a turn while
+          a question is unanswered |
+
+    It was registered in NONE of `.claude/settings.json`,
+    `.claude/settings.local.json`, `~/.claude/settings.json`, or
+    `.game_loop/triggers.json`. It had tests, 100% coverage and a mutation,
+    and it had never fired once — while `owed` sat reporting a question I had
+    not answered. The documentation asserted a live guard; the guard was
+    furniture.
+
+    Third instance of configured-but-inert here, and the first where a
+    document claimed it worked.
+
+    DEFAULT-DENY, over the DIRECTORY. The set of triggers is read from
+    `triggers/`, never from a list — a hand-kept list is the
+    complete-by-accident defect this repo has now removed four times, most
+    recently from the verdict guard I was measuring when I found this one. A
+    new trigger that nobody has decided about fails this test on the commit
+    that adds it, which is the moment it is cheapest to decide.
+
+    WHAT IT CANNOT DO, said plainly because a rail is silent where it is
+    blind: it cannot tell a REGISTERED trigger from a WORKING one. Registration
+    is a fact about a config file. Whether the thing fires, and whether it
+    fires usefully, is what the tests and the mutation sweep are for. This
+    check only refuses the state where nobody has looked.
+
+    showrunner's mechanism, adopted after they described it: enforcement lives
+    in the tool, and what the tool enforces is that the unenforceable part was
+    written down and is still there.
+    """
+
+    def registries(self):
+        """Every place a trigger can legitimately be wired, and its contents.
+
+        READ, not assumed. Two registries exist here for different reasons —
+        Claude Code's hooks live in settings, and game_loop's event triggers
+        live in its own file — and a check that knew about one of them would
+        report half the triggers as unwired.
+        """
+        found = set()
+        for relative in (".claude/settings.json",
+                         ".claude/settings.local.json",
+                         ".game_loop/triggers.json"):
+            path = os.path.join(mutate.ROOT, relative)
+            try:
+                with open(path) as f:
+                    text = f.read()
+            except OSError:
+                continue          # absent is not evidence of anything
+            found.add((relative, text))
+        return found
+
+    def shipped(self):
+        directory = os.path.join(mutate.ROOT, "triggers")
+        return sorted(name for name in os.listdir(directory)
+                      if os.path.isfile(os.path.join(directory, name))
+                      and not name.startswith("."))
+
+    @staticmethod
+    def undecided(shipped, registries, excused):
+        """Triggers nobody has either wired or excused.
+
+        A FUNCTION, so it can be asked about a trigger this repo does not
+        have. Left inline, the only case it ever saw was the real directory —
+        where everything IS classified, so the assertion passed whether or not
+        the check worked. That is the shape this repo keeps finding: a test
+        that cannot fail is not a test, and a clean repo is exactly when a
+        broken guard looks healthy.
+        """
+        return [name for name in shipped
+                if name not in excused
+                and not any(name in text for text in registries)]
+
+    def test_NOTHING_SHIPS_UNCLASSIFIED(self):
+        self.assertEqual(
+            self.undecided(self.shipped(),
+                           [text for _, text in self.registries()],
+                           NOT_A_HOOK),
+            [],
+            "these triggers are registered nowhere and excused nowhere — "
+            "either wire them, or add them to NOT_A_HOOK with the reason")
+
+    def test_IT_ACTUALLY_REPORTS_ONE(self):
+        """The direction the live check cannot exercise while the repo is
+        clean — and the direction the whole thing exists for.
+
+        `answer-when-asked` was the real instance: shipped, documented as a
+        live Stop guard, registered nowhere. This asks the same question about
+        a trigger that does not exist, so the answer stays available after the
+        real one is fixed."""
+        self.assertEqual(
+            self.undecided(["wired-one", "excused-one", "nobody-decided"],
+                           ['{"command": "/x/triggers/wired-one"}'],
+                           {"excused-one": "a reason"}),
+            ["nobody-decided"])
+
+    def test_an_EXCUSE_names_a_trigger_that_still_exists(self):
+        """The other direction, and the one that rots quietly: an excuse for a
+        deleted trigger reads as a decision about something real, and it makes
+        the list longer without making it truer."""
+        gone = [name for name in NOT_A_HOOK if name not in self.shipped()]
+        self.assertEqual(gone, [],
+                         "excused triggers that no longer exist")
+
+    def test_at_least_one_REGISTRY_was_actually_readable(self):
+        """The check passes vacuously if every registry is missing — every
+        trigger would look unregistered, the test would fail loudly, and the
+        one failure mode left is a future refactor that reads none of them and
+        finds nothing to complain about."""
+        self.assertTrue(self.registries(),
+                        "no registry could be read, so registration was never "
+                        "actually checked")
+
+
 if __name__ == "__main__":
     unittest.main()

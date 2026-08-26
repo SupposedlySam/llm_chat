@@ -743,6 +743,18 @@ MUTATIONS = [
      "one of the seven, and ours — was three lines, so the length half alone "
      "would not have caught it"),
 
+    ("a trigger nobody decided about is REPORTED", "test/test_wiring.py",
+     "        return [name for name in shipped\n"
+     "                if name not in excused\n"
+     "                and not any(name in text for text in registries)]",
+     "        return []",
+     "a shipped trigger that is registered nowhere and excused nowhere passes "
+     "silently again. `answer-when-asked` was exactly that — documented in "
+     "README as a live Stop guard refusing to end a turn with a question "
+     "outstanding, registered in none of the four registries, never fired "
+     "once, with tests and full coverage and a mutation that could none of "
+     "them see whether anything invoked it"),
+
     ("reading $? after a truncator is refused", "triggers/piped-verdict",
      "    if READS_STATUS.search(command[match.end():]):\n"
      '        return ("status", match.group(0).strip())',
