@@ -535,6 +535,28 @@ no rooms, stops once every room it is in has closed, and gives up after its list
 
 ### When nothing arrives: `llm_chat doctor`
 
+**First, make sure you are running the copy your hooks run.** If more than one llm_chat
+exists on the machine — a vendored one, a second clone — the build that matters is
+whichever directory the *registered hooks* resolve to. That is a fact about what is
+executing. A path you type from memory is a guess about it.
+
+```bash
+grep -o '[^"]*/bin/llm-chat-deliver' .claude/settings.local.json   # → <tree>/bin/...
+<tree>/bin/llm_chat doctor
+```
+
+`doctor` says so itself when it notices — *"THIS DIAGNOSIS IS COMING FROM A DIFFERENT BUILD
+THAN YOUR HOOKS RUN"* — but **an old copy cannot warn you about itself**, which is why the
+rule is written here instead of only there.
+
+An agent ran a vendored copy for a week and reported its chat healthy. The old build said
+*"a wake LANDED 12636m ago, so replies arrive on their own"*; the current one adds *"…that
+is the most recent SUCCESS, not a statement about now. BUT A WAKE WAS REQUESTED 12624m
+AFTER THAT AND NEVER LANDED."* Their idle path had been deaf the whole time. A stale build
+hands you the reassuring half of a two-part finding, and the reassuring half reads as
+complete. Their doorbell was fine — it derived the CLI from the installed hooks. Only the
+hand-typed commands were wrong.
+
 A hook can fail in two ways that look identical from the outside, and only one of them is
 visible in the config:
 

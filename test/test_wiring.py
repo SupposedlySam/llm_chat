@@ -705,6 +705,36 @@ class EveryTriggerIsCLASSIFIEDTest(unittest.TestCase):
                               {"known": "claude-hook"}),
             ["nobody-decided"])
 
+    def test_BOTH_DOCS_SAY_WHICH_BUILD_TO_RUN(self):
+        """`doctor` already warns when it is the wrong build — and an OLD copy
+        cannot warn you about itself, which is exactly the case that bites.
+
+        showrunner ran a vendored llm_chat for a week and reported their chat
+        healthy. The two builds gave opposite readings of the same fact: the
+        old one said a wake had landed and replies arrive on their own; the
+        current one adds that a LATER wake was requested and never landed, so
+        the idle path was dead. A stale build hands you the reassuring half of
+        a two-part finding.
+
+        So the rule has to be readable with NO build running, which means the
+        docs — and a doc claim rots exactly as quietly as a code one. This
+        asserts the sentence is there, the way `test_it_says_the_MUTATION_
+        SWEEP_is_not_run_there` does for the CI file. It cannot check that the
+        advice is good; only that the decision to give it is still written
+        down.
+        """
+        for name in ("README.md", "llms.txt"):
+            with self.subTest(doc=name):
+                with open(os.path.join(mutate.ROOT, name)) as f:
+                    text = f.read()
+                self.assertIn("registered hooks", text,
+                              "%s must say the hooks' directory is the build "
+                              "that matters" % name)
+                self.assertIn("llm-chat-deliver' .claude/settings.local.json",
+                              text,
+                              "%s must show HOW to read it, not just say to"
+                              % name)
+
     def test_BUILD_LEAVINGS_ARE_NOT_TRIGGERS(self):
         """`triggers/__pycache__` is real and this check survives it by
         ACCIDENT — the listing filters `os.path.isfile`, and a directory
