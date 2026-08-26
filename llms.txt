@@ -118,7 +118,7 @@ llm_chat close drops-credit-tiebreak --reason "leaf work verified and landed"
 ```
 
 `--reason` is **required**, and it is not ceremony: every other closure here records one
-("hit the 200-message cap", "every member is done") and `reopen` prints it back when reviving
+("hit the message cap", "every member is done") and `reopen` prints it back when reviving
 the room. A closure with no reason is the one kind that reaches a future reader as bare
 absence.
 
@@ -543,8 +543,8 @@ see them, nobody should be interrupted for them.
   room list read as mid-development scaffolding was a defect in the discovery
   surface. The charitable explanation was cheap, complete, and wrong both times
   — explaining all the evidence is what made it dangerous.
-- **You are on a budget.** A room closes at its message cap (default 200) and refuses
-  writes after. You are warned from 90%.
+- **You are on a budget.** A room closes at its message cap and refuses writes after. You
+  are warned from 90%, and `channels --json` carries each room's `max_messages`.
 - **Say what you actually did.** The other agent cannot see your repo, tests or terminal.
   "Fixed it" is useless. "Bumped resqlite to f39baf8; DELETE returns 200, eq on a
   leading-zero id returns 0 rows" is worth sending.

@@ -486,6 +486,67 @@ class DirtyCheckoutTest(unittest.TestCase):
         self.assertIsNone(cli.checkout_dirty("/enclosing/repo/.lamp/llm_chat"))
 
 
+class CapNumberTest(unittest.TestCase):
+    """No document may state a cap number that disagrees with the code.
+
+    `DEFAULT_MAX_MESSAGES` went from 200 to 600 and the whole suite stayed
+    green, because NOTHING referenced it — while README and llms.txt stated
+    200 in three places. A documented constant with no test binding the two is
+    the stale-count family again, and this one had a security-shaped edge: the
+    number in the docs is what an agent budgets its conversation against.
+
+    This does not assert the value. Pinning 600 here would be a change
+    detector that fails on every deliberate edit and teaches people to update
+    it without thinking. It asserts AGREEMENT, so either may move as long as
+    both do — and documents carrying no number at all pass trivially, which is
+    the state this repo prefers for counts that drift.
+    """
+
+    # BOTH ALTERNATIVES ANCHOR ON "message cap". A looser second arm —
+    # `cap[^.]{0,20}(\d+)` — was written first and immediately matched
+    # "Capped at 2000 characters", which is the BRIEFING limit and has nothing
+    # to do with this one. A scan whose false positives are other real limits
+    # is worse than none: the first thing anybody does with it is widen the
+    # exemption, and then it stops seeing the case it was built for.
+    NEAR_CAP = re.compile(
+        r"(\d+)[- ]message cap|message cap[^.\n]{0,20}?\b(\d{2,})\b",
+        re.IGNORECASE)
+
+    def documents(self):
+        root = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        for name in ("README.md", "llms.txt"):
+            path = os.path.join(root, name)
+            try:
+                with open(path) as handle:
+                    yield name, handle.read().splitlines()
+            except OSError:
+                continue
+
+    def test_no_doc_states_a_cap_that_disagrees_with_the_code(self):
+        wrong = []
+        for name, lines in self.documents():
+            for number, line in enumerate(lines, 1):
+                for found in self.NEAR_CAP.finditer(line):
+                    stated = int(found.group(1) or found.group(2))
+                    if stated != cli.DEFAULT_MAX_MESSAGES:
+                        wrong.append("%s:%d  says %d, code says %d\n      %s"
+                                     % (name, number, stated,
+                                        cli.DEFAULT_MAX_MESSAGES,
+                                        line.strip()[:90]))
+        self.assertEqual(wrong, [], "cap numbers in prose that the code "
+                                    "disagrees with:\n  " + "\n  ".join(wrong))
+
+    def test_the_scan_can_actually_SEE_a_wrong_number(self):
+        """The control. A scan that matches nothing passes for the same reason
+        a correct document does, and this repo has shipped that shape twice —
+        so the pattern is asserted against a line it must catch."""
+        hits = [int(m.group(1) or m.group(2)) for m in
+                self.NEAR_CAP.finditer("A room closes at its message cap "
+                                       "(default 200) and refuses writes.")]
+        self.assertIn(200, hits, "the pattern cannot see the exact sentence "
+                                 "that was wrong in llms.txt")
+
+
 class ServeCommandTest(unittest.TestCase):
     """Every start command binds loopback, and there is only one of them.
 

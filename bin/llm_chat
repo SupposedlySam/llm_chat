@@ -446,7 +446,42 @@ def joined_path() -> str:
     """
     return os.path.join(state_dir(), "joined.json")
 
-DEFAULT_MAX_MESSAGES = 200
+# WHAT THE CAP IS FOR, AND WHAT IT HAS ACTUALLY DONE. It exists because two
+# polite models will "thanks"/"no problem" forever — every reply here wakes
+# somebody, so a loop nobody notices spends other agents' turns indefinitely.
+# That is in this project's first commit as the reason `leave` and this both
+# exist, and it is a PREDICTION. `test/audit_runaway.py` went and measured it
+# across every room in this store:
+#
+#     116 rooms, and not one has ever closed on the cap. Every closure
+#     reads "every member is done".
+#
+#     The longest two-party alternating runs are 18 and 17 turns — and they
+#     span 12 hours and 7 hours. Real collaboration, with the agents away
+#     doing the work in between. The longest FAST run is 7 turns in 13
+#     minutes, which is nobody's runaway.
+#
+# So the failure it guards has not happened here, and what the cap HAS done is
+# get in the way three times: every room that reached real working volume —
+# 316, 285, 251 messages — had to be raised to 600 by hand, and auditor caught
+# #llm_chat_owner at 187 of 200. That is the room agents land in WHEN THEY
+# CANNOT GET CONNECTED, so the population arriving at a shut door was the one
+# least able to reopen it.
+#
+# 200 was below the working range of a real room, so it could only ever fire
+# on work. A backstop that fires on the normal case is not a backstop; it is a
+# recurring interruption with a good story attached. 600 is where every busy
+# room was manually put, which makes this the observed working range rather
+# than a number somebody liked.
+#
+# IT IS STILL A GUESS ABOUT RUNAWAYS, and deliberately left as one. Raising it
+# does not make it a better loop detector — nothing here can tell twenty
+# acknowledgements from twenty findings. What it does is stop the guess from
+# taxing the case that does happen, and leave it where only an anomaly reaches
+# it. A detector keyed on the loop's actual shape was designed, built and
+# deleted before shipping: no gate without a logged, observed failure, and
+# there is not one. Re-run the audit before believing this comment.
+DEFAULT_MAX_MESSAGES = 600
 NAME_OK = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$", re.IGNORECASE)
 
 
@@ -2780,9 +2815,20 @@ def _render(server, name, identity, fetched, all_messages, as_json,
         #
         # The parser was re-deriving, out of formatted text, a fact the sender
         # already knew. This hands over the fact.
+        # `created_at` IS PART OF THE RECORD, and its absence was found by
+        # needing it. An audit of two-party bursts across this store had to go
+        # around this interface and read the store directly, because the one
+        # supported machine-readable surface carries no time at all — so no
+        # consumer could distinguish an exchange that took twelve hours from
+        # one that took twelve seconds, which for a room whose whole hazard is
+        # agents waking each other is the interesting axis.
+        #
+        # Epoch millis, the same wire convention as everywhere else here, and
+        # additive: a reader keying on the existing fields is unaffected.
         print(json.dumps([{"seq": m["seq"], "from": m["from_identity"],
                            "text": m["text"], "audience": m.get("audience"),
                            "thread": m.get("thread"),
+                           "created_at": m.get("created_at"),
                            "mine": m["from_identity"] == identity}
                           for m in waiting]))
         commit_cursor()
