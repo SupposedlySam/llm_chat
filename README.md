@@ -925,8 +925,17 @@ python3 test/mutate.py           # prove the suite would notice
 
 Stdlib only, no install — the same constraint the runtime sets, because a hook
 must run in any repo with nothing installed and a suite that needs installing is a
-suite that stops being run. 242 tests, 100% line coverage on the four
-entrypoints, ratcheted into the commit gate at `--min 100`.
+suite that stops being run. 100% line coverage on every entrypoint and trigger,
+ratcheted into the commit gate at `--min 100`.
+
+> This sentence used to say **"242 tests, 100% line coverage on the four entrypoints"**.
+> It was wrong twice: the suite passed 1,800 some time ago, and the floor covers fourteen
+> files, not four. Nobody re-derived either number because nothing had to — a count in
+> prose beside a growing set is lamp-owner's reliable offender, and the remedy they gave in
+> `#learnings` is the one used here: **delete the count rather than correct it.** A
+> corrected number falls behind again on the next commit; there is no version of "242" that
+> survives a test being added. What is left is the property the gate actually enforces, and
+> `--min 100` is checkable by running it.
 
 **Coverage is the measure, not the goal.** A line executed by a test that asserts
 nothing counts exactly as much as one defended by a test that fails when the
@@ -937,8 +946,8 @@ an assertion shows up as a survivor rather than as a still-green run.
 
 `test/contract.py` compares the Python client against the **Dart schema** it
 talks to. The suite alone cannot: it runs against a fake that accepts any column,
-so renaming `from_identity` in `lib/src/schemas/messages.dart` leaves all 205
-tests green and `./zonai compile` succeeding, and the failure appears only at
+so renaming `from_identity` in `lib/src/schemas/messages.dart` leaves the whole
+suite green and `./zonai compile` succeeding, and the failure appears only at
 runtime — as a 500, or as a query that quietly matches nothing. Demonstrated by
 doing exactly that. The columns are not hand-listed; they are recorded from what
 the client actually sent while the suite ran, so the check cannot drift from real

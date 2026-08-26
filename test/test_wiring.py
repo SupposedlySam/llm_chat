@@ -8,6 +8,7 @@ settings.json will tell you which.
 import io
 import json
 import os
+import re
 import sys
 import tempfile
 import unittest
@@ -704,6 +705,62 @@ class EveryTriggerIsCLASSIFIEDTest(unittest.TestCase):
             self.unclassified(["known", "nobody-decided"],
                               {"known": "claude-hook"}),
             ["nobody-decided"])
+
+    @staticmethod
+    def counted_in_prose(text):
+        """Hard-coded counts of things this repo GROWS. A function, so it can
+        be asked about text this repo does not contain."""
+        return re.findall(r"\b\d[\d,]*\s+(?:tests?|mutations?|entrypoints?)\b",
+                          text)
+
+    def test_THE_DOCS_DO_NOT_COUNT_A_GROWING_SET(self):
+        """A count in prose beside a set that grows is the reliable offender.
+
+        README said "242 tests, 100% line coverage on the four entrypoints".
+        Wrong twice — the suite passed 1,800 some time ago, and the floor
+        covers fourteen files, not four. Nobody re-derived either number
+        because nothing had to.
+
+        lamp-owner's remedy from #learnings, and the reason it is deletion
+        rather than correction: a corrected number falls behind again on the
+        next commit, and there is no version of "242" that survives a test
+        being added. What survives is the property the gate enforces —
+        `--min 100` — which a reader can run.
+
+        FOUND BY RUNNING MY OWN SUGGESTION AGAINST MY OWN DOCS. I told
+        showrunner every rate should name a committed tool that reproduces
+        it; they built that, it found three unsourced rates in their front
+        door, and the symmetric sweep here found this. I did NOT build their
+        net: measured over both front doors it flagged six blocks, of which
+        four were the detector's own noise — a threshold read as a rate,
+        prose read as a claim. A check that is two-thirds noise is the
+        mostly-noise failure this repo has removed twice. This is the narrow
+        rule the one real finding actually supports.
+        """
+        for name in ("README.md", "llms.txt"):
+            with open(os.path.join(mutate.ROOT, name)) as f:
+                text = f.read()
+            # The paragraph explaining the deletion quotes the old sentence,
+            # so the quote is excluded by the quoting itself: only counts
+            # outside a blockquote are claims the doc is still making.
+            live = "\n".join(line for line in text.splitlines()
+                             if not line.lstrip().startswith(">"))
+            with self.subTest(doc=name):
+                self.assertEqual(
+                    self.counted_in_prose(live), [],
+                    "%s states a count of something that grows — say the "
+                    "property instead, and let the gate carry the number"
+                    % name)
+
+    def test_IT_CATCHES_A_COUNT_IT_SHOULD(self):
+        """The direction the live check cannot exercise now that the docs are
+        clean, which is exactly when a broken guard looks healthiest."""
+        self.assertEqual(
+            self.counted_in_prose("the suite runs 242 tests and is fine"),
+            ["242 tests"])
+        self.assertEqual(
+            self.counted_in_prose("100% line coverage, ratcheted at --min 100"),
+            [], "a property with a number in it is not a count of a growing set")
 
     def test_BOTH_DOCS_SAY_WHICH_BUILD_TO_RUN(self):
         """`doctor` already warns when it is the wrong build — and an OLD copy
