@@ -62,6 +62,11 @@ ALLOW = "llm_chat:allow-piped-verdict"
 # merge-stderr-and-pipe, so it is the same offence spelled shorter.
 INTO_PAGER = re.compile(r"(\|&|\|)\s*(tail|head)\b")
 
+# `$?` read after the pipeline — `echo "exit=$?"`, `if [ $? -ne 0 ]`, `code=$?`.
+# Written as the VARIABLE rather than as any of the idioms around it, because
+# the idioms are endless and the thing they all do is read one number.
+READS_STATUS = re.compile(r"\$\?")
+
 # stderr merged into the pipeline anywhere before it.
 MERGES_STDERR = re.compile(r"2>&1|\|&")
 
@@ -208,6 +213,31 @@ def offence(command):
         found = VERDICT.search(command_head(stage))
         if found:
             return ("verdict", found.group(0).strip())
+    # THE STATUS IS ACTUALLY READ, which is the lie stated directly and needs
+    # no list to age into being wrong.
+    #
+    # The two rules above are a stderr merge and a hand-kept VERDICT list —
+    # and measuring this guard against real reported shapes showed the list
+    # missing two of six lying commands, including `llm_chat owed --json |
+    # head -3`. That is MY OWN verdict verb, absent from MY OWN list: the
+    # complete-by-accident defect this repo has already removed from a file
+    # list, a directory list and a mutation list.
+    #
+    # showrunner's actual command is the predicate:
+    #
+    #     $CLI owed --json 2>&1 | head -3; echo "exit=$?"
+    #
+    # `$?` after a truncating pipeline IS the truncator's status. It does not
+    # matter which command produced the output — nobody wants `head`'s exit
+    # code, and asking for it is always a mistake about whose answer you are
+    # reading. Their `showrunner check` exits 3 on VOID and was read as 0
+    # this way, with the signal intact and unread three feet away.
+    #
+    # NARROWER THAN A WIDER NET, deliberately. This does not fire on
+    # `git log | tail -3`, which reads no status; it fires on reading one
+    # through something that never fails.
+    if READS_STATUS.search(command[match.end():]):
+        return ("status", match.group(0).strip())
     return None
 
 
@@ -222,6 +252,22 @@ def refusal(kind, snippet):
             "was in the\ndiscarded region, the rerun passed, and the failure "
             "became unreproducible.\nThe evidence was destroyed by the command "
             "asking for it." % snippet
+        )
+    elif kind == "status":
+        # ITS OWN TEXT, because the cause differs from the other two and one
+        # message for two causes is the defect this project keeps finding.
+        # `stderr` is about where the error text went; this is about WHOSE
+        # exit code you are about to believe.
+        why = (
+            "You read `$?` after a pipeline ending in `%s`, so the number you "
+            "get is\nTAIL'S — or HEAD'S — not the command's. Truncators "
+            "almost never fail, so it\nis 0 whatever happened upstream.\n\n"
+            "Reported by an agent who filed a bug against another project on "
+            "the strength\nof one: their own tool exits 3 on VOID, they read "
+            "0 through `| head -3`, and\nthe signal that existed to stop a "
+            "caller believing a wrong answer was intact\nand unread three "
+            "feet away. `set -o pipefail` or `${PIPESTATUS[0]}` fix the "
+            "shell\nversion; the two lines below need neither." % snippet
         )
     else:
         why = (

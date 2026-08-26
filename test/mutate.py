@@ -743,6 +743,18 @@ MUTATIONS = [
      "one of the seven, and ours — was three lines, so the length half alone "
      "would not have caught it"),
 
+    ("reading $? after a truncator is refused", "triggers/piped-verdict",
+     "    if READS_STATUS.search(command[match.end():]):\n"
+     '        return ("status", match.group(0).strip())',
+     "    if False:\n"
+     '        return ("status", match.group(0).strip())',
+     "`llm_chat owed --json | head -3; echo $?` is allowed again — this "
+     "project's OWN verdict verb, missed because the guard fired on a "
+     "hand-kept list its own commands were never added to. Measured against "
+     "the shapes showrunner actually reported: 4 of 6 lying commands refused "
+     "before this, 7 of 7 after. Reading `$?` after a truncator IS the "
+     "truncator's status, and no version of that wants it"),
+
     ("WHICH failure it was survives the boolean", "bin/llm-chat-mcp",
      '    return "exit %d: %s\\n\\n%s" % (code, OUTCOMES.get(code, "see the payload"),\n'
      "                                  body)",

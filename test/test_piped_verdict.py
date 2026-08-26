@@ -189,6 +189,73 @@ class DetectionTest(unittest.TestCase):
         self.assertIsNone(guard.offence("tail -100 /tmp/publish.log"))
 
 
+class StatusIsReadTest(unittest.TestCase):
+    """`$?` after a truncating pipeline IS the truncator's status.
+
+    THE GAP THIS CLOSED, measured rather than imagined. The guard fired on a
+    stderr merge or on a hand-kept VERDICT list, and run against the shapes
+    showrunner actually reported it refused 4 of 6 lying commands. The two it
+    missed:
+
+        llm_chat owed --json | head -3; echo "exit=$?"
+        showrunner check | head -3; echo $?
+
+    The first is THIS PROJECT'S OWN verdict verb, absent from THIS PROJECT'S
+    OWN list — the complete-by-accident defect already removed here from a
+    file list, a directory list and a mutation list. The second is a foreign
+    command that exits 3 on VOID, read as 0 through the pipe with the signal
+    intact and unread.
+
+    Reading the status is the lie stated directly, and it needs no list to
+    age: nobody wants `head`'s exit code, whatever produced the output.
+    """
+
+    def test_the_status_read_after_a_pager_is_refused(self):
+        for command in (
+                'llm_chat owed --json | head -3; echo "exit=$?"',
+                "showrunner check | head -3; echo $?",
+                "some-tool | tail -5; if [ $? -ne 0 ]; then echo no; fi",
+                "code=$(llm_chat owed | head -1); echo $?"):
+            with self.subTest(command=command):
+                found = guard.offence(command)
+                self.assertIsNotNone(found, "the status was read through a "
+                                            "truncator and allowed")
+
+    def test_it_is_reported_as_its_own_KIND(self):
+        """Not folded into `stderr` or `verdict`. The remedy differs — this
+        one is about whose exit code you are reading, not about where the
+        error text went — and one label for two causes is the defect this
+        repo keeps finding."""
+        kind, _ = guard.offence("some-tool | head -3; echo $?")
+        self.assertEqual(kind, "status")
+
+    def test_the_refusal_names_WHOSE_exit_code_it_is(self):
+        """Its own text, because the cause differs. `stderr` is about where
+        the error output went; this is about whose status you are about to
+        believe, and one message for two causes is the defect this project
+        keeps finding."""
+        _, err = run(self, 'llm_chat owed | head -3; echo "exit=$?"')
+        self.assertIn("REFUSED", err)
+        self.assertIn("not the command's", err)
+        self.assertIn("pipefail", err,
+                      "the shell-level remedy is worth naming")
+
+    def test_a_pipeline_whose_STATUS_IS_NEVER_READ_is_left_alone(self):
+        """The paired half, and the reason this is narrow rather than a wider
+        net: truncating a listing is ordinary, and a guard that refuses it
+        trains people to route around the guard."""
+        self.assertIsNone(guard.offence("git log --oneline | tail -3"))
+        self.assertIsNone(guard.offence("grep -c ERROR out.log | head -1"))
+
+    def test_the_guards_OWN_REMEDY_still_passes(self):
+        """It reads `$?` AND contains a `| head`, so a rule that looked at the
+        whole line rather than at what follows the pager would refuse the
+        exact command the refusal text recommends. That has happened here
+        before, within a minute of the guard being registered."""
+        self.assertIsNone(guard.offence(
+            'verify > log 2>&1; echo "EXIT=$?"; grep -nE FAIL log | head'))
+
+
 class RefusalTextTest(unittest.TestCase):
     def test_the_stderr_refusal_names_what_was_actually_lost(self):
         _, err = run(self, "lamp publish 2>&1 | tail -25")
