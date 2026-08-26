@@ -154,6 +154,52 @@ class ToolsCallTest(McpTestCase):
                                                       "text": "hi"}}})
         self.assertTrue(resp["result"]["isError"])
 
+    def test_WHICH_failure_it_was_survives_the_boolean(self):
+        """showrunner's defect, one layer out from where they reported it.
+
+        The protocol's only status is `isError`, so every exit code collapsed
+        into a boolean here: 1 (something owed), 2 (COULD NOT LOOK), 3
+        (throttled) and 5 (unreachable) were ONE value. Those call for
+        opposite responses — stop, look again, wait, go start the server —
+        and the whole exit-code contract exists to keep them apart.
+
+        A gate that cannot tell "you owe nothing" from "I could not look"
+        fails open in silence, which is issue #1 in this repo.
+        """
+        for code, expected in ((2, "COULD NOT LOOK"),
+                               (3, "THROTTLED"),
+                               (5, "UNREACHABLE"),
+                               (1, "REFUSED")):
+            with self.subTest(exit=code):
+                self.mod.run_cli = RunCli((code, "the payload"))
+                resp = self.dispatch({"jsonrpc": "2.0", "id": 70 + code,
+                                      "method": "tools/call",
+                                      "params": {"name": "owed",
+                                                 "arguments": {}}})
+                text = resp["result"]["content"][0]["text"]
+                self.assertTrue(resp["result"]["isError"])
+                self.assertIn("exit %d" % code, text)
+                self.assertIn(expected, text)
+                self.assertIn("the payload", text,
+                              "the outcome must not replace the answer")
+
+    def test_a_code_with_no_written_meaning_still_carries_the_NUMBER(self):
+        """A missing entry degrades to the bare number, which is still more
+        than a boolean. The table is a convenience, not the mechanism."""
+        self.mod.run_cli = RunCli((42, "something"))
+        resp = self.dispatch({"jsonrpc": "2.0", "id": 79, "method": "tools/call",
+                              "params": {"name": "owed", "arguments": {}}})
+        self.assertIn("exit 42", resp["result"]["content"][0]["text"])
+
+    def test_a_SUCCESSFUL_call_says_nothing_extra(self):
+        """Paired, and the reason this is not just noise on every call: a
+        line printed every time is a line nobody reads, which is how a signal
+        stops being one."""
+        self.mod.run_cli = RunCli((0, "nothing owed"))
+        resp = self.dispatch({"jsonrpc": "2.0", "id": 80, "method": "tools/call",
+                              "params": {"name": "owed", "arguments": {}}})
+        self.assertEqual(resp["result"]["content"][0]["text"], "nothing owed")
+
     def test_empty_output_still_produces_content(self):
         self.mod.run_cli = RunCli((0, "   "))
         resp = self.dispatch({"jsonrpc": "2.0", "id": 8, "method": "tools/call",

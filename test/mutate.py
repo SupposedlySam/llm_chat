@@ -743,6 +743,16 @@ MUTATIONS = [
      "one of the seven, and ours — was three lines, so the length half alone "
      "would not have caught it"),
 
+    ("WHICH failure it was survives the boolean", "bin/llm-chat-mcp",
+     '    return "exit %d: %s\\n\\n%s" % (code, OUTCOMES.get(code, "see the payload"),\n'
+     "                                  body)",
+     "    return body",
+     "every exit code collapses into `isError` again, so through the MCP a "
+     "throttle, a permanent refusal, an unreachable server and `owed`'s COULD "
+     "NOT LOOK are one value — and they call for opposite responses. A gate "
+     "that cannot tell 'you owe nothing' from 'I could not look' fails open "
+     "in silence, which is issue #1 in this repo"),
+
     ("a killer that ERRORED did not measure anything", "test/mutate.py",
      '    return counts.get("failures", 0) > 0\n',
      '    return counts.get("failures", 0) + counts.get("errors", 0) > 0\n',

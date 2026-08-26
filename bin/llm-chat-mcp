@@ -785,6 +785,49 @@ def handle_tools_list(params):
                        "inputSchema": t["schema"]} for t in TOOLS]}
 
 
+# WHAT EACH EXIT CODE MEANS, in the words the CLI's own --help uses. Kept
+# beside the only place that renders them rather than imported, because this
+# process must keep answering even when the CLI it shells out to cannot run —
+# and a missing entry here degrades to the bare number, which is still more
+# than a boolean.
+OUTCOMES = {
+    1: "REFUSED — permanent; do not retry",
+    2: "usage error, or `owed`'s COULD NOT LOOK — read the payload to tell "
+       "which",
+    3: "THROTTLED — not applied; retry after a pause",
+    4: "INDETERMINATE — something landed and something did not",
+    5: "UNREACHABLE — nothing is listening; nothing was sent",
+}
+
+
+def with_outcome(code, text):
+    """The CLI's exit code, carried where an MCP client can still read it.
+
+    EVERY CODE USED TO COLLAPSE INTO `isError`. The protocol's only status is
+    a boolean, so through this server 1 (something owed), 2 (COULD NOT LOOK),
+    3 (throttled) and 5 (unreachable) were one value — and the whole point of
+    those codes is that they call for OPPOSITE responses: retry, wait, stop,
+    go and start the server.
+
+    That is the defect showrunner reported against `owed`, one layer out from
+    where they looked: the data was right and the summary over it destroyed
+    the distinction. Their case is the sharpest — a gate that cannot tell
+    "you owe nothing" from "I could not look" fails open in silence — but it
+    applies to every verb this server exposes.
+
+    THE TEXT IS THE ONLY CHANNEL THAT SURVIVES. An MCP client shows content;
+    it does not surface a private field. So the outcome goes in the content,
+    on its own first line, where a human reads it and a script can parse it.
+    Success adds nothing — a line on every ordinary call is noise, and noise
+    is how a signal stops being read.
+    """
+    body = (text or "").strip() or "(no output)"
+    if not code:
+        return body
+    return "exit %d: %s\n\n%s" % (code, OUTCOMES.get(code, "see the payload"),
+                                  body)
+
+
 def handle_tools_call(params):
     name = params.get("name")
     tool = TOOLS_BY_NAME.get(name)
@@ -793,7 +836,11 @@ def handle_tools_call(params):
     arguments = params.get("arguments") or {}
     argv = _server_argv(arguments) + tool["build"](arguments)
     code, text = run_cli(argv, tool["timeout"])
-    return {"content": [{"type": "text", "text": text.strip() or "(no output)"}],
+    return {"content": [{"type": "text",
+                         "text": with_outcome(code, text)}],
+            # UNCHANGED, and deliberately: `isError` is boolean by the
+            # protocol, and a caller branching on it keeps working. What was
+            # wrong was that it was the ONLY thing that survived.
             "isError": code != 0}
 
 
