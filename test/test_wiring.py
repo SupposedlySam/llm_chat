@@ -705,6 +705,30 @@ class EveryTriggerIsCLASSIFIEDTest(unittest.TestCase):
                               {"known": "claude-hook"}),
             ["nobody-decided"])
 
+    def test_BUILD_LEAVINGS_ARE_NOT_TRIGGERS(self):
+        """`triggers/__pycache__` is real and this check survives it by
+        ACCIDENT — the listing filters `os.path.isfile`, and a directory
+        happens not to be a file. Nothing decided about it.
+
+        showrunner hit the sharp version: their parse check compiled hooks
+        with `py_compile`, which left a `__pycache__` in the hooks directory,
+        which their wiring net then reported as a hook nobody had registered.
+        One check manufacturing the condition another check flags, with
+        neither wrong on its own.
+
+        Here the same artifact exists — `support.load` imports these scripts
+        to test them — and the only thing standing between it and a spurious
+        "unclassified trigger" is that filter. So it is pinned WITH THE
+        REASON, on exactly the argument I put to showrunner about their own
+        accidental case: the point is not that the behaviour is load-bearing,
+        it is that the ACCIDENT is. A later `glob` or a dropped `isfile` would
+        start reporting a build artifact as an unwired guard, and the failure
+        would read as a wiring problem rather than a listing one.
+        """
+        self.assertNotIn("__pycache__", self.shipped())
+        self.assertIn("piped-verdict", self.shipped(),
+                      "the filter must not have thrown out the real ones too")
+
     def test_a_BY_HAND_trigger_carries_its_reason(self):
         """`by-hand` is the answer that asserts nothing invokes it, which is
         the same claim the defect made by accident. It costs a sentence."""
