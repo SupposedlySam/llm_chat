@@ -523,6 +523,25 @@ class ContinuousIntegrationTest(unittest.TestCase):
                         "no CI workflow — the suite runs only where somebody "
                         "types a command")
 
+    def test_it_can_be_RE_TRIGGERED_without_a_new_commit(self):
+        """A run that never started cannot be restarted.
+
+        A commit here came back `startup_failure` at 0s — GitHub could not
+        launch the job — and `gh run rerun` refuses those outright: "This
+        workflow run cannot be retried". With only push and pull_request
+        triggers there was no way to get a verdict for that commit short of
+        pushing another one, which means fabricating a change or leaving HEAD
+        unverified.
+
+        Neither is acceptable while "CI green" is the bar for saying
+        something shipped, so `workflow_dispatch` is part of the wiring
+        rather than a convenience.
+        """
+        with open(self.path) as f:
+            self.assertIn("workflow_dispatch", f.read(),
+                          "a failed-to-start run could not be re-triggered "
+                          "without an invented commit")
+
     def test_IT_ACTUALLY_RUNS_THE_SUITE(self):
         """A workflow that runs nothing is green and means nothing."""
         with open(self.path) as f:

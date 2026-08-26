@@ -38,6 +38,17 @@ on:
   push:
     branches: [main]
   pull_request:
+  # BY HAND, because a run that never started cannot be restarted. A commit
+  # here came back `startup_failure` at 0s — GitHub could not launch the job
+  # at all — and `gh run rerun` refuses those: "This workflow run cannot be
+  # retried". With only push and pull_request triggers there was then NO way
+  # to get a verdict for that commit short of pushing another one, which
+  # means either fabricating a change or leaving HEAD unverified.
+  #
+  # Neither is acceptable when "CI green" is the bar for saying something
+  # shipped. Two lines buy a re-trigger that needs no invented commit:
+  #     gh workflow run tests --ref main
+  workflow_dispatch:
 
 jobs:
   cold-clone:
