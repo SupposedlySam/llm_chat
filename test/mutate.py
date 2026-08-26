@@ -21,6 +21,7 @@ interrupted run cannot leave the repo mutated.
 import argparse
 import ast
 import fcntl
+import json
 import os
 import re
 import shutil
@@ -86,6 +87,8 @@ SUITE_DEADLINE = 600
 IN_COPY = "LLM_CHAT_SWEEP_ISOLATED"
 # "<index>/<total>" — which slice of the mutation list this copy owns.
 SHARD = "LLM_CHAT_SWEEP_SHARD"
+# The real checkout, told to a shard running inside a throwaway copy.
+LIVE_ROOT = "LLM_CHAT_SWEEP_LIVE_ROOT"
 
 
 def my_share(mutations):
@@ -186,6 +189,12 @@ def sweep_in_a_copy():
             env = dict(os.environ)
             env[IN_COPY] = "1"
             env[SHARD] = "%d/%d" % (shard, workers)
+            # WHERE THE LIVE TREE IS. A shard runs inside a copy that this
+            # function deletes on the way out, so a killer ledger written
+            # beside the shard's own test/ is thrown away with it — the
+            # speedup would be measured once and never seen again. The
+            # ledger is the one thing a shard has to write OUTWARDS.
+            env[LIVE_ROOT] = ROOT
             # -u because a long run's progress is the only sign it is alive;
             # buffered, it is indistinguishable from a hang.
             running.append(subprocess.Popen(
@@ -355,6 +364,31 @@ MUTATIONS = [
      "questions land there, wake nobody, and `owed` cannot see them because a "
      "room you are done with owes nothing. showrunner's lockout report sat "
      "three hours in #llm_chat_owner for exactly this reason"),
+
+    ("an unchanged room costs no subprocess", "bin/llm-chat-deliver",
+     "        if channel in quiet:\n            continue",
+     "        if False:\n            continue",
+     "delivery goes back to spawning one full `read` — a fresh Python "
+     "interpreter and three requests — per joined room after EVERY tool call, "
+     "whether or not the room has anything. With R rooms and N live sessions "
+     "that is 3·R·N requests and R·N spawns per tick, which is the load the "
+     "429s appear under"),
+
+    ("a room absent from the listing is not RULED OUT",
+     "bin/llm-chat-deliver",
+     "        if channel in counts and marks.get(channel) == counts[channel]:",
+     "        if marks.get(channel) == counts.get(channel):",
+     "a room the listing never mentioned reads as quiet whenever we have no "
+     "watermark for it either — None == None — so a room nobody can see gets "
+     "skipped forever. The pre-check must return what is PROVABLY quiet, and "
+     "absent from the answer is not proof of anything"),
+
+    ("a failed listing rules NOTHING out", "bin/llm-chat-deliver",
+     "        if done.returncode != 0:\n            return set(), {}",
+     "        if False:\n            return set(), {}",
+     "a `channels` call that printed nothing and FAILED is read as an empty "
+     "listing, which rules every room out of nothing — but a caller that "
+     "cannot see the rooms must not conclude they are quiet"),
 
     ("two collapses that CANCEL are one three-way", "bin/llm_chat",
      "    stub_is_mine = any(name == mine and not has for name, has in sessions)",
@@ -708,6 +742,22 @@ MUTATIONS = [
      "a short multi-line message goes through the shell unchecked. seq 200 — "
      "one of the seven, and ours — was three lines, so the length half alone "
      "would not have caught it"),
+
+    ("a killer that ERRORED did not measure anything", "test/mutate.py",
+     '    return counts.get("failures", 0) > 0\n',
+     '    return counts.get("failures", 0) + counts.get("errors", 0) > 0\n',
+     "the killer cache starts accepting a CRASH as proof that something "
+     "defends the behaviour — the exact crash-versus-kill confusion this file "
+     "exists to prevent, now cached and reused for every future sweep so the "
+     "wrong reading never gets taken again"),
+
+    ("every sweep worker keeps its OWN ledger", "test/mutate.py",
+     '    name = "killers.%s.json" % index if index else "killers.json"\n',
+     '    name = "killers.json"\n',
+     "eight shards write one file and replace each other, so seven-eighths of "
+     "what a sweep learned is thrown away. The next sweep runs the full suite "
+     "for most mutations and the cache looks like it simply did not work — a "
+     "performance bug that reads as the feature being useless"),
 
     ("the accounting line's terms are DISJOINT", "test/mutate.py",
      '    only_excluded = len(everything & excluded - swept)\n'
@@ -2522,6 +2572,19 @@ NOT_SWEPT = {
         "in the suite called this function at all. Caught by "
         "run.py:inert_exclusions on its first execution, one hour after the "
         "identical entry for sweep_in_a_copy was found by hand",
+    "bin/llm-chat-deliver:read_watermarks": "all three outcomes asserted "
+        "directly — absent file, unreadable file, and a good one — and the "
+        "two that matter are exercised through the pre-check as well, where "
+        "an empty result must rule NOTHING out. NOT swept separately: every "
+        "mutation of it is a mutation of `rooms_that_cannot_have_anything`'s "
+        "answer, which is swept, and reverting it there is what shows the "
+        "consequence",
+    "bin/llm-chat-deliver:note_delivered": "asserted directly in all three "
+        "directions: written after a successful read, left alone after a "
+        "failed one, and an unwritable path costing a redundant read rather "
+        "than the turn. NOT swept: the behaviour that matters is whether the "
+        "NEXT tick skips the room, which is the swept pre-check reading what "
+        "this wrote",
     "bin/llm-chat-deliver:addressed_to_me": "every audience form asserted "
         "directly, including that unaddressed WAKES you without being for you",
     "bin/llm-chat-deliver:render_channel": "full-text-for-mine, pointer-for-"
@@ -3045,7 +3108,11 @@ VERDICT = re.compile(r"(failures|errors)=(\d+)")
 
 
 def run_suite():
-    """(green, failures, errors) — not just green.
+    """(green, failures, errors, which tests failed) — not just green.
+
+    The fourth element is what lets `sweep_verdict` ask a smaller question
+    next time: the ids recorded here are the tests that actually killed this
+    mutation, so the next sweep can run those instead of all 1827.
 
     A MUTANT KILLED BY AN EXCEPTION IS NOT A MEASUREMENT. Reading only the
     exit code says a reverted fix "turned the suite red" when all that
@@ -3069,16 +3136,186 @@ def run_suite():
     # verdict below: a hang measures nothing, exactly like a crash, and
     # waiting for it measures nothing either.
     try:
-        done = subprocess.run([sys.executable, os.path.join(HERE, "run.py"),
-                               "--tests-only"],
+        argv = [sys.executable, os.path.join(HERE, "run.py"), "--tests-only",
+                "--name-failures"]
+        done = subprocess.run(argv,
                               cwd=ROOT, capture_output=True, text=True,
                               timeout=SUITE_DEADLINE)
     except subprocess.TimeoutExpired:
-        return None, 0, 0
+        return None, 0, 0, []
+    text = (done.stdout or "") + (done.stderr or "")
     counts = {"failures": 0, "errors": 0}
-    for kind, n in VERDICT.findall((done.stdout or "") + (done.stderr or "")):
+    for kind, n in VERDICT.findall(text):
         counts[kind] = int(n)
-    return done.returncode == 0, counts["failures"], counts["errors"]
+    return (done.returncode == 0, counts["failures"], counts["errors"],
+            failing_ids(text))
+
+
+# The one-line marker `run.py` prints its failing test ids on. Defined HERE
+# because run.py already imports from this module and the reverse would be a
+# cycle — and because two copies of a marker string is two things to get out
+# of step, which is the defect this file exists to find.
+FAILED_IDS = "FAILED-IDS: "
+
+KILLERS = os.path.join(HERE, "killers.json")
+KILLER_DEADLINE = 120
+
+
+def killers_dir():
+    """The LIVE tree's test/, not whatever copy this shard is running in."""
+    live = os.environ.get(LIVE_ROOT)
+    return os.path.join(live, "test") if live else HERE
+
+
+def killers_path():
+    """Where THIS worker writes what it learned.
+
+    ONE FILE PER SHARD, and it has to be. Eight workers each learn the killers
+    for their own 28 mutations; a single shared file means eight writers
+    replacing each other and seven-eighths of the run's findings thrown away —
+    so the next sweep would still run the whole suite for most mutations and
+    the speedup would look like it had not worked.
+
+    Separate files instead of a lock: they are written once each, at the end,
+    and `read_killers` merges them. Nothing needs to coordinate.
+    """
+    share = os.environ.get(SHARD)
+    index = share.split("/", 1)[0] if share else None
+    name = "killers.%s.json" % index if index else "killers.json"
+    return os.path.join(killers_dir(), name)
+
+
+def read_killers():
+    """Every worker's ledger, merged. Unreadable ones are simply absent.
+
+    A missing or corrupt file is not an error here: the mutations it covered
+    escalate to the full suite and rewrite it. This cache can only ever cost
+    time, never correctness, which is why nothing about it is defended
+    harder than this.
+    """
+    merged = {}
+    directory = killers_dir()
+    try:
+        names = sorted(os.listdir(directory))
+    except OSError:
+        return merged
+    for name in names:
+        if not (name == "killers.json" or (name.startswith("killers.")
+                                           and name.endswith(".json"))):
+            continue
+        try:
+            with open(os.path.join(directory, name)) as f:
+                found = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(found, dict):
+            merged.update(found)
+    return merged
+
+
+def ask_the_killers(name, known):
+    """Did this mutation's KNOWN killers fail? True only if one of them did.
+
+    THE WHOLE DEV-CYCLE FIX. A sweep asks one question per mutation — does
+    anything notice — and it was answering it by running 1737 tests, 223
+    times. But a mutation that was killed by `test_cli.WhoTest.test_x`
+    yesterday is almost certainly killed by the same test today, and that
+    test takes milliseconds.
+
+    SOUND FOR THE SAME REASON THE REDUCED SUITE IS. A named killer that fails
+    is a real measurement: an assertion looked and disagreed. Running fewer
+    tests can only MISS a kill, never invent one — so a False here means
+    "ask the bigger question", not "survivor". The caller escalates.
+
+    RECORDED FROM REAL KILLS, NEVER GUESSED, which is what keeps it honest as
+    the tests move. A renamed or deleted killer simply does not fail, the
+    mutation escalates to the full suite, and the ledger is rewritten from
+    what actually killed it this time. Staleness costs one slow run and
+    repairs itself; it cannot produce a wrong verdict.
+    """
+    if not known:
+        return False
+    try:
+        done = subprocess.run(
+            [sys.executable, "-m", "unittest", "-v"] + list(known),
+            cwd=HERE, capture_output=True, text=True,
+            timeout=KILLER_DEADLINE)
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+    text = (done.stdout or "") + (done.stderr or "")
+    counts = dict((kind, int(n)) for kind, n in VERDICT.findall(text))
+    # FAILURES, not errors, and not the exit code. A killer that ERRORED
+    # crashed on the way to its assertion, which measures nothing — the
+    # distinction this whole file is built on.
+    return counts.get("failures", 0) > 0
+
+
+def note_killers(name, ids, ledger):
+    if ids and ledger.get(name) != ids:
+        ledger[name] = ids
+        return True
+    return False
+
+
+def save_killers(ledger):
+    path = killers_path()
+    try:
+        tmp = path + ".%d.tmp" % os.getpid()
+        with open(tmp, "w") as f:
+            json.dump(ledger, f, indent=1, sort_keys=True)
+        os.replace(tmp, path)
+    except OSError:
+        pass          # a lost ledger costs speed, never correctness
+
+
+def failing_ids(output):
+    for line in (output or "").splitlines():
+        if line.startswith(FAILED_IDS):
+            try:
+                found = json.loads(line[len(FAILED_IDS):])
+                return found if isinstance(found, list) else []
+            except ValueError:
+                return []
+    return []
+
+
+def sweep_verdict(baseline, path, original, find, replace, name, ledger):
+    """One mutation's verdict: ask the tests that killed it last time, first.
+
+    THE DEV CYCLE WAS THE PROBLEM. Gating a two-file change took twenty
+    minutes, because this sweep asks one question per mutation — does anything
+    notice — and it answered by running 1827 tests, 223 times. But a mutation
+    killed by `test_cli.WhoTest.test_x` yesterday is almost certainly killed
+    by the same test today, and that test takes milliseconds.
+
+    SOUND, because a named killer that fails is a real measurement: an
+    assertion looked and disagreed. Running fewer tests can only MISS a kill,
+    never invent one — so "the killers passed" means ask the whole suite, not
+    "survivor". Escalation is always to the FULL suite, and the ledger is
+    rewritten from whatever actually killed it there, so a renamed or deleted
+    killer repairs itself at the cost of one slow run.
+
+    A REDUCED SUITE WAS TRIED HERE FIRST AND MEASURED WORSE. The idea was to
+    drop the two REAL-WORLD modules — 30 of the suite's 59 seconds — and
+    re-run anything that did not die against the full suite. Sound, and
+    slower: on a cold ledger the reduced run is pure overhead for every
+    mutation that then escalates, and each escalation cost three suite runs
+    instead of one. Measured on this repo: 57 of 223 mutations in 40 minutes,
+    against ~20 minutes for the whole sweep before the change. Deleted rather
+    than tuned — the win was never in the suite's size, it was in not running
+    a suite at all.
+    """
+    # ASK THE NAMED KILLERS FIRST — milliseconds, and it answers most of the
+    # time. A killer that still fails is a real measurement; one that does not
+    # means "ask the bigger question", never "survivor".
+    if ask_the_killers(name, ledger.get(name)):
+        return "measured", "its known killer(s) disagreed"
+
+    after = run_suite()
+    verdict, why = killed_by_measurement(baseline, after)
+    if verdict == "measured":
+        note_killers(name, after[3], ledger)
+    return verdict, why
 
 
 def killed_by_measurement(before, after):
@@ -3093,8 +3330,11 @@ def killed_by_measurement(before, after):
     result, and printing a kill count beside it is the lie this exists to
     stop.
     """
-    _, failures_before, errors_before = before
-    green, failures, errors = after
+    # SLICED, not unpacked. `run_suite` also hands back WHICH tests failed, so
+    # the sweep can ask them directly next time instead of asking 1737 tests
+    # the same question — and a verdict is still a delta over the counts only.
+    _, failures_before, errors_before = before[:3]
+    green, failures, errors = after[:3]
     if green is None:
         return "hung", ("the suite did not finish within %ds — a mutation "
                         "that HANGS measures nothing, and waiting for it "
@@ -3300,7 +3540,11 @@ def main():
              % (share, len(MUTATIONS))))
     # THE CONTROL, taken once. Every verdict below is a diff against it, so a
     # suite that is already red cannot make every mutation look measured.
+    #
+    # IT MUST MATCH the runs it is compared against — a delta is only
+    # meaningful between two readings of the same suite.
     baseline = run_suite()
+    ledger = read_killers()
     if not baseline[0]:
         print("REFUSING TO SWEEP: the suite is already red (%d failed, %d "
               "errored).\nNothing measured against it could be attributed to "
@@ -3341,12 +3585,12 @@ def main():
         try:
             with open(path, "w") as f:
                 f.write(original.replace(find, replace, 1))
-            after = run_suite()
+            verdict, why = sweep_verdict(baseline, path, original,
+                                         find, replace, name, ledger)
         finally:
             with open(path, "w") as f:
                 f.write(original)
             os.utime(path, (stat.st_atime, stat.st_mtime))
-        verdict, why = killed_by_measurement(baseline, after)
         if verdict == "survived":
             print("  !! %-38s SURVIVED" % name)
             print("     %s" % consequence)
@@ -3367,7 +3611,15 @@ def main():
             print("     %s" % why)
             crashed.append((name, why))
         else:
-            print("  ok %-38s caught" % name)
+            # SAY WHICH QUESTION ANSWERED IT. A cache that cannot be seen
+            # working is one nobody can tell has stopped working — the whole
+            # run would just get quietly slower again, and the only symptom
+            # would be a number nobody is watching. `by name` means the
+            # ledger answered in milliseconds; a bare `caught` means this
+            # mutation cost a full suite and taught the ledger something.
+            print("  ok %-38s caught%s"
+                  % (name, " by name" if why.startswith("its known killer")
+                     else ""))
 
     print()
     if crashed:
@@ -3386,6 +3638,11 @@ def main():
               "defended:" % len(survivors))
         for name, why in survivors:
             print("  - %s: %s" % (name, why))
+    # EVERY WORKER WRITES, each to its own file, because each learned the
+    # killers for a different 28 mutations. Letting shard 0 own this the way
+    # it owns the accounting would discard seven-eighths of what the run
+    # found — and the next sweep would look like the cache had not worked.
+    save_killers(ledger)
     return sweep_exit_code(crashed, survivors, share)
 
 

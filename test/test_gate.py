@@ -5,6 +5,7 @@ writes into the real repo. It watches `.llm_chat/` and `.claude/`, which is
 also where the LIVE hooks write while anyone is working here — so it could
 report the session's own activity as suite damage, and did.
 """
+import json
 import os
 import re
 import sys
@@ -855,6 +856,204 @@ class SweepOrchestratorTest(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("could not copy", said)
         self.assertEqual(self.spawned, [], "shards ran on a failed copy")
+
+
+class KillerLedgerTest(unittest.TestCase):
+    """The ledger that turned a 25-minute gate into a 7-minute one.
+
+    The sweep asks one question per mutation — does anything notice — and it
+    answered by running 1827 tests, 223 times, twice per gate. A mutation
+    killed by `test_cli.WhoTest.test_x` yesterday is almost certainly killed
+    by the same test today, and that test takes 0.06s. Measured on a real
+    gate run: 444 of 446 mutations answered by name.
+
+    THE CACHE CAN ONLY COST TIME. A killer that no longer fails escalates to
+    the full suite and the entry is rewritten from whatever killed it there;
+    a missing or corrupt file is simply absent. Nothing here can produce a
+    wrong verdict, which is why none of it is defended harder than this.
+    """
+
+    def setUp(self):
+        import mutate
+        self.mutate = mutate
+        self.tmp = tempfile.TemporaryDirectory()
+        self.real = {k: os.environ.get(k)
+                     for k in (mutate.LIVE_ROOT, mutate.SHARD)}
+        os.makedirs(os.path.join(self.tmp.name, "test"), exist_ok=True)
+        os.environ[mutate.LIVE_ROOT] = self.tmp.name
+        os.environ.pop(mutate.SHARD, None)
+        self.addCleanup(self.restore)
+
+    def restore(self):
+        for key, value in self.real.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        self.tmp.cleanup()
+
+    def test_EVERY_WORKER_WRITES_ITS_OWN_FILE(self):
+        """Eight shards each learn the killers for a different 28 mutations.
+        One shared file means eight writers replacing each other and
+        seven-eighths of the run's findings thrown away — the next sweep
+        would still run the whole suite for most of them and the cache would
+        look like it had not worked."""
+        os.environ[self.mutate.SHARD] = "3/8"
+        self.mutate.save_killers({"three": ["t.C.test_a"]})
+        os.environ[self.mutate.SHARD] = "5/8"
+        self.mutate.save_killers({"five": ["t.C.test_b"]})
+        os.environ.pop(self.mutate.SHARD, None)
+        self.assertEqual(self.mutate.read_killers(),
+                         {"three": ["t.C.test_a"], "five": ["t.C.test_b"]})
+
+    def test_a_shard_writes_beside_the_LIVE_tree_not_its_copy(self):
+        """A shard runs inside a copy the sweep deletes on the way out, so a
+        ledger written beside its own test/ is thrown away with it — the
+        speedup would be measured once and never seen again."""
+        os.environ[self.mutate.SHARD] = "2/8"
+        self.assertEqual(os.path.dirname(self.mutate.killers_path()),
+                         os.path.join(self.tmp.name, "test"))
+        self.assertTrue(
+            self.mutate.killers_path().endswith("killers.2.json"))
+
+    def test_an_unsharded_run_writes_the_plain_name(self):
+        self.assertTrue(self.mutate.killers_path().endswith("killers.json"))
+
+    def test_a_CORRUPT_ledger_is_absent_rather_than_fatal(self):
+        """Losing it costs one slow sweep. Raising on it costs the gate."""
+        with open(os.path.join(self.tmp.name, "test", "killers.7.json"),
+                  "w") as f:
+            f.write("{not json")
+        self.mutate.save_killers({"good": ["t.C.test_a"]})
+        self.assertEqual(self.mutate.read_killers(), {"good": ["t.C.test_a"]})
+
+    def test_a_ledger_that_is_not_a_MAPPING_is_ignored(self):
+        with open(os.path.join(self.tmp.name, "test", "killers.1.json"),
+                  "w") as f:
+            json.dump(["not", "a", "map"], f)
+        self.assertEqual(self.mutate.read_killers(), {})
+
+    def test_a_MISSING_directory_is_not_an_error(self):
+        os.environ[self.mutate.LIVE_ROOT] = os.path.join(self.tmp.name, "gone")
+        self.assertEqual(self.mutate.read_killers(), {})
+
+    def test_an_UNWRITABLE_ledger_costs_speed_not_the_run(self):
+        os.makedirs(os.path.join(self.tmp.name, "test", "killers.json"),
+                    exist_ok=True)
+        self.mutate.save_killers({"any": ["t.C.test_a"]})
+        self.assertEqual(self.mutate.read_killers(), {})
+
+    def test_files_that_are_not_ledgers_are_left_alone(self):
+        with open(os.path.join(self.tmp.name, "test", "test_cli.py"),
+                  "w") as f:
+            f.write("not a ledger")
+        self.mutate.save_killers({"good": ["t.C.test_a"]})
+        self.assertEqual(self.mutate.read_killers(), {"good": ["t.C.test_a"]})
+
+    def test_note_killers_records_and_says_whether_it_changed(self):
+        ledger = {}
+        self.assertTrue(self.mutate.note_killers("m", ["a"], ledger))
+        self.assertEqual(ledger, {"m": ["a"]})
+        self.assertFalse(self.mutate.note_killers("m", ["a"], ledger),
+                         "an unchanged entry is not a change")
+        self.assertFalse(self.mutate.note_killers("m", [], ledger),
+                         "a kill with no named failures teaches nothing")
+
+    def test_FAILING_IDS_are_read_off_the_runners_own_line(self):
+        line = self.mutate.FAILED_IDS + '["t.C.test_a", "t.C.test_b"]'
+        self.assertEqual(self.mutate.failing_ids("noise\n" + line + "\nmore"),
+                         ["t.C.test_a", "t.C.test_b"])
+
+    def test_a_line_that_does_not_parse_names_nobody(self):
+        self.assertEqual(
+            self.mutate.failing_ids(self.mutate.FAILED_IDS + "{not json"), [])
+        self.assertEqual(
+            self.mutate.failing_ids(self.mutate.FAILED_IDS + '{"a": 1}'), [])
+        self.assertEqual(self.mutate.failing_ids("no such line"), [])
+        self.assertEqual(self.mutate.failing_ids(None), [])
+
+
+class AskTheKillersTest(unittest.TestCase):
+    """Does asking the named killers give the right answer in BOTH
+    directions? A cache checked only where it says yes is a cache nobody has
+    checked."""
+
+    def setUp(self):
+        import mutate
+        self.mutate = mutate
+
+    def answer(self, text, code=1):
+        real = self.mutate.subprocess
+
+        class Fake:
+            TimeoutExpired = real.TimeoutExpired
+
+            @staticmethod
+            def run(argv, **kw):
+                return type("R", (), {"stdout": text, "stderr": "",
+                                      "returncode": code})()
+        self.mutate.subprocess = Fake
+        self.addCleanup(lambda: setattr(self.mutate, "subprocess", real))
+
+    def test_a_killer_that_FAILED_is_a_measurement(self):
+        self.answer("FAILED (failures=1)")
+        self.assertTrue(self.mutate.ask_the_killers("m", ["t.C.test_a"]))
+
+    def test_a_killer_that_ERRORED_is_not(self):
+        """The crash-versus-kill distinction this whole file is built on. A
+        test that blew up on the way to its assertion measured nothing, and
+        recording it as a killer would make the next sweep trust a reading
+        that never happened."""
+        self.answer("FAILED (errors=1)")
+        self.assertFalse(self.mutate.ask_the_killers("m", ["t.C.test_a"]))
+
+    def test_a_killer_that_now_PASSES_sends_us_to_the_full_suite(self):
+        self.answer("OK", code=0)
+        self.assertFalse(self.mutate.ask_the_killers("m", ["t.C.test_a"]))
+
+    def test_NO_KNOWN_KILLERS_asks_nothing_at_all(self):
+        ran = []
+
+        class Fake:
+            TimeoutExpired = self.mutate.subprocess.TimeoutExpired
+
+            @staticmethod
+            def run(argv, **kw):
+                ran.append(argv)
+                return type("R", (), {"stdout": "", "stderr": "",
+                                      "returncode": 0})()
+        real = self.mutate.subprocess
+        self.mutate.subprocess = Fake
+        self.addCleanup(lambda: setattr(self.mutate, "subprocess", real))
+        self.assertFalse(self.mutate.ask_the_killers("m", []))
+        self.assertFalse(self.mutate.ask_the_killers("m", None))
+        self.assertEqual(ran, [], "it spawned a process to ask about nothing")
+
+    def test_a_killer_run_that_HUNG_falls_back_rather_than_deciding(self):
+        real = self.mutate.subprocess
+
+        class Slow:
+            TimeoutExpired = real.TimeoutExpired
+
+            @staticmethod
+            def run(argv, **kw):
+                raise real.TimeoutExpired(argv, 1)
+        self.mutate.subprocess = Slow
+        self.addCleanup(lambda: setattr(self.mutate, "subprocess", real))
+        self.assertFalse(self.mutate.ask_the_killers("m", ["t.C.test_a"]))
+
+    def test_a_killer_run_that_could_not_START_falls_back(self):
+        real = self.mutate.subprocess
+
+        class Broken:
+            TimeoutExpired = real.TimeoutExpired
+
+            @staticmethod
+            def run(argv, **kw):
+                raise OSError("no interpreter")
+        self.mutate.subprocess = Broken
+        self.addCleanup(lambda: setattr(self.mutate, "subprocess", real))
+        self.assertFalse(self.mutate.ask_the_killers("m", ["t.C.test_a"]))
 
 
 class AccountingClosesTest(unittest.TestCase):

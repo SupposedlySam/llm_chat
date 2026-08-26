@@ -60,3 +60,18 @@ test/.mutate.lock
 *.keystore
 credentials.json
 secrets.yaml
+
+# A CACHE, not a record. `test/killers.json` remembers which test killed each
+# mutation last time, so the sweep can ask that test directly instead of
+# running seventeen hundred of them to find out. It is rewritten by every
+# sweep, so tracking it would dirty the tree on each run — and run.py's own
+# damage guard would then report the sweep as a test escaping into the repo.
+#
+# Losing it costs one slow sweep, never a wrong verdict: a killer that no
+# longer fails escalates to the full suite and the entry is rewritten from
+# what actually killed it.
+#
+# One file per sweep worker — eight of them share the work, so a single file
+# would mean eight writers replacing each other.
+test/killers.json
+test/killers.*.json

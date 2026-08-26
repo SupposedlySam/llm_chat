@@ -23,6 +23,7 @@ import argparse
 import ast
 import fcntl
 import hashlib
+import json
 import os
 import sys
 import trace
@@ -43,7 +44,7 @@ BIN = os.path.join(ROOT, "bin")
 # a completeness check that has drifted reports completeness about the wrong
 # set. That is the whole family of failures this file exists to talk about.
 import mutate
-from mutate import discover_sources  # noqa: E402
+from mutate import discover_sources, FAILED_IDS  # noqa: E402
 
 
 def sweep_in_progress():
@@ -335,13 +336,32 @@ def report_repo_damage(before, after):
 
 def suite():
     loader = unittest.TestLoader()
-    return loader.discover(start_dir=HERE, pattern="test_*.py", top_level_dir=HERE)
+    return loader.discover(start_dir=HERE, pattern="test_*.py",
+                           top_level_dir=HERE)
 
 
-def run_tests():
+def run_tests(name_failures=False):
+    """Run the suite. Optionally print WHICH tests failed, machine-readably.
+
+    `name_failures` exists for the mutation sweep. Reverting a fix and running
+    1737 tests to learn whether ONE assertion fires is most of why gating a
+    change took twenty minutes — but the sweep can only ask a smaller question
+    if it knows which tests answered it last time. This is where that list
+    comes from: it is recorded from a real kill, never guessed.
+
+    Ids only, on one line, so the caller parses a list rather than a report.
+    """
     warnings.simplefilter("error", ResourceWarning)
     runner = unittest.TextTestRunner(verbosity=2)
-    return runner.run(suite()).wasSuccessful()
+    result = runner.run(suite())
+    if name_failures:
+        # FAILURES ONLY, not errors. A test that ERRORED did not measure the
+        # behaviour — that is this project's whole crash-versus-kill
+        # distinction — so an errored test is not a killer and must not be
+        # recorded as one.
+        print(FAILED_IDS + json.dumps(sorted(test.id() for test, _
+                                             in result.failures)))
+    return result.wasSuccessful()
 
 
 def body_spans(relative):
@@ -471,6 +491,11 @@ def main():
     ap.add_argument("--min", type=float, default=None,
                     help="fail below this line-coverage percentage")
     ap.add_argument("--tests-only", action="store_true")
+    ap.add_argument("--name-failures", action="store_true",
+                    help="print the ids of the tests that FAILED, one JSON "
+                         "line. For the mutation sweep: it records which test "
+                         "killed each mutation so the next sweep can ask that "
+                         "test directly instead of running all of them.")
     args = ap.parse_args()
 
     # BEFORE anything else. A stranded mutation makes every result below a
@@ -490,7 +515,7 @@ def main():
     globals_before = shared_callables()
 
     if args.tests_only:
-        passed = run_tests()
+        passed = run_tests(name_failures=args.name_failures)
         if report_repo_damage(before, fingerprint_repo()):
             return 1
         if report_global_leaks(globals_before):
