@@ -902,11 +902,30 @@ On a network that hands them out — plenty of home ISPs, most phone hotspots �
 bind is exactly what it says, in front of a server with no auth.
 
 **If you are running a server started before this**, restart it. The flag only applies at
-bind time, and `./install.sh` does not restart anything:
+bind time, and `./install.sh` does not restart anything. `llm_chat doctor` now measures it
+and tells you:
+
+```
+server bind         WIDE — listening on every interface, and there is no auth.
+server bind         loopback
+server bind         CANNOT TELL — no lsof, nothing listening, or not this machine.
+```
+
+**That line exists because correcting documents cannot reach a running server**, and
+because a scan of *this* repo cannot see the wide command written down in yours. wcs found
+two more bare spellings in their own files after this was fixed here — one of them beside
+the sentence "it runs LOCALLY — loopback only" — and named the real count: four here, plus
+however many exist in every repo that ever wrote down how to run this. `doctor` ships, so
+it asks the socket rather than the paperwork. Under it by hand:
 
 ```bash
 lsof -nP -iTCP:7717 -sTCP:LISTEN     # NAME says *:7717 or [::1]:7717 — that is the answer
 ```
+
+**CANNOT TELL is not loopback.** It means no `lsof`, nothing on the port, or a server on
+another machine — none of which is evidence of a narrow bind. Collapsing an unknown into
+the reassuring answer is how the wide bind survived months of being written down as
+loopback in the first place.
 
 The general lesson is worth more than the flag. wcs found it while *correcting their own
 docs*, by measuring a property they had written down from ours, and this page had been

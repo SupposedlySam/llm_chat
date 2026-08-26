@@ -560,6 +560,211 @@ class ServeCommandTest(unittest.TestCase):
                                    + "\n  ".join(wide))
 
 
+class ServerBindTest(unittest.TestCase):
+    """What is the server ACTUALLY listening on — asked of a real socket.
+
+    Every other check in doctor reads a file somebody wrote. This one reads
+    the socket, and it exists because correcting documents cannot reach a
+    server that is already running: the bind is fixed at startup, and nothing
+    restarts one.
+
+    wcs's reading, after two more bare start commands turned up in THEIR repo
+    — one of them beside the sentence "it runs LOCALLY — loopback only":
+
+        the count is not four across two scripts and two documents, it is
+        four plus however many exist in every repo that ever wrote down how
+        to run you, and none of those are reachable from your test
+
+    A scan of this repo cannot cross that boundary. doctor ships, so it can.
+
+    REAL SOCKETS, NOT CANNED lsof OUTPUT. The first version of the parse took
+    the last field of each row as the address. The last field is `(LISTEN)`;
+    the address is two back, because TCP/UDP is its own column. It reported
+    CANNOT TELL about a server it was looking straight at. A stub would have
+    returned whatever output I typed — including the shape I had already got
+    wrong — so the fixture binds sockets and lets lsof describe them.
+    """
+
+    # NO FIXED PORT. This class had one, and the mutation sweep found it: the
+    # sweep runs eight shards at once, and IPv4 and IPv6 sockets on the same
+    # port are DIFFERENT sockets that can coexist — so one shard's `::` bind
+    # showed up as a row under another shard's `::1` test and turned loopback
+    # into wide. Reproduced by running this class four times concurrently:
+    # one FAILED and three skipped every test, because the losers hit
+    # EADDRINUSE and skipped out.
+    #
+    # The skips are the worse half. A skip is not a pass, and under the sweep
+    # the usual outcome would have been these tests silently not running at
+    # all — a class about not mistaking an unknown for an answer, quietly
+    # producing no answer.
+    #
+    # Port 0 lets the kernel pick a free one per process. `listening()`
+    # returns the port it actually got, so the tests that need two sockets on
+    # ONE port can still ask for it explicitly.
+
+    def listening(self, family, host, port=0):
+        """Bind and listen; return the socket's real port."""
+        import socket
+        sock = socket.socket(family, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((host, port))
+            sock.listen(1)
+        except OSError as why:
+            sock.close()
+            raise unittest.SkipTest("cannot bind %s: %s" % (host, why))
+        self.addCleanup(sock.close)
+        return sock.getsockname()[1]
+
+    def bound(self, family, host):
+        return cli.server_bind("http://localhost:%d"
+                               % self.listening(family, host))
+
+    def setUp(self):
+        import shutil
+        if not shutil.which("lsof"):
+            raise unittest.SkipTest("no lsof — this test IS lsof's output, so "
+                                    "a stub of it would prove nothing")
+
+    def test_the_IPv6_WILDCARD_is_wide(self):
+        """The exact thing `zonai serve --port N` does without `--host`."""
+        import socket
+        self.assertEqual(self.bound(socket.AF_INET6, "::"), "wide")
+
+    def test_the_IPv4_WILDCARD_is_wide(self):
+        import socket
+        self.assertEqual(self.bound(socket.AF_INET, "0.0.0.0"), "wide")
+
+    def test_IPv6_loopback_is_loopback(self):
+        """What `--host=::1` produces, and the only reason to prefer it."""
+        import socket
+        self.assertEqual(self.bound(socket.AF_INET6, "::1"), "loopback")
+
+    def test_IPv4_loopback_is_loopback(self):
+        import socket
+        self.assertEqual(self.bound(socket.AF_INET, "127.0.0.1"), "loopback")
+
+    def free_port(self):
+        """A port with nothing on it: take one, then give it back."""
+        import socket
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+        sock.close()
+        return port
+
+    def test_NOTHING_LISTENING_is_cannot_tell_not_loopback(self):
+        """An unknown must never read as the safe answer. That collapse — an
+        unknown wearing a confident answer's clothes — is the whole reason
+        the wide bind survived months of being written down as loopback."""
+        self.assertIsNone(cli.server_bind("http://localhost:%d"
+                                          % self.free_port()))
+
+    def test_a_server_on_ANOTHER_MACHINE_is_not_measured(self):
+        """lsof describes THIS host. Running it for a remote server and
+        reporting the answer would be the vendored-tree mistake again: right
+        command, wrong namespace, confident answer.
+
+        The port is one that IS listening here, so the test fails if the host
+        check is dropped — a free port would pass either way."""
+        import socket
+        port = self.listening(socket.AF_INET6, "::")
+        self.assertEqual(cli.server_bind("http://localhost:%d" % port), "wide")
+        self.assertIsNone(cli.server_bind("http://example.com:%d" % port))
+
+    def test_no_lsof_is_cannot_tell(self):
+        """A machine without lsof gets an unknown, not a reassuring answer.
+
+        THE FIRST VERSION OF THIS TEST PATCHED `cli.shutil.which` AND ITS OWN
+        SANITY LINE CAUGHT IT. `cli.shutil` is not a copy — it is the same
+        module object every other module imported — so assigning through it
+        blinds `shutil.which` for the whole process, and this suite has a leak
+        detector that exists because of exactly that. Replacing the module
+        REFERENCE on `cli` is local; assigning an attribute THROUGH it is not,
+        and the two lines look identical.
+        """
+        import shutil
+
+        class NoTools:
+            which = staticmethod(lambda name: None)
+        real = cli.shutil
+        cli.shutil = NoTools
+        self.addCleanup(lambda: setattr(cli, "shutil", real))
+        import socket
+        port = self.listening(socket.AF_INET6, "::")
+        self.assertIsNone(cli.server_bind("http://localhost:%d" % port),
+                          "a port it could have measured, and no tool to do it")
+        self.assertIsNotNone(shutil.which("lsof"),
+                             "the stub escaped into the real shutil module")
+
+    def canned(self, stdout, returncode=0):
+        """lsof's OUTPUT, stubbed — for the two branches that are about this
+        parser's tolerance rather than about what lsof does.
+
+        The four tests above use real sockets on purpose, because a stub of
+        lsof's format is worth nothing when the format is the thing I got
+        wrong. These two are the opposite question: given output the parser
+        cannot read, does it say so? No real socket produces that.
+        """
+        class Done:
+            pass
+
+        def run(*a, **kw):
+            done = Done()
+            done.stdout, done.returncode = stdout, returncode
+            return done
+
+        class Fake:
+            pass
+        fake = Fake()
+        fake.run = run
+        real = cli.subprocess
+        cli.subprocess = fake
+        self.addCleanup(lambda: setattr(cli, "subprocess", real))
+        return cli.server_bind("http://localhost:7717")
+
+    def test_lsof_BLOWING_UP_is_cannot_tell(self):
+        class Fake:
+            @staticmethod
+            def run(*a, **kw):
+                raise OSError("lsof died")
+        real = cli.subprocess
+        cli.subprocess = Fake
+        self.addCleanup(lambda: setattr(cli, "subprocess", real))
+        self.assertIsNone(cli.server_bind("http://localhost:7717"))
+
+    def test_rows_it_CANNOT_PARSE_do_not_become_loopback(self):
+        """The dangerous default. If an unreadable row fell through to the
+        end, `wide` would still be False and the answer would be the
+        reassuring one — a parser failure reported as a security property.
+        Nothing readable means nothing measured."""
+        self.assertIsNone(self.canned("COMMAND PID USER\nnonsense row here\n"))
+
+    def test_a_readable_row_BESIDE_an_unreadable_one_still_counts(self):
+        """Paired: skipping junk must not skip the evidence next to it."""
+        self.assertEqual(
+            self.canned("COMMAND PID USER\nnonsense row\n"
+                        "zonai 1 me 0u IPv6 0x1 0t0 TCP *:7992 (LISTEN)\n"),
+            "wide")
+
+    def test_ONE_WIDE_SOCKET_DECIDES_even_beside_a_narrow_one(self):
+        """A process can hold several. A narrow row must not vouch for a wide
+        one sitting next to it — the server is reachable either way, and
+        reading row-by-row until something says loopback would report the
+        reassuring half of a two-row answer."""
+        import socket
+        # The narrow one first, on a kernel-chosen port; then the wide one on
+        # THAT port. IPv4 and IPv6 sockets on one port are separate sockets,
+        # which is exactly the coexistence being asserted — and, before the
+        # fixed port went away, exactly how eight concurrent shards poisoned
+        # each other's results.
+        port = self.listening(socket.AF_INET, "127.0.0.1")
+        self.assertEqual(cli.server_bind("http://localhost:%d" % port),
+                         "loopback", "sanity: one narrow socket, so far")
+        self.listening(socket.AF_INET6, "::", port)
+        self.assertEqual(cli.server_bind("http://localhost:%d" % port), "wide")
+
+
 class VendoredCopyIsNotDirtyTest(unittest.TestCase):
     """A COPY inside somebody else's repo, built with real git, because the
     defect was what git actually does.

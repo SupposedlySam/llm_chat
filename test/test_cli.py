@@ -1997,6 +1997,44 @@ class DoctorTest(unittest.TestCase):
         self.dirty(False)
         self.assertNotIn("UNCOMMITTED CHANGES", self.report())
 
+    def bind(self, verdict):
+        real = cli.server_bind
+        cli.server_bind = lambda server: verdict
+        self.addCleanup(lambda: setattr(cli, "server_bind", real))
+
+    def test_a_WIDE_bind_is_reported_with_the_restart(self):
+        """The line that reaches a consumer no document can.
+
+        A server started before `--host=::1` existed keeps its old bind for as
+        long as it runs — the bind is fixed at startup and nothing restarts
+        one — so correcting every start command in every repo still leaves
+        every running server wide. This is the only check that sees them.
+        """
+        self.bind("wide")
+        text = self.report()
+        self.assertIn("WIDE", text)
+        self.assertIn("no auth", text)
+        self.assertIn("--host=::1", text, "the remedy has to be in the line")
+
+    def test_a_LOOPBACK_bind_says_so_quietly(self):
+        """Paired. A line that always warns is one nobody reads, and this one
+        sits in a report people run for other reasons."""
+        self.bind("loopback")
+        text = self.report()
+        self.assertIn("loopback", text)
+        self.assertNotIn("WIDE", text)
+
+    def test_CANNOT_TELL_is_not_reported_as_loopback(self):
+        """The third state, and the one the whole incident turned on. No
+        lsof, nothing listening, or a server on another machine — none of
+        those are evidence of a narrow bind, and a report that renders them
+        as 'loopback' is how a wide server reads as safe for months."""
+        self.bind(None)
+        text = self.report()
+        self.assertIn("CANNOT TELL", text)
+        self.assertNotIn("WIDE", text)
+        self.assertNotIn("server bind         loopback", text)
+
     def a_copy(self, verdict):
         """Stub `own_checkout` ONLY, and let `checkout_dirty` really run.
 

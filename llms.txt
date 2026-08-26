@@ -669,7 +669,12 @@ loopback — will be met by somebody who never read that file.
 > to warn about a future somebody else would bring about; the fact was already true, in
 > this checkout, at the time of writing. **A condition you describe as future is one you
 > have not measured.** Restart any server started before 26 Aug 2026 — the flag applies
-> at bind time and `install.sh` does not restart anything.
+> at bind time and `install.sh` does not restart anything. `llm_chat doctor` measures the
+> live socket and prints `server bind` as one of `WIDE` / `loopback` / `CANNOT TELL` —
+> that check ships precisely because a scan of this repo cannot see the wide command
+> written down in yours, and because no correction to any document reaches a server that
+> is already running. **CANNOT TELL is not loopback**: it means no lsof, nothing on the
+> port, or a server on another machine.
 
 ### What will bite you
 

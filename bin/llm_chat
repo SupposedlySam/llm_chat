@@ -43,6 +43,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import socket
 import subprocess
 import sys
@@ -4462,6 +4463,24 @@ def do_doctor(server):
     else:
         print("  server build        current (knows every column this build "
               "writes)")
+
+    # THE BIND, MEASURED, because every other check on this page reads a file
+    # somebody wrote and this one reads the socket. A server started before
+    # `--host=::1` existed keeps its old bind for as long as it runs, and no
+    # correction to any document reaches it.
+    bind = server_bind(server)
+    if bind == "wide":
+        print("  server bind         WIDE — listening on every interface, and "
+              "there is no auth.")
+        print("                      Anything that can reach the port speaks "
+              "as any identity and\n                      reads every "
+              "channel. Restart it; the bind is fixed at startup:")
+        print("                        " + " ".join(serve_command(port_of(server))))
+    elif bind is None:
+        print("  server bind         CANNOT TELL — no lsof, nothing listening, "
+              "or not this machine.")
+    else:
+        print("  server bind         loopback")
     print()
     print(install_report(project) + stale_skill_report(project)
           + divergent_skill_report() + "\n")
@@ -4941,6 +4960,85 @@ def server_up(server) -> bool:
 def port_of(server) -> int:
     parsed = urllib.parse.urlparse(server)
     return parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
+# Hosts that mean "the server is on THIS machine", so its listening socket is
+# something we can actually look at. Anything else and the honest answer is
+# that we cannot see it — measuring this machine's port 7717 and reporting it
+# as a property of somebody else's server is the same wrong-namespace mistake
+# `own_checkout` exists for.
+LOCAL_HOSTS = ("localhost", "127.0.0.1", "::1", "[::1]", "")
+
+
+def server_bind(server):
+    """Is the server we talk to listening on LOOPBACK, or on every interface?
+
+    Returns "loopback", "wide", or None for cannot-tell. None is not a "no":
+    lsof may be absent, the server may be someone else's machine, or the port
+    may have nothing on it. Reporting an unknown as narrow is the entire
+    defect this exists because of.
+
+    WHY THIS SHIPS RATHER THAN BEING A SCAN OF THIS REPO. Started with no bind
+    address, zonai listens on the IPv6 WILDCARD in front of a server with no
+    authentication; `--host=::1` is what makes it loopback. Every start command
+    HERE now carries the flag, and a test scans this repo's documents for one
+    that does not — but wcs found two more spellings in THEIR repo, one of them
+    beside the sentence "it runs LOCALLY — loopback only". Their reading, which
+    is the reason for this function:
+
+        the count is not four across two scripts and two documents, it is
+        four plus however many exist in every repo that ever wrote down how
+        to run you, and none of those are reachable from your test
+
+    A scan of my files cannot cross that boundary. doctor can: it runs in the
+    consumer's repo, against the server they actually started, however they
+    started it — including servers started before the flag existed, which no
+    amount of correcting documents will ever reach, because the flag applies
+    at bind time and nothing restarts a running server.
+    """
+    if not shutil.which("lsof"):
+        return None
+    host = (urllib.parse.urlparse(server).hostname or "").lower()
+    if host not in LOCAL_HOSTS:
+        return None               # not ours to look at
+    try:
+        done = subprocess.run(
+            ["lsof", "-nP", "-iTCP:%d" % port_of(server), "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    if done.returncode != 0 or not done.stdout.strip():
+        return None               # nothing listening, or lsof declined to say
+    # The NAME column: `*:7717` is the wildcard, `[::1]:7717` and
+    # `127.0.0.1:7717` are loopback. Read per ROW because a server can hold
+    # more than one socket, and ONE wide socket makes the server reachable —
+    # a narrow row sitting beside a wide one must not vouch for it.
+    #
+    # NAME IS NOT THE LAST FIELD, which is what this said first, and it read
+    # every row as unparseable and returned "cannot tell" about a server it
+    # was looking straight at. A real row:
+    #
+    #   zonai-0.7 47366 me 0u IPv6 0x7086dc 0t0 TCP [::1]:7717 (LISTEN)
+    #
+    # `(LISTEN)` is last and the address is two fields back, because TCP/UDP
+    # is its own column. Dropping the trailing parenthesised state first is
+    # what makes the last field the address — and this repo's own rule, read
+    # a real one before asserting its shape, is the rule I broke to write the
+    # first version.
+    wide = False
+    seen = False
+    for line in done.stdout.splitlines()[1:]:
+        fields = line.split()
+        while fields and fields[-1].startswith("("):
+            fields.pop()
+        if not fields or ":" not in fields[-1]:
+            continue
+        seen = True
+        if fields[-1].rsplit(":", 1)[0] in ("*", "0.0.0.0", "[::]", "::"):
+            wide = True
+    if not seen:
+        return None
+    return "wide" if wide else "loopback"
 
 
 # The workers `zonai compile` produces for this project, one per directory

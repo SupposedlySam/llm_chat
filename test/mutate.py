@@ -1858,6 +1858,16 @@ MUTATIONS = [
      "and a sweep mutating this tree once reached a neighbouring agent and "
      "retired its waker"),
 
+    ("a WIDE bind is not read as loopback", "bin/llm_chat",
+     '    if bind == "wide":',
+     '    if bind == "never":',
+     "the only check that reaches a server started before `--host=::1` "
+     "existed — the bind is fixed at startup and nothing restarts a running "
+     "server, so every document in every repo can be correct while every "
+     "live server is still listening on all interfaces with no auth; and "
+     "falling through leaves the reassuring `loopback` line printed over a "
+     "wide one, which is worse than printing nothing"),
+
     ("a COPY is told the report cannot see it", "bin/llm_chat",
      "    elif direct and own_checkout(source) is False:",
      "    elif False:",
@@ -2663,6 +2673,10 @@ NOT_SWEPT = {
     "bin/llm_chat:checkout_dirty": "dirty, clean, not-a-checkout, no-git and "
         "a tree that is not its OWN checkout asserted directly — UNKNOWN must "
         "not read as clean, and a copy's enclosing repo must not read as it",
+    "bin/llm_chat:server_bind": "wide, loopback, nothing-listening, remote, "
+        "no-lsof and unparseable asserted directly — the four bind shapes "
+        "against REAL sockets, because a stub of lsof's format proves nothing "
+        "when the format is what the first version got wrong",
     "bin/llm_chat:serve_command": "the bind flag and the port asserted "
         "directly, plus a scan proving no doc or script spells the command "
         "without a bind — the prose copies are where the wide one survived",
