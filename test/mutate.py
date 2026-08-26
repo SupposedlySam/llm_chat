@@ -744,9 +744,7 @@ MUTATIONS = [
      "would not have caught it"),
 
     ("a trigger nobody decided about is REPORTED", "test/test_wiring.py",
-     "        return [name for name in shipped\n"
-     "                if name not in excused\n"
-     "                and not any(name in text for text in registries)]",
+     "        return [name for name in shipped if name not in expected]",
      "        return []",
      "a shipped trigger that is registered nowhere and excused nowhere passes "
      "silently again. `answer-when-asked` was exactly that — documented in "

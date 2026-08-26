@@ -568,7 +568,37 @@ class ContinuousIntegrationTest(unittest.TestCase):
         self.assertIn("does NOT run the mutation sweep", text)
 
 
-NOT_A_HOOK = {
+# WHERE EACH SHIPPED TRIGGER IS SUPPOSED TO BE WIRED, and it is a decision
+# record rather than a list somebody maintains: the test below fails when a
+# file in triggers/ has no entry here, so it cannot age quietly. That is the
+# only shape of list this repo allows, and it is the difference between
+# default-deny and the four complete-by-accident lists already removed from it.
+#
+# THE THREE VALUES ARE THREE DIFFERENT REGISTRIES, not a taxonomy for its own
+# sake. A check that knew about one of them would report the others as unwired.
+#
+#   claude-hook   .claude/settings.local.json — machine-local, because the
+#                 command is an absolute path and the tracked settings.json
+#                 would fire it against a directory only this machine has.
+#                 NOT VISIBLE ON A COLD CLONE, which is the whole reason this
+#                 table exists separately from the registry.
+#   game-loop     .game_loop/triggers.json — its own events (harden, stepback,
+#                 session_start). Also gitignored, also absolute paths.
+#   by-hand       nothing invokes it, deliberately, with the reason.
+EXPECTED = {
+    "answer-when-asked": "claude-hook",
+    "authority-gate": "claude-hook",
+    "piped-verdict": "claude-hook",
+    "prose-through-shell": "claude-hook",
+    "tell-the-consumers": "claude-hook",
+    "write-through-interpreter": "claude-hook",
+    "learnings-broadcast": "game-loop",
+    "learnings-digest": "game-loop",
+    "undocumented-surface": "game-loop",
+    "issue-watch": "by-hand",
+}
+
+BY_HAND_REASON = {
     "issue-watch":
         "a long-running watcher started BY HAND — `sh triggers/issue-watch` — "
         "not a hook. It prints its current open set as a positive control on "
@@ -641,59 +671,78 @@ class EveryTriggerIsCLASSIFIEDTest(unittest.TestCase):
                       and not name.startswith("."))
 
     @staticmethod
-    def undecided(shipped, registries, excused):
-        """Triggers nobody has either wired or excused.
-
-        A FUNCTION, so it can be asked about a trigger this repo does not
-        have. Left inline, the only case it ever saw was the real directory —
-        where everything IS classified, so the assertion passed whether or not
-        the check worked. That is the shape this repo keeps finding: a test
-        that cannot fail is not a test, and a clean repo is exactly when a
-        broken guard looks healthy.
-        """
-        return [name for name in shipped
-                if name not in excused
-                and not any(name in text for text in registries)]
+    def unclassified(shipped, expected):
+        """Triggers nobody has decided about. A FUNCTION, so it can be asked
+        about a trigger this repo does not have — asked only about the real
+        directory, where everything IS classified, it would pass whether or
+        not it worked."""
+        return [name for name in shipped if name not in expected]
 
     def test_NOTHING_SHIPS_UNCLASSIFIED(self):
+        """The half that works EVERYWHERE, including a cold clone.
+
+        Both registries are gitignored — they hold absolute paths — so on CI
+        neither is visible and registration cannot be checked at all. The
+        first version of this test did not separate those two questions and
+        failed on CI listing six triggers as unwired, which was true of the
+        checkout and false of the world. A guard that cannot run where it
+        ships is the defect this whole test was written to catch, and it had
+        it on the first commit.
+
+        So: WHERE a trigger belongs is tracked and always checkable. WHETHER
+        it is really there can only be asked where the registry exists.
+        """
         self.assertEqual(
-            self.undecided(self.shipped(),
-                           [text for _, text in self.registries()],
-                           NOT_A_HOOK),
-            [],
-            "these triggers are registered nowhere and excused nowhere — "
-            "either wire them, or add them to NOT_A_HOOK with the reason")
+            self.unclassified(self.shipped(), EXPECTED), [],
+            "a trigger with no entry in EXPECTED — say which registry it "
+            "belongs in, or mark it by-hand with a reason")
 
     def test_IT_ACTUALLY_REPORTS_ONE(self):
         """The direction the live check cannot exercise while the repo is
-        clean — and the direction the whole thing exists for.
-
-        `answer-when-asked` was the real instance: shipped, documented as a
-        live Stop guard, registered nowhere. This asks the same question about
-        a trigger that does not exist, so the answer stays available after the
-        real one is fixed."""
+        clean, and the direction the whole thing exists for."""
         self.assertEqual(
-            self.undecided(["wired-one", "excused-one", "nobody-decided"],
-                           ['{"command": "/x/triggers/wired-one"}'],
-                           {"excused-one": "a reason"}),
+            self.unclassified(["known", "nobody-decided"],
+                              {"known": "claude-hook"}),
             ["nobody-decided"])
 
-    def test_an_EXCUSE_names_a_trigger_that_still_exists(self):
-        """The other direction, and the one that rots quietly: an excuse for a
-        deleted trigger reads as a decision about something real, and it makes
-        the list longer without making it truer."""
-        gone = [name for name in NOT_A_HOOK if name not in self.shipped()]
-        self.assertEqual(gone, [],
-                         "excused triggers that no longer exist")
+    def test_a_BY_HAND_trigger_carries_its_reason(self):
+        """`by-hand` is the answer that asserts nothing invokes it, which is
+        the same claim the defect made by accident. It costs a sentence."""
+        for name, where in EXPECTED.items():
+            if where == "by-hand":
+                self.assertIn(name, BY_HAND_REASON,
+                              "by-hand without a reason is a shrug")
 
-    def test_at_least_one_REGISTRY_was_actually_readable(self):
-        """The check passes vacuously if every registry is missing — every
-        trigger would look unregistered, the test would fail loudly, and the
-        one failure mode left is a future refactor that reads none of them and
-        finds nothing to complain about."""
-        self.assertTrue(self.registries(),
-                        "no registry could be read, so registration was never "
-                        "actually checked")
+    def test_an_ENTRY_names_a_trigger_that_still_exists(self):
+        """The direction that rots quietly: an entry for a deleted trigger
+        reads as a decision about something real."""
+        gone = [name for name in EXPECTED if name not in self.shipped()]
+        self.assertEqual(gone, [], "classified triggers that no longer exist")
+
+    def test_where_a_REGISTRY_IS_VISIBLE_the_wiring_is_checked(self):
+        """The other half, and it SKIPS OUT LOUD rather than passing quietly.
+
+        On this machine both registries exist and every hook is verified
+        present. On a cold clone neither does, and the honest report is that
+        registration went unchecked — not a green tick over a question nobody
+        asked.
+        """
+        registries = {name: text for name, text in self.registries()}
+        local = registries.get(".claude/settings.local.json")
+        loop = registries.get(".game_loop/triggers.json")
+        if local is None and loop is None:
+            self.skipTest("neither registry is visible — both are gitignored, "
+                          "so registration cannot be checked from this "
+                          "checkout. WHERE each trigger belongs is still "
+                          "enforced above.")
+        for name, where in sorted(EXPECTED.items()):
+            text = {"claude-hook": local, "game-loop": loop}.get(where)
+            if where == "by-hand" or text is None:
+                continue
+            with self.subTest(trigger=name):
+                self.assertIn(name, text,
+                              "%s is classified %s and is not in that "
+                              "registry" % (name, where))
 
 
 if __name__ == "__main__":
