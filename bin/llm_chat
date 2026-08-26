@@ -18,7 +18,7 @@ Then:
 `open` and `join` are the lower-level pair `setup` is built from, for when a
 repo is already wired up.
 
-The store is a zonai server (`./zonai serve --port 7717`), not a shared file, and that is
+The store is a zonai server (`./zonai serve --port 7717 --host=::1`), not a shared file, and that is
 not an aesthetic choice. The repos this runs in enforce "everything outside
 this repo is READ-ONLY" with a PreToolUse guard hook, and the only way through
 is a human authorizing that one write — single-use, and logged.
@@ -54,11 +54,39 @@ import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# `localhost`, NOT `127.0.0.1`. zonai binds [::1] only on macOS — IPv4 loopback
-# simply does not answer (https://github.com/mrgnhnt96/zonai/issues/16). The
-# symptom is a connection refused against a server that is plainly running and
-# printing "Serving at ...", which is a genuinely confusing half hour.
+# `localhost`, NOT `127.0.0.1`. IPv4 loopback simply does not answer
+# (https://github.com/mrgnhnt96/zonai/issues/16). The symptom is a connection
+# refused against a server that is plainly running and printing "Serving at
+# ...", which is a genuinely confusing half hour.
+#
+# THIS USED TO SAY "zonai binds [::1] only on macOS", AND THAT WAS FALSE.
+# Right instruction, wrong reason, and the reason was doing security work
+# elsewhere in these docs. wcs measured it and I reproduced it here:
+#
+#     ./zonai serve --port 7717         ->  TCP *:7717 (LISTEN)
+#     ./zonai serve --port 7717 --host=::1  ->  TCP [::1]:7717 (LISTEN)
+#
+# `*` is the IPv6 WILDCARD — every IPv6 interface, not loopback. It looks
+# identical from inside the machine, because every client reaches it over
+# [::1] either way, and IPv4 being refused makes it look narrower still. It
+# had no symptom here only because this host has no routable IPv6 address
+# today; on a network that hands them out, the bind is what it says.
+#
+# zonai's own default host is documented as "localhost" and it binds the
+# wildcard anyway, so the flag is not redundant — it is the only thing that
+# makes the loopback claim in README true.
 DEFAULT_SERVER = os.environ.get("LLM_CHAT_SERVER") or "http://localhost:7717"
+
+# The bind address, named once. Everything that prints or runs a start command
+# reads it from here — there were four spellings of that command across two
+# scripts and two documents, and a fix applied to some of them is how a
+# consumer ends up starting the wide one from a doc nobody updated.
+LISTEN_HOST = "::1"
+
+
+def serve_command(port):
+    """The start command, as a list. The ONE definition of it."""
+    return ["./zonai", "serve", "--port", str(port), f"--host={LISTEN_HOST}"]
 
 def project_dir() -> str:
     """Which repo is calling — the ROOT of it, never wherever you stand.
@@ -611,10 +639,10 @@ def call(server, method, path, body=None, query=None, timeout=10):
             # our prose is the entire defect #30 was filed about. Putting that
             # same match inside the program would only move it.
             return {"error": f"no llm_chat server at {server} — start one "
-                             f"with `cd {ROOT} && ./zonai serve --port "
-                             f"7717`.\n"
-                             f"  If it IS running, check the address: zonai "
-                             f"binds [::1] only on macOS, so use localhost, "
+                             f"with `cd {ROOT} && "
+                             f"{' '.join(serve_command(port_of(server)))}`.\n"
+                             f"  If it IS running, check the address: IPv4 "
+                             f"loopback does not answer, so use localhost, "
                              f"not 127.0.0.1 (zonai#16).",
                     "unreachable": True}
 
@@ -4426,7 +4454,8 @@ def do_doctor(server):
               "or re-running")
         print("                      install.sh does NOT restart the server:")
         print(f"                        cd {ROOT} && ./zonai db migrate apply")
-        print(f"                        ./zonai serve --port {port_of(server)}")
+        print("                        "
+              + " ".join(serve_command(port_of(server))))
     elif build is None:
         print("  server build        CANNOT TELL — nothing answered. Not the "
               "same as current.")
@@ -4989,13 +5018,19 @@ def start_server(server) -> None:
     state = os.path.join(ROOT, ".state")
     os.makedirs(state, exist_ok=True)
     log_path = os.path.join(state, "serve.log")
-    print(f"  ./zonai serve --port {port_of(server)}", flush=True)
+    command = serve_command(port_of(server))
+    print("  " + " ".join(command), flush=True)
     with open(log_path, "ab") as log:
         # start_new_session so the server outlives the tool call that spawned
         # it — otherwise it dies with the agent's shell and the other agent
         # talks into a void.
+        #
+        # THE PRINTED LINE AND THE SPAWNED ONE ARE THE SAME LIST, not two
+        # spellings that happen to agree. They were two, and the whole point
+        # of this line existing is that a human can copy it and get what the
+        # program does — which stops being true the moment one grows a flag.
         subprocess.Popen(
-            ["./zonai", "serve", "--port", str(port_of(server))],
+            command,
             cwd=ROOT, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
             start_new_session=True,
         )

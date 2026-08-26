@@ -486,6 +486,80 @@ class DirtyCheckoutTest(unittest.TestCase):
         self.assertIsNone(cli.checkout_dirty("/enclosing/repo/.lamp/llm_chat"))
 
 
+class ServeCommandTest(unittest.TestCase):
+    """Every start command binds loopback, and there is only one of them.
+
+    `./zonai serve --port N` binds the IPv6 WILDCARD — every IPv6 interface —
+    in front of a server with no authentication of any kind. Measured by wcs
+    on their machine and reproduced on this one:
+
+        ./zonai serve --port 7717             ->  TCP *:7717 (LISTEN)
+        ./zonai serve --port 7717 --host=::1  ->  TCP [::1]:7717 (LISTEN)
+
+    It had no symptom and could not have had one. Every client reaches this
+    over `[::1]` whichever way it is bound, and IPv4 loopback being REFUSED
+    (zonai#16) makes the bind look narrower than it is rather than wider.
+    What kept it off the LAN was neither host having a routable IPv6 address
+    that day — a property of the afternoon, not of the software.
+
+    THE REASON THIS IS A TEST AND NOT A FIXED STRING. The command existed in
+    four spellings across two scripts and two documents. A flag added to some
+    of them is how somebody starts the wide one from a doc nobody updated,
+    and nothing would ever fail. So the command has one definition and these
+    assert that the definition carries the flag — not that any particular
+    line of prose does.
+    """
+
+    def test_the_serve_command_binds_LOOPBACK(self):
+        self.assertIn("--host=::1", cli.serve_command(7717))
+
+    def test_the_port_is_the_one_asked_for(self):
+        """A hardcoded 7717 would silently serve the wrong workspace for
+        anyone running a second server, which the README documents doing."""
+        self.assertIn("7718", cli.serve_command(7718))
+        self.assertNotIn("7717", " ".join(cli.serve_command(7718)))
+
+    def test_what_is_PRINTED_is_what_would_be_RUN(self):
+        """`start_server` prints the command so a human can copy it. That is
+        only worth doing if the two are the same list rather than two
+        spellings that happen to agree today — they WERE two, and the drift
+        between them is invisible until somebody pastes the printed one."""
+        import inspect
+        source = inspect.getsource(cli.start_server)
+        self.assertIn("command = serve_command(", source)
+        self.assertIn('" ".join(command)', source)
+        self.assertIn("subprocess.Popen(\n            command,", source)
+
+    def test_no_start_command_ANYWHERE_omits_the_bind(self):
+        """The one that would actually have caught this. Prose is where the
+        wide command survived, and a reader copying a doc gets no warning."""
+        root = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        wide = []
+        for name in ("README.md", "llms.txt", "bin/llm_chat",
+                     "bin/llm-chat-mcp", "bin/llm-chat-deliver",
+                     "bin/llm-chat-wake"):
+            path = os.path.join(root, name)
+            try:
+                with open(path) as handle:
+                    lines = handle.read().splitlines()
+            except OSError:
+                continue
+            for number, line in enumerate(lines, 1):
+                if "zonai serve --port" not in line:
+                    continue
+                if "--host=" in line:
+                    continue
+                # The two lines that MUST show the wide form: they are the
+                # measurement, quoted as evidence of what it does. Recognised
+                # by the arrow rather than by line number, so moving them does
+                # not silently re-permit a bare command somewhere else.
+                if "->" in line and "LISTEN" in line:
+                    continue
+                wide.append("%s:%d  %s" % (name, number, line.strip()))
+        self.assertEqual(wide, [], "start commands with no bind address:\n  "
+                                   + "\n  ".join(wide))
+
+
 class VendoredCopyIsNotDirtyTest(unittest.TestCase):
     """A COPY inside somebody else's repo, built with real git, because the
     defect was what git actually does.

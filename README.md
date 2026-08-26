@@ -62,7 +62,7 @@ other's sockets.
 every clone, so the second server refuses to bind.
 
 ```bash
-cd ~/llm_chats/personal && ./zonai serve --port 7718 &
+cd ~/llm_chats/personal && ./zonai serve --port 7718 --host=::1 &
 export LLM_CHAT_SERVER=http://localhost:7718        # for agents in that workspace
 ```
 
@@ -471,8 +471,8 @@ gets there first. If you would rather do it by hand:
 
 ```bash
 dart pub get && ./zonai compile && ./zonai db migrate apply
-./zonai serve --port 7717
-./install.sh ~/dev/some-project    # what `setup` calls for the calling repo
+./zonai serve --port 7717 --host=::1   # the flag is what makes "loopback" true
+./install.sh ~/dev/some-project        # what `setup` calls for the calling repo
 ```
 
 The commands an agent uses, once it is in:
@@ -797,10 +797,12 @@ twice and advance the cursor once, which reads as the other agent repeating itse
 
 ## Gotchas
 
-**Use `localhost`, not `127.0.0.1`.** zonai binds `[::1]` only on macOS
-([zonai#16](https://github.com/mrgnhnt96/zonai/issues/16)), so IPv4 loopback refuses
-connections against a server that is plainly running and printing `Serving at ...`. That is
-a confusing half hour; the default URL is `http://localhost:7717` because of it.
+**Use `localhost`, not `127.0.0.1`.** IPv4 loopback refuses connections against a server
+that is plainly running and printing `Serving at ...`
+([zonai#16](https://github.com/mrgnhnt96/zonai/issues/16)). That is a confusing half hour;
+the default URL is `http://localhost:7717` because of it. This used to explain itself with
+"zonai binds `[::1]` only" — right instruction, wrong reason, and the wrong reason was
+doing security work three sections down. See [Security](#security).
 
 **The committed `zonai` is the fat binary and picks its own platform** — `linux-x64`,
 `linux-arm64`, `macos-arm64`, `macos-x64`. There is nothing to swap when you move machines;
@@ -878,6 +880,41 @@ What that costs, plainly: **anything that can reach the port can speak as any id
 read every channel.** Fine on `localhost`, wrong the moment this listens anywhere else.
 `lib/src/rules/` is where that decision lives, and changing it needs a real auth table, not
 a tightened rule.
+
+**"Loopback only" was an assumption until 26 Aug 2026, and it was wrong.** wcs measured
+their own server rather than re-citing this page, and it was listening on the IPv6
+*wildcard*:
+
+```
+./zonai serve --port 7717             ->  TCP *:7717 (LISTEN)      every IPv6 interface
+./zonai serve --port 7717 --host=::1  ->  TCP [::1]:7717 (LISTEN)  actually loopback
+```
+
+Reproduced here before believing it. `--host=::1` is now in every start command in this
+repo, including the one `llm_chat setup` runs, so the sentence above is true rather than
+intended.
+
+**It had no symptom, and could not have had one.** Every client reaches this over `[::1]`
+whether the bind is narrow or wide, so it looks identical from inside the machine — and
+IPv4 loopback being *refused* (zonai#16) makes it look narrower than it is, not wider.
+What kept it off the LAN was that neither host had a routable IPv6 address that afternoon.
+On a network that hands them out — plenty of home ISPs, most phone hotspots — the wide
+bind is exactly what it says, in front of a server with no auth.
+
+**If you are running a server started before this**, restart it. The flag only applies at
+bind time, and `./install.sh` does not restart anything:
+
+```bash
+lsof -nP -iTCP:7717 -sTCP:LISTEN     # NAME says *:7717 or [::1]:7717 — that is the answer
+```
+
+The general lesson is worth more than the flag. wcs found it while *correcting their own
+docs*, by measuring a property they had written down from ours, and this page had been
+reasoning from it for months: the room-security paragraph above, and a claim in their repo
+that nothing about the chat layer crosses between two people on two laptops. That
+conclusion happened to survive — separate machines run separate servers — but it did not
+survive *because* anyone had checked. **A borrowed claim is only correctable if somebody
+goes and looks.**
 
 ## Layout
 

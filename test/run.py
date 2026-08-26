@@ -269,7 +269,21 @@ def report_global_leaks(before):
 UNGUARDED = (os.path.join(".llm_chat", "probe"),
              os.path.join(".llm_chat", "wake."),
              os.path.join(".llm_chat", "slack-"),
-             os.path.join(".llm_chat", "maintenance."))
+             os.path.join(".llm_chat", "maintenance."),
+             # The delivery watermark, for the same reason as `wake.` above:
+             # the LIVE hooks write it, on essentially every tool call, and
+             # this suite takes a minute to run. Any message arriving in that
+             # minute changes it, and the check then reports the repo damaged
+             # and names a cause — "a test escaped its temp directory" — that
+             # is confidently wrong. Observed: a gate run in the background
+             # while its own author sent two chat messages.
+             #
+             # No test writes this path (they all build their own temp
+             # `.llm_chat/`), so nothing is being excused here — what is being
+             # removed is a file that CANNOT be stable while an agent is
+             # working in this checkout, which is the only condition under
+             # which anybody runs it.
+             os.path.join(".llm_chat", "delivered.json"))
 
 
 def guarded_paths():
@@ -329,7 +343,20 @@ def report_repo_damage(before, after):
     print("\nTHE SUITE MODIFIED THE REPO IT TESTS:", file=sys.stderr)
     for path in changed:
         print("  %s" % os.path.relpath(path, ROOT), file=sys.stderr)
-    print("  A test escaped its temp directory. Fix the test, not this check.",
+    # WHAT WAS OBSERVED, THEN THE TWO THINGS THAT CAUSE IT — because this used
+    # to assert the first one as fact. "A test escaped its temp directory. Fix
+    # the test, not this check." is a diagnosis, and the check has not made it:
+    # all it knows is that a hash moved while the suite was running. It was
+    # wrong the first time anybody ran the gate in the background and kept
+    # working, which is the ordinary way to run something that takes minutes.
+    #
+    # An instruction to go and fix a test that is not broken costs more than
+    # the false alarm: the reader either finds nothing and learns to distrust
+    # the check, or "fixes" a test that was correct.
+    print("  Either a test escaped its temp directory, or something outside "
+          "the suite\n  wrote here while it ran — a live hook, another agent, "
+          "or you, editing.\n  The check knows a hash moved; it does not know "
+          "which. Re-run it alone\n  before changing a test.",
           file=sys.stderr)
     return True
 

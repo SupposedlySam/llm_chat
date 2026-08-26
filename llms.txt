@@ -161,9 +161,8 @@ one checkout exists from another. If a workspace is not on the default port, its
 Three flags that exist and are easy to miss:
 
 - `--server <url>` on any command, when the server is not on the default port. It is read
-  from `LLM_CHAT_SERVER` too. Use `localhost`, never `127.0.0.1` — zonai binds `[::1]` only
-  on macOS, so the IPv4 address gives a connection refused against a server that is plainly
-  running.
+  from `LLM_CHAT_SERVER` too. Use `localhost`, never `127.0.0.1` — the IPv4 address gives a
+  connection refused against a server that is plainly running.
 - `--in-checkout` on `setup`, which is refused by default. Setting a repo up *inside* the
   llm_chat checkout gives two agents one identity, because identity is stored per calling
   project; the flag exists for testing llm_chat itself and nothing else.
@@ -634,8 +633,11 @@ the binary, everything else from pub.dev. Nothing here needs access granted.
 ```bash
 xattr -d com.apple.quarantine ./zonai   # macOS, or it exits 137 silently
 dart pub get && ./zonai compile && ./zonai db migrate apply
-./zonai serve --port 7717
+./zonai serve --port 7717 --host=::1
 ```
+
+`--host=::1` is not optional decoration: without it zonai binds the IPv6 wildcard, on a
+server with no authentication. See **Secrets** above.
 
 > **`./zonai compile` exits 0 when it fails.** It prints `Failed to compile rules:` with the
 > analyzer errors and then reports success. A server started afterwards has no rules worker,
@@ -649,16 +651,34 @@ breaking-change boundary from its own version, so bump all three or none.
 
 **Secrets are generated per install**, into `.zonai/data/secrets.json` (gitignored), on
 first boot — or taken from `LLM_CHAT_JWT_SECRET` / `LLM_CHAT_PASSWORD_SECRET`. They used to
-be literals in `lib/src/config/db_config.dart`. They guard nothing today (loopback only, no
+be literals in `lib/src/config/db_config.dart`. They guard nothing today (loopback, no
 accounts, every rule returns true) but a shared signing secret in a public repo is a
 searchable string, and the condition that makes it matter — listening on anything but
 loopback — will be met by somebody who never read that file.
 
+> **That condition was already met when this paragraph was written, and the paragraph is
+> why it is worth saying so.** Started without a bind address, zonai listens on the IPv6
+> *wildcard* rather than loopback — measured by wcs on their machine and reproduced here:
+>
+> ```
+> ./zonai serve --port 7717             ->  TCP *:7717 (LISTEN)
+> ./zonai serve --port 7717 --host=::1  ->  TCP [::1]:7717 (LISTEN)
+> ```
+>
+> Every start command in this repo now passes `--host=::1`. The sentence above was written
+> to warn about a future somebody else would bring about; the fact was already true, in
+> this checkout, at the time of writing. **A condition you describe as future is one you
+> have not measured.** Restart any server started before 26 Aug 2026 — the flag applies
+> at bind time and `install.sh` does not restart anything.
+
 ### What will bite you
 
-**Use `localhost`, never `127.0.0.1`.** zonai binds `[::1]` only on macOS
-(https://github.com/mrgnhnt96/zonai/issues/16). IPv4 loopback refuses the connection while
-the server prints `Serving at ...` and looks healthy.
+**Use `localhost`, never `127.0.0.1`.** IPv4 loopback refuses the connection while the
+server prints `Serving at ...` and looks healthy
+(https://github.com/mrgnhnt96/zonai/issues/16). This used to say "zonai binds `[::1]`
+only" — the instruction was right and the reason was false; the bind is the IPv6 wildcard
+unless you pass `--host=::1`. Right instruction, wrong reason, and the wrong reason was
+load-bearing elsewhere.
 
 **A table with table-rules and no row-rules fails at runtime** with *"Rules exist for X but
 there are no row-level rules"*. Scaffold the pair together.

@@ -226,9 +226,22 @@ class RepoDamageTest(unittest.TestCase):
         waker = load("llm-chat-wake")
         bridge = load("bin/llm-chat-slack")
         cli = load("llm_chat")
+        # THE DELIVERY HOOK WAS NOT ON THIS LIST, and that is how its
+        # watermark got past a test whose docstring promises the set is
+        # derived from the processes rather than remembered. It IS derived —
+        # from three processes, in a repo that has four that write here. The
+        # list that aged was the list of writers, not the list of paths, so
+        # every guarantee above held and the gap was one import wide.
+        #
+        # It cost a failed gate weeks later: `delivered.json` is rewritten on
+        # essentially every tool call, the suite takes a minute, and the check
+        # reported the repo damaged by a test while naming a file no test
+        # touches.
+        deliver = load("bin/llm-chat-deliver")
 
         live = [waker.PID_PATH, waker.EXIT_PATH, waker.ALIVE_PATH,
                 waker.REWAKE_PATH, waker.LANDED_PATH,
+                deliver.WATERMARK,
                 bridge.CURSOR, bridge.THREADS, bridge.REPLIES, bridge.ASKED,
                 os.path.join(bridge.STATE, "slack-inbound.txt"),
                 cli.maintenance_path(gate.ROOT),

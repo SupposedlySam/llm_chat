@@ -2663,6 +2663,9 @@ NOT_SWEPT = {
     "bin/llm_chat:checkout_dirty": "dirty, clean, not-a-checkout, no-git and "
         "a tree that is not its OWN checkout asserted directly — UNKNOWN must "
         "not read as clean, and a copy's enclosing repo must not read as it",
+    "bin/llm_chat:serve_command": "the bind flag and the port asserted "
+        "directly, plus a scan proving no doc or script spells the command "
+        "without a bind — the prose copies are where the wide one survived",
     "bin/llm_chat:own_checkout": "own, copy, no-repo and symlinked-own "
         "asserted directly against REAL git, because the defect it exists for "
         "was what git actually answers and no stub could have caught it",
