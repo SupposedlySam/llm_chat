@@ -2785,9 +2785,23 @@ def _render(server, name, identity, fetched, all_messages, as_json,
         arrow = f" → {to}" if to else ""
         print(f"[{m['from_identity']}{mark}{arrow}] {m['text']}")
 
-    chan = get_channel(server, name)
-    if chan and chan.get("closed"):
-        print(f"({name} is closed — {chan.get('closed_reason') or 'no reason given'})")
+    # THE SAME ROOM, ALREADY FETCHED 26 LINES UP. This was a second
+    # `get_channel(server, name)` — byte-identical filtered query, same
+    # arguments, no write in between — so every `read` cost four requests
+    # where three would do. It is the hottest verb in the system: the delivery
+    # hook runs one `read` PER JOINED ROOM after EVERY tool call, in every
+    # live session, so a quarter of that traffic was asking a question it had
+    # just had answered.
+    #
+    # DELIBERATELY NOT A MEMO ON `get_channel`. A per-invocation cache would
+    # fix this site and every other one, and it would also serve a stale room
+    # to the paths that WRITE a channel and read it back — `join` creating
+    # then reading, `say` bumping message_count. Trading four requests for a
+    # cache-coherence bug on the write paths is a bad trade, and the local
+    # fix costs one line.
+    if chan_for_mark and chan_for_mark.get("closed"):
+        print(f"({name} is closed — "
+              f"{chan_for_mark.get('closed_reason') or 'no reason given'})")
 
     commit_cursor()
     return waiting

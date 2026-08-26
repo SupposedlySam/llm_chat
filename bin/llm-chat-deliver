@@ -511,6 +511,115 @@ def addressed_to_me(message, identity):
     return identity in audience.split(",")
 
 
+WATERMARK = os.path.join(PROJECT, ".llm_chat", "delivered.json")
+
+
+def read_watermarks():
+    """{channel: message_count as of the last successful read}, or {}."""
+    try:
+        with open(WATERMARK) as f:
+            found = json.load(f)
+        return found if isinstance(found, dict) else {}
+    except (OSError, ValueError):
+        return {}                      # unreadable is not "nothing new"
+
+
+def note_delivered(channel, count):
+    """Record a room's count ONLY after its read actually succeeded.
+
+    Written after, never before. A watermark advanced on an attempt would
+    make the next tick skip a room whose messages were never shown — the
+    cursor-before-print bug this file already carries a scar from, moved one
+    level out.
+    """
+    # NO "SKIP IF UNCHANGED" SHORTCUT HERE. There was one, and it saved a
+    # write of a file this function has already read — while adding a branch
+    # whose only effect is I/O, so nothing could assert it and the coverage
+    # floor reported the line as never executed. An unassertable guard reads
+    # as a defended one, which this repo has now paid for twice. The write is
+    # idempotent; let it happen.
+    marks = read_watermarks()
+    marks[channel] = count
+    try:
+        os.makedirs(os.path.dirname(WATERMARK), exist_ok=True)
+        tmp = WATERMARK + ".%d.tmp" % os.getpid()
+        with open(tmp, "w") as f:
+            json.dump(marks, f)
+        os.replace(tmp, WATERMARK)
+    except OSError:
+        pass          # an unwritable hint costs a redundant read, nothing more
+
+
+def rooms_that_cannot_have_anything(joined):
+    """Rooms provably unchanged since we last read them. EMPTY when unsure.
+
+    WHAT THIS IS FOR, measured before it was written: `llm-chat-deliver` runs
+    after EVERY tool call, and it was spawning one full `llm_chat read`
+    SUBPROCESS PER JOINED ROOM — a fresh Python interpreter and 3 requests
+    each — whether or not that room had anything new. Steady state is that
+    none of them do. With R rooms and N live sessions the machine paid
+    3·R·N requests and R·N process spawns per tool-call tick, which is the
+    load the 429s appear under.
+
+    This replaces that with ONE `channels` call: it carries `message_count`
+    per room, and a room whose count has not moved since the last SUCCESSFUL
+    read cannot be holding anything for us. For three rooms the tick goes
+    from 3 subprocesses and 9 requests to 1 subprocess and 2.
+
+    IT FAILS OPEN, EVERYWHERE, and that is the only property that makes it
+    safe to have at all. A pre-check that wrongly says "nothing new" does not
+    delay a message, it DROPS it silently — the worst failure this system
+    has, and the one every other guard here is written against. So: the
+    listing failing, timing out, not parsing, not being a list, a room being
+    absent from it, a count that is not an integer, or no watermark yet — all
+    of them yield "I cannot rule this room out", and the full read happens.
+    The set returned is what is PROVABLY quiet, never what is merely
+    unpromising.
+
+
+    WHAT IT MISSES, stated rather than implied: it compares COUNTS. A room
+    that gained and lost a message between two ticks would look unchanged.
+    Nothing in llm_chat deletes an individual message — only `delete`, which
+    destroys the whole room — so that state is not reachable today, and this
+    line is what would need revisiting if it ever becomes reachable.
+
+    RETURNS BOTH the provably-quiet set and the counts it had to fetch to
+    decide, because the caller needs those counts to record what it saw. A
+    read returns the messages PAST your cursor, so an empty one cannot tell
+    you the room's total — and the total is exactly what the next tick
+    compares against. Fetching it twice to keep the signature tidy would give
+    back a third of what this change saves.
+    """
+    servers = {e.get("server") for e in joined.values() if e.get("server")}
+    if len(servers) != 1:
+        # Rooms split across servers would need one listing each. Rare enough
+        # that paying the old cost is better than a second round trip.
+        return set(), {}
+    try:
+        done = subprocess.run(
+            [sys.executable, CLI, "--server", servers.pop(), "channels",
+             "--json"],
+            capture_output=True, text=True, timeout=8,
+        )
+        if done.returncode != 0:
+            return set(), {}
+        listing = json.loads(done.stdout or "[]")
+    except Exception:
+        return set(), {}
+    if not isinstance(listing, list):
+        return set(), {}
+    counts = {}
+    for row in listing:
+        if isinstance(row, dict) and isinstance(row.get("message_count"), int):
+            counts[row.get("name")] = row["message_count"]
+    marks = read_watermarks()
+    quiet = set()
+    for channel in joined:
+        if channel in counts and marks.get(channel) == counts[channel]:
+            quiet.add(channel)
+    return quiet, counts
+
+
 def render_channel(channel, identity, waiting):
     """Full text for what was addressed to you; one line for the rest.
 
@@ -619,11 +728,17 @@ def main() -> int:
                 "run `llm_chat doctor`."}}))
         return 0
 
+    quiet, counts = rooms_that_cannot_have_anything(joined)
+
     blocks = []
     for channel, entry in joined.items():
         identity = entry.get("identity")
         server = entry.get("server")
         if not identity or not server:
+            continue
+        # THE WHOLE POINT OF THE PRE-CHECK. Skipping here costs no subprocess
+        # and no requests; `quiet` is empty whenever anything was uncertain.
+        if channel in quiet:
             continue
         try:
             out = subprocess.run(
@@ -648,6 +763,25 @@ def main() -> int:
             waiting = json.loads(out or "[]")
         except ValueError:
             continue          # could not read is not "nothing waiting"
+        # AFTER the read returned, and only then. `waiting` is what this read
+        # consumed, so the room's count as we now know it is what we have
+        # actually seen. An empty read is still a successful one — that is
+        # precisely the case worth recording, because it is the case that
+        # lets the next tick skip the room.
+        # ONLY WHEN THE TOTAL IS KNOWN. If the listing did not name this room
+        # — it failed, or the room is new — no watermark is written, so the
+        # next tick reads it again.
+        #
+        # BELT AND BRACES, not load-bearing, and measured as such: mutating
+        # this to `note_delivered(channel, counts.get(channel))` SURVIVED. It
+        # cannot matter, because the pre-check already requires `channel in
+        # counts` before comparing — a None written here could never produce
+        # a wrong skip. It stays because writing null into a state file is
+        # noise, and it carries no mutation because there is nothing to
+        # defend. Claiming otherwise would be the overclaim this repo keeps
+        # finding in its own exclusion list.
+        if channel in counts:
+            note_delivered(channel, counts[channel])
         if not waiting:
             continue
         blocks.append(render_channel(channel, identity,

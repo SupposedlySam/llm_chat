@@ -30,20 +30,40 @@ class FakeSubprocess:
     real one alone.
     """
 
-    def __init__(self, *outputs):
-        self.run = Stub(*outputs)
+    def __init__(self, *outputs, channels=None):
+        self.run = Stub(*outputs, channels=channels)
 
 
 class Stub:
     """Stands in for subprocess.run, returning canned CLI output."""
 
-    def __init__(self, *outputs):
+    def __init__(self, *outputs, channels=None):
         self.outputs = list(outputs)
         self.calls = []
+        # OPT-IN, and None means "answer from the queue like everything else".
+        # The wake tests FEED a channels listing to `still_worth_listening`,
+        # so intercepting by default would steal exactly the reply they were
+        # setting up — which it did, and that failure is why this is a
+        # parameter rather than a rule.
+        self.channels = channels
 
     def __call__(self, argv, **kwargs):
         self.calls.append(argv)
-        out = self.outputs.pop(0) if self.outputs else ""
+        # ANSWER BY COMMAND, NOT BY POSITION, for the one command that would
+        # otherwise steal somebody else's canned reply. The queue is
+        # positional: the Nth subprocess gets the Nth output. That held while
+        # delivery's only child was `read`, and broke the moment it gained a
+        # cheap `channels` pre-check in front — every test's messages went to
+        # the pre-check and the reads got "".
+        #
+        # A fixture keyed to CALL ORDER is an unwritten assertion that nobody
+        # ever adds a call before yours (auditor's rule, in a test rather than
+        # in a report). `channels` answers as itself; everything else keeps
+        # the queue, so the existing tests still say what they said.
+        if self.channels is not None and "channels" in argv:
+            out = self.channels
+        else:
+            out = self.outputs.pop(0) if self.outputs else ""
 
         class Result:
             stdout = out
@@ -136,8 +156,15 @@ class DeliverTest(HookTestCase):
         self.joined(room="me")
         self.mod.subprocess = FakeSubprocess(json.dumps(
             [{"seq": 1, "from": "other", "text": "hello there",
-              "audience": "me", "mine": False}]))
+              "audience": "me", "mine": False}]), channels="[]")
         _, out = self.run_hook()
+        # ASSERTED BEFORE PARSING. `json.loads("")` RAISES, and unittest
+        # scores a raise as an ERROR — so when a change made delivery drop
+        # this message the sweep could only report "crashed, not measured"
+        # and the assertions below never ran. A dropped delivery is exactly
+        # what this test exists to catch, so it has to FAIL on one.
+        self.assertTrue(out, "delivery produced nothing — a waiting message "
+                             "was dropped")
         payload = json.loads(out)
         context = payload["hookSpecificOutput"]["additionalContext"]
         self.assertEqual(payload["hookSpecificOutput"]["hookEventName"],
@@ -163,8 +190,11 @@ class DeliverTest(HookTestCase):
         self.mod.subprocess = FakeSubprocess()
         self.mod.subprocess.run = stub
         self.run_hook()
-        argv, = stub.calls
-        self.assertIn("read", argv)
+        # THE READ CALL, SELECTED BY NAME. This was `argv, = stub.calls`, an
+        # unwritten assertion that delivery spawns exactly one child and that
+        # it is the read — which stopped being true the moment a cheap
+        # `channels` pre-check went in front of the fan-out.
+        argv, = [a for a in stub.calls if "read" in a]
         self.assertNotIn("--all", argv,
                          "--all disables the self-filter; the hook must never "
                          "ask for the transcript")
@@ -182,12 +212,177 @@ class DeliverTest(HookTestCase):
         self.mod.subprocess.run = stub
         self.run_hook()
         pairs = {argv[argv.index("read") + 1]: argv[argv.index("--as") + 1]
-                 for argv in stub.calls}
+                 for argv in stub.calls if "read" in argv}
         self.assertEqual(pairs, {"alpha": "me", "beta": "someone-else"})
+
+    def listing(self, **counts):
+        return json.dumps([{"name": n, "message_count": c}
+                           for n, c in counts.items()])
+
+    def marks(self, **counts):
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "delivered.json"), "w") as f:
+            json.dump(counts, f)
+
+    def quiet_for(self, joined=None):
+        return self.mod.rooms_that_cannot_have_anything(
+            joined or {"room": {"identity": "me",
+                                "server": "http://127.0.0.1:1"}})
+
+    def test_A_ROOM_WHOSE_COUNT_HAS_NOT_MOVED_IS_NOT_READ(self):
+        """The whole change. `llm-chat-deliver` runs after EVERY tool call and
+        was spawning one full `read` subprocess per joined room — a fresh
+        Python interpreter and three requests each — whether or not that room
+        had anything new. Steady state is that none of them do.
+
+        Measured before it was written: with R rooms and N live sessions the
+        machine paid 3·R·N requests and R·N spawns per tick, which is the load
+        the 429s appear under.
+        """
+        self.joined(room="me")
+        self.marks(room=7)
+        stub = Stub(channels=self.listing(room=7))
+        self.mod.subprocess = FakeSubprocess()
+        self.mod.subprocess.run = stub
+        _, out = self.run_hook()
+        self.assertEqual(out, "")
+        self.assertEqual([a for a in stub.calls if "read" in a], [],
+                         "an unchanged room still cost a read")
+
+    def test_a_room_whose_count_HAS_moved_is_read(self):
+        """Paired, and the half that makes the test above mean anything: a
+        pre-check that skips everything is not an optimisation, it is a
+        silent outage."""
+        self.joined(room="me")
+        self.marks(room=7)
+        stub = Stub(json.dumps([{"seq": 8, "from": "other", "text": "new one",
+                                 "audience": "me", "mine": False}]),
+                    channels=self.listing(room=8))
+        self.mod.subprocess = FakeSubprocess()
+        self.mod.subprocess.run = stub
+        _, out = self.run_hook()
+        self.assertIn("new one", out)
+
+    def test_AN_UNREADABLE_LISTING_RULES_NOTHING_OUT(self):
+        """Fail open, which is the only property that makes this safe to have.
+        A pre-check that wrongly says "nothing new" does not delay a message,
+        it DROPS it — silently, forever, with the sender watching delivery
+        succeed."""
+        self.marks(room=7)
+        for broken in ("", "{not json", '{"not": "a list"}', "[]"):
+            with self.subTest(listing=broken):
+                self.mod.subprocess = FakeSubprocess(channels=broken)
+                quiet, counts = self.quiet_for()
+                self.assertEqual(quiet, set())
+
+    def test_a_LISTING_THAT_FAILED_rules_nothing_out(self):
+        """Exit code read, not just stdout. A CLI that printed nothing and
+        failed looks identical to one that printed nothing and succeeded."""
+        self.marks(room=7)
+
+        # THE STDOUT MUST BE BELIEVABLE, or the test passes either way. It
+        # first returned "[]" with exit 1 — and an empty listing rules nothing
+        # out on its own, so deleting the exit-code check changed no answer
+        # and the mutation SURVIVED. The failing call now prints a listing
+        # that WOULD rule the room quiet if anyone trusted it.
+        listing = self.listing(room=7)
+
+        class Failing:
+            @staticmethod
+            def run(argv, **kw):
+                return type("R", (), {"stdout": listing, "stderr": "",
+                                      "returncode": 1})()
+        self.mod.subprocess = Failing
+        self.assertEqual(self.quiet_for()[0], set(),
+                         "a listing from a FAILED call was trusted")
+
+    def test_a_LISTING_THAT_RAISED_rules_nothing_out(self):
+        def explode(*a, **kw):
+            raise OSError("down")
+        self.mod.subprocess = type("M", (), {"run": staticmethod(explode)})
+        self.marks(room=7)
+        self.assertEqual(self.quiet_for()[0], set())
+
+    def test_a_room_ABSENT_from_the_listing_is_not_ruled_out(self):
+        """A room the server did not mention is a room we know nothing about
+        — which is not the same as a room with nothing in it."""
+        self.marks(room=7)
+        self.mod.subprocess = FakeSubprocess(
+            channels=self.listing(somewhere_else=3))
+        self.assertEqual(self.quiet_for()[0], set())
+
+    def test_a_NON_INTEGER_count_is_not_ruled_out(self):
+        self.marks(room=7)
+        self.mod.subprocess = FakeSubprocess(
+            channels=json.dumps([{"name": "room", "message_count": "7"}]))
+        self.assertEqual(self.quiet_for()[0], set())
+
+    def test_rooms_on_TWO_SERVERS_skip_the_pre_check_entirely(self):
+        """One listing answers for one server. Two would need two round
+        trips, which is most of what this saves."""
+        self.marks(a=1, b=1)
+        self.mod.subprocess = FakeSubprocess(channels=self.listing(a=1, b=1))
+        quiet, counts = self.quiet_for({
+            "a": {"identity": "me", "server": "http://one:1"},
+            "b": {"identity": "me", "server": "http://two:2"}})
+        self.assertEqual((quiet, counts), (set(), {}))
+
+    def test_NO_WATERMARK_YET_rules_nothing_out(self):
+        """First run in a checkout. Nothing to compare against is not
+        evidence of quiet."""
+        self.mod.subprocess = FakeSubprocess(channels=self.listing(room=7))
+        self.assertEqual(self.quiet_for()[0], set())
+
+    def test_an_unreadable_watermark_file_rules_nothing_out(self):
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "delivered.json"), "w") as f:
+            f.write("{not json")
+        self.assertEqual(self.mod.read_watermarks(), {})
+        self.mod.subprocess = FakeSubprocess(channels=self.listing(room=7))
+        self.assertEqual(self.quiet_for()[0], set())
+
+    def test_the_watermark_is_written_only_AFTER_a_read(self):
+        """Recorded from what the read actually returned to, never from the
+        attempt. A watermark advanced on an attempt makes the next tick skip
+        a room whose messages were never shown — the cursor-before-print bug
+        this file already carries a scar from, one level out."""
+        self.joined(room="me")
+        self.mod.subprocess = FakeSubprocess(
+            "[]", channels=self.listing(room=4))
+        self.run_hook()
+        self.assertEqual(self.mod.read_watermarks(), {"room": 4})
+
+    def test_a_read_that_FAILED_leaves_the_watermark_alone(self):
+        """So the next tick tries again rather than skipping a room it never
+        managed to look at."""
+        self.joined(room="me")
+
+        def explode(argv, **kw):
+            if "channels" in argv:
+                return type("R", (), {"stdout": self.listing(room=4),
+                                      "stderr": "", "returncode": 0})()
+            raise OSError("down")
+        self.mod.subprocess = type("M", (), {"run": staticmethod(explode)})
+        self.run_hook()
+        self.assertEqual(self.mod.read_watermarks(), {},
+                         "a room that could not be read was marked as seen")
+
+    def test_an_unwritable_watermark_costs_a_read_not_a_crash(self):
+        """A hook that dies takes the turn with it. The hint is an
+        optimisation; losing it is allowed, losing the turn is not."""
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        # A directory where the file goes: every write raises, nothing else.
+        os.makedirs(os.path.join(d, "delivered.json"), exist_ok=True)
+        self.mod.note_delivered("room", 3)
+        self.assertEqual(self.mod.read_watermarks(), {})
 
     def test_nothing_new_is_not_a_delivery(self):
         self.joined(room="me")
-        self.mod.subprocess = FakeSubprocess("nothing new in room")
+        self.mod.subprocess = FakeSubprocess("nothing new in room",
+                                             channels="[]")
         code, out = self.run_hook()
         self.assertEqual(out, "")
 
@@ -205,8 +400,10 @@ class DeliverTest(HookTestCase):
         many = json.dumps([{"seq": i, "from": "other",
                             "text": "line %d" % i, "audience": "me",
                             "mine": False} for i in range(50)])
-        self.mod.subprocess = FakeSubprocess(many)
+        self.mod.subprocess = FakeSubprocess(many, channels="[]")
         _, out = self.run_hook()
+        self.assertTrue(out, "delivery produced nothing — the capped "
+                             "messages were dropped, not capped")
         context = json.loads(out)["hookSpecificOutput"]["additionalContext"]
         # MATCH THE MESSAGE BODIES, NOT ANY LINE MENTIONING THEM. This read
         # `"line " in l` over the WHOLE context, header included, so the count
@@ -250,7 +447,8 @@ class DeliverTest(HookTestCase):
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "installed.json"), "w") as f:
             json.dump({"fingerprint": "0000000000000000"}, f)
-        self.mod.subprocess = FakeSubprocess("ffffffffffffffff")
+        self.mod.subprocess = FakeSubprocess("ffffffffffffffff",
+                                             channels="[]")
         _, out = self.run_hook('{"session_id": "s1"}')
         self.assertIn("hook scripts changed", out)
         self.assertIn("0000000000000000", out)
@@ -263,7 +461,8 @@ class DeliverTest(HookTestCase):
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "installed.json"), "w") as f:
             json.dump({"fingerprint": "abcdef0123456789"}, f)
-        self.mod.subprocess = FakeSubprocess("abcdef0123456789")
+        self.mod.subprocess = FakeSubprocess("abcdef0123456789",
+                                             channels="[]")
         _, out = self.run_hook('{"session_id": "s1"}')
         self.assertEqual(out, "")
 
