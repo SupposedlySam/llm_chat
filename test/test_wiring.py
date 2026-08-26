@@ -706,12 +706,34 @@ class EveryTriggerIsCLASSIFIEDTest(unittest.TestCase):
                               {"known": "claude-hook"}),
             ["nobody-decided"])
 
-    @staticmethod
-    def counted_in_prose(text):
-        """Hard-coded counts of things this repo GROWS. A function, so it can
-        be asked about text this repo does not contain."""
-        return re.findall(r"\b\d[\d,]*\s+(?:tests?|mutations?|entrypoints?)\b",
-                          text)
+    # SPELLED OUT COUNTS TOO, and `one` deliberately absent. In prose "one"
+    # is the indefinite article wearing a numeral — "the one test file every
+    # change touches" means a single file, not a count that will rot.
+    # showrunner measured two false positives from including it.
+    WORD_COUNT = ("two|three|four|five|six|seven|eight|nine|ten|eleven|"
+                  "twelve|dozen|hundreds?|thousands?")
+    GROWS = "tests?|mutations?|entrypoints?|triggers?|assertions?"
+
+    @classmethod
+    def counted_in_prose(cls, text):
+        """Hard-coded counts of things this repo GROWS.
+
+        DIGITS AND WORDS. The first version was digits-only: it caught "242
+        tests" and missed "the four entrypoints" sitting two lines away, which
+        I then fixed BY HAND in the same edit. A check that misses the case
+        beside the one it caught is the enumeration defect living inside the
+        guard against stale claims — showrunner hit the identical thing from
+        their side the same morning.
+
+        A function, so it can be asked about text this repo does not contain,
+        and so the word case could be proved to FAIL against the old pattern
+        before it passed against this one. showrunner's widening looked
+        correct because they had written `or "four" in phrase` into the
+        assertion — the check agreeing for a reason unrelated to its claim,
+        inside the test for a check about exactly that.
+        """
+        pattern = r"\b(?:\d[\d,]*|%s)\s+(?:%s)\b" % (cls.WORD_COUNT, cls.GROWS)
+        return re.findall(pattern, text, re.I)
 
     def test_THE_DOCS_DO_NOT_COUNT_A_GROWING_SET(self):
         """A count in prose beside a set that grows is the reliable offender.
@@ -761,6 +783,58 @@ class EveryTriggerIsCLASSIFIEDTest(unittest.TestCase):
         self.assertEqual(
             self.counted_in_prose("100% line coverage, ratcheted at --min 100"),
             [], "a property with a number in it is not a count of a growing set")
+
+    def test_a_count_SPELLED_OUT_is_caught_too(self):
+        """The case the first version missed while catching its neighbour.
+
+        `242 tests` was found by the check; `the four entrypoints`, two lines
+        away in the same file, was found by me reading it. Both were wrong,
+        both rot the same way, and only one of them had a guard.
+        """
+        self.assertEqual(
+            self.counted_in_prose("coverage on the four entrypoints"),
+            ["four entrypoints"])
+        self.assertEqual(self.counted_in_prose("THREE TRIGGERS are wired"),
+                         ["THREE TRIGGERS"])
+
+    def test_THE_DELETED_SENTENCE_IS_ITS_OWN_FIXTURE(self):
+        """README quotes the claim it removed, and that quote carries BOTH
+        forms — `242 tests` and `four entrypoints`. So the widening is proved
+        against real text in this repo rather than a synthetic string, and the
+        blockquote exclusion is proved to be what keeps the live scan quiet
+        rather than the pattern simply missing them.
+
+        Two things fail together if either half breaks: a narrowed pattern
+        stops finding the word form here, and a dropped blockquote rule makes
+        the live check fire on a sentence the doc is explicitly not claiming.
+        """
+        with open(os.path.join(mutate.ROOT, "README.md")) as f:
+            text = f.read()
+        quoted = "\n".join(line for line in text.splitlines()
+                           if line.lstrip().startswith(">"))
+        found = [" ".join(hit.split()).lower()
+                 for hit in self.counted_in_prose(quoted)]
+        self.assertIn("242 tests", found)
+        self.assertIn("four entrypoints", found,
+                      "the spelled-out form is the one the first version "
+                      "missed — if it is absent here the widening is undone")
+
+    def test_ONE_is_not_a_count(self):
+        """In prose it is the indefinite article wearing a numeral, and it
+        does not rot: "the one test file every change touches" means a single
+        file, and stays true however many tests are added. showrunner
+        measured two false positives from including it."""
+        self.assertEqual(
+            self.counted_in_prose("the one test file every change touches"),
+            [])
+
+    def test_a_count_ACROSS_A_LINE_BREAK_is_still_a_count(self):
+        """`205 tests` was invisible to the eye AND to a line-by-line scan
+        because prose wrapped between the number and the noun. The whole file
+        is matched, so a wrap changes nothing."""
+        self.assertEqual(
+            self.counted_in_prose("leaves all 205\ntests green"),
+            ["205\ntests"])
 
     def test_BOTH_DOCS_SAY_WHICH_BUILD_TO_RUN(self):
         """`doctor` already warns when it is the wrong build — and an OLD copy
