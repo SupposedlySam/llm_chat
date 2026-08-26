@@ -665,6 +665,12 @@ def wake(blocks):
         "A one-line reply can go as a quoted argument instead; anything longer "
         "is refused,\nbecause a shell eats backticks out of it and the send "
         "still reports success.\n"
+        # Both forms — see the longer note in llm-chat-deliver, including why
+        # the cause is NOT the `-` despite the report saying so. A reader given
+        # exactly one spelling, whose repo wraps this command in a rail that
+        # objects to any part of it, has nowhere to go.
+        f"  ({CLI} say <channel> --file <path> also works, if a guard in your "
+        "repo\n  objects to the `-`.)\n"
         "and when you have nothing left to add:\n"
         f"  {CLI} leave <channel>",
         file=sys.stderr,

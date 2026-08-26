@@ -3197,8 +3197,34 @@ def checkout_dirty(root=None):
     Three instances of one shape in a day, per their report: the thing you
     RECORD and the thing you ACT ON come from different places, and nothing
     checks they agree. This is the two-line version of checking.
+
+    AND IT ONLY ANSWERS FOR A TREE THAT IS ITS OWN CHECKOUT, which the two
+    lines above did not check and were wrong about for every vendored
+    consumer. `git -C <dir>` walks UP until it finds a `.git`, so a copy with
+    none — the normal shape for a vendored payload — is answered by whatever
+    repo it happens to be sitting inside. Reproduced before believing it:
+
+        git -C <vendored-copy> status --porcelain
+          ->  M tracked.txt        <- not even inside that tree
+              ?? .lamp/
+          rc=0                     <- a CONFIDENT answer about someone else
+
+    Right command, wrong namespace, and rc=0 makes it indistinguishable from
+    a real answer. Reported by wcs, whose hooks run from `.lamp/llm_chat`:
+    doctor told them the payload serving their session was unblessed, using
+    thirteen dirty files belonging to their own project as the evidence. It
+    fires hardest at the worst moment — they were dirty precisely BECAUSE
+    they had just vendored a fresh copy.
+
+    Same defect game_loop's owner fixed in install.sh, and they named the
+    remedy: ask whether the tree is its OWN checkout first.
     """
     root = root or ROOT
+    if own_checkout(root) is not True:
+        # Not ours to answer for. NOT "clean" — the caller must be able to
+        # tell "I looked and it is fine" from "I cannot see this tree", and
+        # collapsing those is how the wrong warning got printed confidently.
+        return None
     try:
         done = subprocess.run(["git", "-C", root, "status", "--porcelain"],
                               capture_output=True, text=True, timeout=10)
@@ -3207,6 +3233,32 @@ def checkout_dirty(root=None):
     if done.returncode != 0:
         return None      # not a checkout, or no git — an unknown, not a "no"
     return bool(done.stdout.strip())
+
+
+def own_checkout(root=None):
+    """Is `root` the ROOT of a git checkout, or a copy inside someone else's?
+
+    True, False, or None when git cannot say at all (not installed, or the
+    directory is under no repository). False is the interesting one: git
+    answered, and answered about a DIFFERENT tree than the one asked about.
+
+    Compared through `realpath` on both sides because a checkout reached via
+    a symlink — /tmp on macOS is the everyday case, and the test fixtures for
+    this live there — makes two spellings of one directory compare unequal,
+    which would report every such tree as somebody else's copy.
+    """
+    root = root or ROOT
+    try:
+        done = subprocess.run(["git", "-C", root, "rev-parse", "--show-toplevel"],
+                              capture_output=True, text=True, timeout=10)
+    except Exception:
+        return None
+    if done.returncode != 0:
+        return None
+    top = done.stdout.strip()
+    if not top:
+        return None
+    return os.path.realpath(top) == os.path.realpath(root)
 
 
 def installed_checkout(project):
@@ -4584,6 +4636,26 @@ def do_doctor(server):
               "this checkout,\n  and it is why the sweep runs in copies. "
               "Worth knowing before you trust a\n  green check about the "
               "code you are standing on.")
+    # THE OTHER HALF OF wcs's REPORT, and the more expensive half. Teaching
+    # `checkout_dirty` to refuse a tree it cannot see stops the false alarm,
+    # and leaves this population with NO line at all — which reads as "looked,
+    # nothing to say" when the truth is "could not look". That is the same
+    # collapse one level up, and it is the one that leaves nobody any wiser:
+    # a consumer who checks finds their source clean and concludes the
+    # diagnostic is broken (right, by luck), and one who does not treats a
+    # blessed payload as unblessed.
+    #
+    # So say which tree answered. A vendored copy carries no `.git`, so every
+    # git question asked from inside it is answered by the project it was
+    # dropped into — and that project being dirty says nothing whatever about
+    # the payload.
+    elif direct and own_checkout(source) is False:
+        print("\nthese hooks run from a COPY, not from a checkout — so this "
+              "report cannot tell\n  you whether the code serving you is "
+              "committed anywhere. git answers about\n  the project the copy "
+              "was dropped into, and that project's dirtiness is not\n  the "
+              "payload's. Whatever vendored it is the thing that recorded "
+              "which version\n  this is.")
 
     shadowed = shadowed_project_rooms(project)
     if shadowed:

@@ -74,6 +74,22 @@ def commands(paths):
             continue
 
 
+# THE SHAPE THIS TOOL READS THE WORLD THROUGH, asserted rather than assumed.
+#
+# `commands()` believes Bash invocations arrive as content blocks with
+# name == "Bash" and input.command. If the harness renames either field, every
+# count here goes to zero and the tool prints a spotless table: 0 commands, 0
+# truncating, 0 MISSED. A clean bill from an instrument that saw nothing, which
+# is the exact reading this file exists to refuse.
+#
+# auditor and showrunner both landed on floors for this in their own scanners
+# the same day, and wcs named the half neither of us had: assert the behaviour
+# of the WORLD you depend on, so a change out there produces news rather than
+# a quietly perfect result. A floor says "the shape moved" as a guess. Reading
+# a known-good corpus and finding nothing says which shape, and says it here.
+FLOOR = 200                     # any real session of this project clears this
+
+
 def main(argv):
     paths = argv[1:] or sorted(glob.glob(os.path.expanduser(
         "~/.claude/projects/-Users-supposedlysam-dev-llm-chat/*.jsonl")))
@@ -114,6 +130,15 @@ def main(argv):
             else:
                 benign += 1
 
+    if total < FLOOR:
+        print("CANNOT REPORT — %d transcript(s) read, %d Bash commands found, "
+              "floor is %d." % (len(paths), total, FLOOR))
+        print("  Every number below would be a statement about THIS TOOL, not "
+              "about the guard.\n  `commands()` looks for content blocks with "
+              "name == 'Bash' and input.command;\n  if the transcript format "
+              "moved, that yields nothing and the table reads\n  spotless. "
+              "Zero misses out of zero commands is not a measurement.")
+        return 4                 # INDETERMINATE, per this repo's exit ladder
     print("transcripts read            %d" % len(paths))
     print("Bash commands               %d" % total)
     print("  piping into head/tail     %d" % truncating)

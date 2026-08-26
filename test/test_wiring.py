@@ -395,11 +395,32 @@ class DirtyCheckoutTest(unittest.TestCase):
         cli.subprocess.run = self.real
 
     def answer(self, stdout, returncode=0):
+        """Canned `status` output, with `rev-parse` answered SEPARATELY.
+
+        It used to be one blanket lambda returning the same object to every
+        call. That was invisible until `checkout_dirty` grew a second question
+        — and then the stub handed `rev-parse --show-toplevel` a reply of
+        " M bin/llm-chat-wake", which is not a path, so every one of these
+        tests failed on a function that was working.
+
+        The same shape as the Stub that answered by call order in
+        test_hooks.py: a fixture keyed on WHEN it was asked rather than WHAT
+        it was asked cannot survive its subject learning a new question, and
+        cannot catch a bug about which question got asked. That is why the
+        real-git fixture below exists as well — no stub of any keying could
+        have caught wcs's report, because the defect WAS what git says.
+        """
         class Done:
             pass
-        done = Done()
-        done.stdout, done.returncode = stdout, returncode
-        cli.subprocess.run = lambda *a, **kw: done
+
+        def dispatch(argv, *a, **kw):
+            done = Done()
+            if "rev-parse" in argv:
+                done.stdout, done.returncode = "/somewhere\n", 0
+            else:
+                done.stdout, done.returncode = stdout, returncode
+            return done
+        cli.subprocess.run = dispatch
         return cli.checkout_dirty("/somewhere")
 
     def test_uncommitted_changes_are_dirty(self):
@@ -421,6 +442,167 @@ class DirtyCheckoutTest(unittest.TestCase):
             raise OSError("no git")
         cli.subprocess.run = explode
         self.assertIsNone(cli.checkout_dirty("/somewhere"))
+
+    def test_git_dying_on_the_STATUS_call_is_unknown(self):
+        """The pair to the one above, and it exists because that one stopped
+        doing what its name says.
+
+        It blows up EVERY subprocess call, so once `checkout_dirty` grew a
+        `rev-parse` in front of the status call, the explosion happened there
+        instead and `checkout_dirty`'s own `except` went unexecuted — while
+        the test kept passing, green and renamed by nobody. The coverage
+        report is what noticed: one line, on the run after the change.
+
+        A test that passes for a different reason than its name gives is not
+        a weaker test, it is a test of something else.
+        """
+        def dispatch(argv, *a, **kw):
+            if "rev-parse" in argv:
+                class Done:
+                    stdout, returncode = "/somewhere\n", 0
+                return Done()
+            raise OSError("git died mid-status")
+        cli.subprocess.run = dispatch
+        self.assertIsNone(cli.checkout_dirty("/somewhere"))
+
+    def test_a_tree_that_is_NOT_ITS_OWN_CHECKOUT_is_never_called_dirty(self):
+        """The status output is damning and it still must not be believed.
+
+        `rev-parse` names a different tree than the one asked about, which is
+        git saying "I am answering about somebody else". No amount of dirt in
+        that answer is evidence about THIS directory.
+        """
+        class Done:
+            pass
+
+        def dispatch(argv, *a, **kw):
+            done = Done()
+            if "rev-parse" in argv:
+                done.stdout, done.returncode = "/enclosing/repo\n", 0
+            else:
+                done.stdout, done.returncode = " M thirteen/files\n", 0
+            return done
+        cli.subprocess.run = dispatch
+        self.assertIsNone(cli.checkout_dirty("/enclosing/repo/.lamp/llm_chat"))
+
+
+class VendoredCopyIsNotDirtyTest(unittest.TestCase):
+    """A COPY inside somebody else's repo, built with real git, because the
+    defect was what git actually does.
+
+    wcs reported doctor telling them the hooks serving their session ran from
+    a tree with uncommitted changes. Their vendored payload was untouched;
+    the thirteen dirty files were their OWN project's, and they were dirty
+    precisely because they had just vendored a fresh copy. So the warning was
+    loudest at the exact moment it was most wrong.
+
+    `git -C <dir>` walks UP for a `.git`. A vendored payload carries none, so
+    every git question asked from inside it is answered — with returncode 0,
+    indistinguishable from a real answer — by whatever project it was dropped
+    into. Right command, wrong namespace.
+
+    THIS USES REAL GIT ON PURPOSE. Every stub in this file would have happily
+    returned whatever I told it to, including the wrong thing, which is how
+    the bug survived: the fixture and the code shared an assumption about
+    what git answers for a directory with no `.git`. A test cannot check an
+    assumption it is built on.
+    """
+
+    def setUp(self):
+        import shutil
+        import subprocess
+        if not shutil.which("git"):
+            raise unittest.SkipTest("no git on PATH — this test IS git's "
+                                    "behaviour, so a stub would prove nothing")
+        self.tmp = tempfile.TemporaryDirectory()
+        self.consumer = os.path.realpath(self.tmp.name)
+        self.vendored = os.path.join(self.consumer, ".lamp", "llm_chat")
+        os.makedirs(os.path.join(self.vendored, "bin"))
+
+        def git(*args):
+            subprocess.run(("git", "-C", self.consumer) + args,
+                           capture_output=True, check=True)
+        git("init", "-q", ".")
+        git("config", "user.email", "fixture@example.invalid")
+        git("config", "user.name", "fixture")
+        with open(os.path.join(self.consumer, "tracked.txt"), "w") as f:
+            f.write("committed\n")
+        git("add", "-A")
+        git("commit", "-qm", "init")
+        # The consumer is dirty. The vendored payload is not — nobody has
+        # touched it. This is wcs's machine.
+        with open(os.path.join(self.consumer, "tracked.txt"), "a") as f:
+            f.write("edited\n")
+        with open(os.path.join(self.vendored, "bin", "llm-chat-wake"), "w") as f:
+            f.write("#!/bin/sh\n")
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    def test_git_really_does_answer_for_the_ENCLOSING_repo(self):
+        """The premise, asserted rather than assumed. If a future git stops
+        walking up, this fails and the rest of the class is moot — which is
+        the news, not a broken test."""
+        import subprocess
+        done = subprocess.run(["git", "-C", self.vendored, "status",
+                               "--porcelain"], capture_output=True, text=True)
+        self.assertEqual(done.returncode, 0, "a confident answer, note")
+        self.assertIn("tracked.txt", done.stdout,
+                      "git reported a file that is not inside the tree asked "
+                      "about — the whole defect in one line")
+
+    def test_the_copy_is_not_its_own_checkout(self):
+        self.assertIs(cli.own_checkout(self.vendored), False)
+
+    def test_the_consumer_IS_its_own_checkout(self):
+        self.assertIs(cli.own_checkout(self.consumer), True)
+
+    def test_the_copy_is_UNKNOWN_rather_than_dirty(self):
+        """The line that shipped said True here, and doctor turned it into
+        '! THE HOOKS SERVING THIS SESSION RUN FROM A TREE WITH UNCOMMITTED
+        CHANGES' — a claim about a payload it could not see."""
+        self.assertIsNone(cli.checkout_dirty(self.vendored))
+
+    def test_the_enclosing_repo_is_still_reported_dirty(self):
+        """The fix must not buy its correctness by refusing to answer at all.
+        The consumer really is dirty and really is its own checkout."""
+        self.assertIs(cli.checkout_dirty(self.consumer), True)
+
+    def test_a_directory_under_NO_repository_is_unknown(self):
+        """Distinct from the copy case, and both are None: one is 'git has no
+        opinion', the other is 'git has an opinion about someone else'."""
+        with tempfile.TemporaryDirectory() as outside:
+            self.assertIsNone(cli.checkout_dirty(outside))
+
+    def test_an_EMPTY_toplevel_is_unknown_not_a_match(self):
+        """rc=0 with nothing on stdout. `realpath("")` is the CURRENT
+        DIRECTORY, not an error — so without this branch the verdict would
+        depend on where the process happened to be standing, and would be
+        True for anyone running doctor from the root of any checkout.
+        """
+        class Done:
+            pass
+        real = cli.subprocess.run
+
+        def blank(*a, **kw):
+            done = Done()
+            done.stdout, done.returncode = "\n", 0
+            return done
+        cli.subprocess.run = blank
+        self.addCleanup(lambda: setattr(cli.subprocess, "run", real))
+        self.assertIsNone(cli.own_checkout(os.getcwd()))
+
+    def test_a_checkout_reached_through_a_SYMLINK_is_still_its_own(self):
+        """`realpath` on both sides. /tmp is a symlink on macOS, so without
+        it every fixture in this class — and every checkout under /tmp on a
+        contributor's machine — reads as somebody else's copy, and the fix
+        would report UNKNOWN for trees it can see perfectly well."""
+        link = os.path.join(os.path.dirname(self.consumer),
+                            os.path.basename(self.consumer) + "-link")
+        os.symlink(self.consumer, link)
+        self.addCleanup(os.unlink, link)
+        self.assertIs(cli.own_checkout(link), True)
+        self.assertIs(cli.checkout_dirty(link), True)
 
 
 class LeakDetectorTest(unittest.TestCase):

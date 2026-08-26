@@ -800,6 +800,25 @@ def main() -> int:
         "A one-line reply can go as a quoted argument instead; anything longer "
         "is refused,\nbecause a shell eats backticks out of it and the send "
         "still reports success.\n"
+        # BOTH FORMS, because naming only one makes it the only one anybody
+        # tries. wcs hit a guard in their repo that refused this whole command
+        # and had nothing to fall back to, having been told this is THE form
+        # for anything multi-line. The dead end was mine: `--file <path>` has
+        # always worked and was never mentioned here.
+        #
+        # NOT because of the `-`, though that is what the report said and what
+        # I first wrote here. game_loop's owner reproduced it: a bare `--file -`
+        # was allowed every time, and what their guard actually refused was a
+        # heredoc BODY quoting a shell redirect, because it identified the
+        # heredoc's consumer as the last word before the operator — which is
+        # `file` here, not `llm_chat`. Fixed at their end.
+        #
+        # Kept anyway, and this is the point of the line: the failure was never
+        # specific to that guard. Any repo can wrap this command in a rail that
+        # objects to something, and a reader given exactly one spelling has
+        # nowhere to go. Naming the second form costs two lines.
+        f"  ({CLI} say <channel> --file <path> also works, if a guard in your "
+        "repo\n  objects to the `-`.)\n"
         "and when you have nothing left to add:\n"
         f"  {CLI} leave <channel>"
     )

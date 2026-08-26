@@ -1997,6 +1997,66 @@ class DoctorTest(unittest.TestCase):
         self.dirty(False)
         self.assertNotIn("UNCOMMITTED CHANGES", self.report())
 
+    def a_copy(self, verdict):
+        """Stub `own_checkout` ONLY, and let `checkout_dirty` really run.
+
+        Stubbing both would let this pass while the two disagreed. The whole
+        point is that one answer flows into the other: a tree that is not its
+        own checkout must make the dirtiness UNKNOWABLE rather than clean.
+        """
+        real = cli.own_checkout
+        cli.own_checkout = lambda root=None: verdict
+        self.addCleanup(lambda: setattr(cli, "own_checkout", real))
+
+    def test_a_VENDORED_copy_is_told_the_report_cannot_see_it(self):
+        """wcs's report, and the half that costs more than the false alarm.
+
+        Their hooks run from `.lamp/llm_chat`, a copy with no `.git`, so every
+        git question asked inside it was answered by their own project — and
+        doctor announced the payload serving their session was uncommitted,
+        citing thirteen dirty files that belonged to them. Loudest at the
+        worst moment: they were dirty BECAUSE they had just vendored a fresh
+        copy, so the warning landed on the freshly-blessed thing.
+
+        Silencing it is not enough. With no line at all, "could not look"
+        renders identically to "looked, nothing to say", and their words for
+        what that costs: a consumer who checks finds the source clean and
+        concludes the diagnostic is broken — right, by luck — and one who
+        does not treats a blessed payload as unblessed. Neither learns that
+        doctor cannot see the tree it is describing.
+        """
+        here = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        self.wired(here, fingerprint="old-stamp")
+        self.a_copy(False)
+        text = self.report()
+        self.assertIn("run from a COPY", text)
+        self.assertNotIn("UNCOMMITTED CHANGES", text,
+                         "the false alarm this replaces")
+
+    def test_an_OWN_checkout_is_never_called_a_copy(self):
+        """Paired, and the pairing is load-bearing here: this line would fire
+        for every maintainer session if the verdict were read backwards, and
+        it contradicts the dirty-tree warning directly above it."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        self.wired(here, fingerprint="old-stamp")
+        self.a_copy(True)
+        self.dirty(True)
+        text = self.report()
+        self.assertIn("UNCOMMITTED CHANGES", text)
+        self.assertNotIn("run from a COPY", text)
+
+    def test_an_UNKNOWN_verdict_says_neither(self):
+        """git absent, or the tree under no repository at all. Two silences
+        that must not be filled in: `is False` means git answered ABOUT
+        SOMEBODY ELSE, and None means it did not answer. Only the first is
+        evidence that a copy is what is being served."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        self.wired(here, fingerprint="old-stamp")
+        self.a_copy(None)
+        text = self.report()
+        self.assertNotIn("run from a COPY", text)
+        self.assertNotIn("UNCOMMITTED CHANGES", text)
+
     def test_a_CLEAN_direct_consumer_is_STILL_not_told_to_reinstall(self):
         """The pairing that was missing, and its absence shipped a real bug.
 

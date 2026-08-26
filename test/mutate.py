@@ -1858,6 +1858,16 @@ MUTATIONS = [
      "and a sweep mutating this tree once reached a neighbouring agent and "
      "retired its waker"),
 
+    ("a COPY is told the report cannot see it", "bin/llm_chat",
+     "    elif direct and own_checkout(source) is False:",
+     "    elif False:",
+     "teaching the dirtiness check to refuse a tree it cannot see stops the "
+     "false alarm and leaves this population with NO line at all — and 'could "
+     "not look' then renders exactly like 'looked, nothing to say', which is "
+     "the same collapse one level up; wcs's version of what it costs is that "
+     "a consumer who checks concludes the diagnostic is broken (right, by "
+     "luck) and one who does not treats a blessed payload as unblessed"),
+
     ("only the tree the HOOKS run from is anybody's business",
      "bin/llm_chat",
      "    if direct and checkout_dirty():",
@@ -2650,8 +2660,12 @@ NOT_SWEPT = {
         "including that an unwritable state dir cannot break the exit",
     "bin/llm-chat-wake:on_term": "asserted directly — SIGTERM is the healthy "
         "handover and the one most likely to be misread as a crash",
-    "bin/llm_chat:checkout_dirty": "dirty, clean, not-a-checkout and no-git "
-        "asserted directly — UNKNOWN must not read as clean",
+    "bin/llm_chat:checkout_dirty": "dirty, clean, not-a-checkout, no-git and "
+        "a tree that is not its OWN checkout asserted directly — UNKNOWN must "
+        "not read as clean, and a copy's enclosing repo must not read as it",
+    "bin/llm_chat:own_checkout": "own, copy, no-repo and symlinked-own "
+        "asserted directly against REAL git, because the defect it exists for "
+        "was what git actually answers and no stub could have caught it",
     "bin/llm_chat:do_mode": "both directions, both refusals and the passive "
         "notice asserted directly; the guards whose absence is silent are swept",
     "bin/llm_chat:do_sync": "asserted directly, including that it writes LOCAL "
