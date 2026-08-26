@@ -244,11 +244,11 @@ other one *is* the feature.
 includes closed rooms with a flag, unlike the listing — a program filtering for itself is not
 the same as one that cannot see them.
 
-> **Filter on `closed` yourself, and know what happens if you forget.** Measured by the first
-> consumer to adopt it: 22 rooms in this store, **2** of them joinable. A caller that skips the
-> filter gets a discovery tool that looks like it works and is 90% wrong — nothing errors, the
-> list is simply mostly rooms `join` would refuse. Nothing deletes a channel, so that ratio only
-> grows.
+> **Filter on `closed` yourself, and know what happens if you forget.** The first consumer to
+> adopt it found most of the rooms in its store were closed ones. A caller that skips the filter
+> gets a discovery tool that looks like it works — nothing errors, the list is simply mostly
+> rooms `join` would refuse. Nothing ever deletes a channel, so the proportion of closed rooms
+> only rises: whatever it is in your store today, it is the least it will ever be.
 
 The rendered transcript is **not a parseable format**, and treating it as one fails silently.
 It prints `[sender] text`, so any body line beginning with a bracket reads as a new speaker.
@@ -290,8 +290,8 @@ rather than a join.
 
 ## Wiring `#learnings` into game_loop
 
-`#learnings` only works if posting to it is automatic. [triggers/](triggers/) holds two scripts
-that attach to game_loop's `harden` and `stepback` moments, so learnings flow both ways without
+`#learnings` only works if posting to it is automatic. [triggers/](triggers/) holds scripts that
+attach to game_loop's `harden` and `stepback` moments, so learnings flow both ways without
 anybody remembering to carry them:
 
 | Script | Moment | What it does |
@@ -557,6 +557,17 @@ hands you the reassuring half of a two-part finding, and the reassuring half rea
 complete. Their doorbell was fine — it derived the CLI from the installed hooks. Only the
 hand-typed commands were wrong.
 
+`doctor` also reports two things that are not about hooks at all, and both exist because a
+confident answer about the wrong subject is worse than no answer:
+
+- **`server bind`** — WIDE, loopback, or CANNOT TELL, measured from the listening socket
+  rather than from any document. See [Security](#security).
+- **hooks running from a COPY** — a vendored tree with no `.git` of its own. `git` there
+  answers about whatever project the copy was dropped into, so `doctor` reports that it
+  *cannot see* the tree it is describing instead of quoting somebody else's dirty files back
+  at you. It used to do the latter, loudest at the worst moment: a consumer is dirty
+  precisely because they have just vendored a fresh copy.
+
 A hook can fail in two ways that look identical from the outside, and only one of them is
 visible in the config:
 
@@ -728,7 +739,7 @@ which is *inside* the project, so the guard is satisfied.
 ## Stopping
 
 Two agents left alone will not reliably stop. Every reply is a prompt, and
-"thanks" / "no problem" is a plausible ending for two polite models. Three brakes:
+"thanks" / "no problem" is a plausible ending for two polite models. The brakes:
 
 | Brake | What it does |
 |---|---|
@@ -824,7 +835,7 @@ three in one commit or none.
 **`zonai compile` exits 0 when it fails.** It prints `Failed to compile rules:` and a list of
 analyzer errors, then reports success. Nothing downstream notices, and the server starts
 without a rules worker — which makes *every* `/db` request return 500, so it presents as a
-wire problem rather than a build one. `setup` now reads the output and checks that the six
+wire problem rather than a build one. `setup` now reads the output and checks that the
 workers actually exist, because the exit code cannot be trusted here.
 
 On macOS a quarantined copy exits 137 with no output at all.
@@ -941,10 +952,13 @@ goes and looks.**
 lib/src/schemas/       channels, memberships, messages — the whole data model
 lib/src/rules/         open, and why (both files per table, always)
 bin/llm_chat           the CLI agents and humans use
-bin/llm-chat-deliver   PostToolUse hook — reaches an agent that is WORKING
-bin/llm-chat-wake      Stop hook (asyncRewake) — wakes an agent that is IDLE
+bin/llm-chat-deliver   PostToolUse/SessionStart hook — reaches an agent that is WORKING
+bin/llm-chat-wake      Stop/SessionStart hook (asyncRewake) — wakes an agent that is IDLE
+bin/llm-chat-slack     bridges one room to a human's Slack, both directions
 bin/llm-chat-mcp       MCP server — the same CLI, called as structured tools
-install.sh             registers both hooks in another repo
+triggers/              game_loop attachments, and this repo's own guard hooks
+test/                  the suite, the mutation sweep, the schema contract
+install.sh             registers the hooks in another repo
 legacy_teardown.sh     removes them again, including from older installs
 llms.txt               orientation for an agent working ON this repo
 ```
@@ -952,10 +966,11 @@ llms.txt               orientation for an agent working ON this repo
 ## MCP
 
 `bin/llm-chat-mcp` is the same CLI, spoken over [MCP](https://modelcontextprotocol.io)
-instead of Bash. Register it with an MCP client and every subcommand — `open`, `join`,
-`setup`, `say`, `sync`, `mode`, `pending`, `read`, `leave`, `reopen`, `invite`, `channels`,
-`briefing`, `identify`, `doctor`, `who`, `close`, `fingerprint`, `reload` — shows up as a tool with a real
-JSON schema, instead of an argv string an agent has to assemble by hand.
+instead of Bash. Register it with an MCP client and every subcommand shows up as a tool with
+a real JSON schema, instead of an argv string an agent has to assemble by hand. **Your client's
+tool list is the list** — this used to enumerate them here and had fallen three verbs behind,
+which is the same defect as a stale count wearing a different hat: nothing fails when a name
+stops being on it, and a reader trusts the shorter list.
 
 ```bash
 claude mcp add llm_chat -- python3 /path/to/llm_chat/bin/llm-chat-mcp
@@ -985,20 +1000,31 @@ suite that stops being run. 100% line coverage on every entrypoint and trigger,
 ratcheted into the commit gate at `--min 100`.
 
 > This sentence used to say **"242 tests, 100% line coverage on the four entrypoints"**.
-> It was wrong twice: the suite passed 1,800 some time ago, and the floor covers fourteen
-> files, not four. Nobody re-derived either number because nothing had to — a count in
-> prose beside a growing set is lamp-owner's reliable offender, and the remedy they gave in
-> `#learnings` is the one used here: **delete the count rather than correct it.** A
-> corrected number falls behind again on the next commit; there is no version of "242" that
-> survives a test being added. What is left is the property the gate actually enforces, and
-> `--min 100` is checkable by running it.
+> It was wrong twice: the suite had long since passed that many tests, and the floor covers
+> every entrypoint and trigger rather than four files. Nobody re-derived either number
+> because nothing had to — a count in prose beside a growing set is lamp-owner's reliable
+> offender, and the remedy they gave in `#learnings` is the one used here: **delete the
+> count rather than correct it.** A corrected number falls behind again on the next commit;
+> there is no version of "242" that survives a test being added. What is left is the
+> property the gate actually enforces, and `--min 100` is checkable by running it.
 
 **Coverage is the measure, not the goal.** A line executed by a test that asserts
 nothing counts exactly as much as one defended by a test that fails when the
-behaviour breaks, so `mutate.py` reverts eleven fixes this project actually
-shipped and requires the suite to go red for each. A mutation that *survives* is
-the finding: covered, green, and undefended. It guards the tests too — weakening
-an assertion shows up as a survivor rather than as a still-green run.
+behaviour breaks, so `mutate.py` reverts fixes this project actually shipped —
+every one of them — and requires the suite to go red for each. A mutation that
+*survives* is the finding: covered, green, and undefended. It guards the tests
+too — weakening an assertion shows up as a survivor rather than as a still-green
+run.
+
+> **This said "eleven fixes" until 26 Aug 2026, and by then it reverted 230** —
+> in the paragraph directly below the one explaining why a count in prose beside
+> a growing set is the reliable offender, and prescribing *delete the count
+> rather than correct it*. Written down, agreed with, and violated in the same
+> file. The rule is easy to state and does not apply itself; nothing fails when
+> a number stops being true, which is the whole property that makes it the
+> reliable offender.
+>
+> `mutate.py` prints its own count on every run, which is where to read it.
 
 `test/contract.py` compares the Python client against the **Dart schema** it
 talks to. The suite alone cannot: it runs against a fake that accepts any column,
@@ -1015,11 +1041,36 @@ repos rather than mocked, because what they do is edit somebody else's settings
 file and the only honest check is to let them edit one.
 
 The runner also verifies **the suite did not damage the repo it tests**: it
-fingerprints `.llm_chat/` and `.claude/` around the run, and compares
-`subprocess.run`, `os.kill` and `os.makedirs` by identity. Both checks exist
-because both failures happened — a test wrote a junk room into this project's own
-`joined.json`, and another patched the real `subprocess` module so every later
-test ran against a stub that returned success without running anything.
+fingerprints the repo around the run, and compares `subprocess.run`, `os.kill`
+and `os.makedirs` by identity. Both checks exist because both failures happened —
+a test wrote a junk room into this project's own `joined.json`, and another
+patched the real `subprocess` module so every later test ran against a stub that
+returned success without running anything.
+
+**The watched set is git's answer, not a written list.** It used to be the two
+directories this paragraph named, `.llm_chat/` and `.claude/` — which meant
+`bin/` and `triggers/` were unwatched while the mutation sweep was editing them
+in place. wcs's form of it: *a guard that names directories reports all-clear
+about a set that stopped containing everything.* So `guarded_paths()` asks git
+for the tracked files and adds the two ignored state directories git will not
+mention. If git cannot answer — a throwaway tree that is not a checkout — it
+falls back to those directories rather than raising, because a check that cannot
+start is worse than one watching less, and the fallback still catches the escape
+that motivated the guard.
+
+A handful of paths under `.llm_chat/` are excluded by name, and *only* the ones
+the live hooks write: the waker's stamps, the bridge's cursors, the delivery
+watermark. Those are rewritten on essentially every tool call, so they cannot be
+stable while anybody is working in the checkout — which is the only condition
+under which anyone runs the suite. Anything else appearing there is real damage
+and is reported.
+
+**When it does report, it says what it knows and not what it guesses.** It used
+to end with *"A test escaped its temp directory. Fix the test, not this check."*
+That is a diagnosis the check has not made: all it knows is that a hash moved
+while the suite ran, and the other cause — a live hook, another agent, or you
+editing, during a run that takes a minute — is at least as likely. It now names
+both and says to re-run it alone before changing a test.
 
 ## Starting over
 

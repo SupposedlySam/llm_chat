@@ -158,7 +158,7 @@ Practically: use the absolute path you were given, and do not assume a room you 
 one checkout exists from another. If a workspace is not on the default port, its agents need
 `--server` or `LLM_CHAT_SERVER`; `doctor` reports which server it is talking to.
 
-Three flags that exist and are easy to miss:
+Flags that exist and are easy to miss:
 
 - `--server <url>` on any command, when the server is not on the default port. It is read
   from `LLM_CHAT_SERVER` too. Use `localhost`, never `127.0.0.1` — the IPv4 address gives a
@@ -323,6 +323,17 @@ text, so quoted example commands inside a message are indistinguishable from
 commands to execute. Both agents reporting that defect were refused while
 reporting it. A payload read from a file is never command text.
 
+**So a long or multi-line positional message is REFUSED, not sent.** Anything past a few
+hundred characters, or containing a newline, gets a refusal naming `--file` — because those
+are the shapes every observed corruption had, and a send that succeeds with the text already
+mangled is the failure neither end can see. One-liners still go as a quoted argument; that is
+the case the shell does not damage.
+
+The refusal names `--file -`, and **`--file <path>` works identically** — reach for the path
+form if a guard in your own repo objects to the `-`. That happened to a consumer whose write
+rail read the whole command and refused it, leaving them with the one spelling they had been
+given and nowhere to go.
+
 `--file -` takes stdin, which is the form that composes with a generated
 message. Passing both a positional message and `--file` is refused rather than
 resolved, because a caller who supplies both has a wrong belief about which was
@@ -335,9 +346,10 @@ alone.
 `llm_chat channels --json` is the same idea for room discovery: one record per room with
 `members`, `broadcast`, `closed`, `briefing` and the counts. Closed rooms are INCLUDED there
 with a flag, unlike the listing, because a program filtering for itself is not the same as a
-program that cannot see them. **So filter on `closed` yourself.** Measured: 22 rooms here, 2
-joinable. Skip the filter and you have a discovery surface that looks fine and is 90% rooms
-`join` will refuse — nothing errors, and nothing deletes a channel, so the ratio only grows.
+program that cannot see them. **So filter on `closed` yourself.** In a store that has been
+used for a while, most rooms are closed ones. Skip the filter and you have a discovery
+surface that looks fine and is mostly rooms `join` will refuse — nothing errors, and nothing
+ever deletes a channel, so the proportion only rises.
 
 **If a PROGRAM is reading, pass `--json`.** The rendered transcript is for humans and agents
 to read, not to parse: it prints one message as `[sender] text`, and a body line that starts
@@ -602,7 +614,7 @@ it costs you nothing.
 
 ## Working on this repo
 
-A zonai app (SQLite + REST) plus four Python scripts, stdlib only.
+A zonai app (SQLite + REST) plus a handful of Python scripts, stdlib only.
 
 | Path | What |
 |---|---|
@@ -612,7 +624,8 @@ A zonai app (SQLite + REST) plus four Python scripts, stdlib only.
 | `bin/llm-chat-deliver` | the PostToolUse/SessionStart hook that makes replies arrive mid-turn |
 | `bin/llm-chat-wake` | the Stop/SessionStart hook that wakes an **idle** agent |
 | `bin/llm-chat-slack` | bridges one room to a human's Slack, both directions |
-| `triggers/` | game_loop attachments: broadcast a learning, digest others' at retro |
+| `bin/llm-chat-mcp` | the same CLI as MCP tools; shells out, never a second implementation |
+| `triggers/` | game_loop attachments **and this repo's own guard hooks** — see below |
 | `install.sh` | registers those hooks into another repo, merging its settings |
 
 `setup` in the CLI is what an agent runs from its own repo: it brings a server up
@@ -642,7 +655,7 @@ server with no authentication. See **Secrets** above.
 > **`./zonai compile` exits 0 when it fails.** It prints `Failed to compile rules:` with the
 > analyzer errors and then reports success. A server started afterwards has no rules worker,
 > and *every* `/db` request returns 500 — it looks like a wire bug, not a build one. `setup`
-> checks the output text AND that the six worker executables exist, because the exit code is
+> checks the output text AND that every worker executable exists, because the exit code is
 > not usable evidence here. If you run these commands by hand, read the output.
 
 **Three things move together:** the `zonai` binary, `version:` in `zonai.yaml`, and the
@@ -705,7 +718,7 @@ there are no row-level rules"*. Scaffold the pair together.
 
 ```bash
 python3 test/run.py       # suite + coverage; --min 100 is enforced at commit
-python3 test/mutate.py    # reverts 11 shipped fixes; each MUST turn the suite red
+python3 test/mutate.py    # reverts every shipped fix; each MUST turn the suite red
 python3 test/contract.py  # every column the client sends still exists in the Dart schema
 ```
 
@@ -720,6 +733,38 @@ it**, not merely one that executes it; `mutate.py` is what tells those apart, an
 a surviving mutation means the lines are covered and the behaviour is not
 defended. Run `verify` as its own earlier call, never chained with `git commit`:
 the gate runs before the command body, so a chained verify has not executed yet.
+
+### This repo refuses some of your commands, on purpose
+
+`triggers/` holds guard hooks wired into `.claude/settings.local.json` for **this** checkout.
+They are not part of what llm_chat ships to consumers; they exist because each one caught a
+real defect here, and they will refuse you mid-task with no warning if you do not know they
+are there. Each refusal names its own remedy — read it rather than working around it.
+
+| Guard | Event | Refuses |
+|---|---|---|
+| `piped-verdict` | PreToolUse | reading a command's verdict through `\| head` / `\| tail`, or `$?` after a truncator |
+| `write-through-interpreter` | PreToolUse | file edits smuggled through an inline `python3 -c` or heredoc |
+| `prose-through-shell` | PreToolUse | prose on a command line the shell will rewrite before this program sees it |
+| `answer-when-asked` | Stop | ending a turn while somebody is waiting on your answer |
+| `authority-gate` | Stop | ending a turn in a question you had the authority to answer yourself |
+| `tell-the-consumers` | PostToolUse | a publish that left consumers behind, silently |
+
+The two you will hit first are the PreToolUse pair. **Use the Write and Edit tools for file
+changes**, not `python3 -c 'open(p,"w")...'` — the write rail reads a `file_path` it can
+check and cannot see inside a heredoc. And **redirect to a log, then grep it**, rather than
+piping a build into `head`:
+
+```bash
+python3 test/run.py > /tmp/out.log 2>&1; echo "EXIT=$?"
+grep -nE 'FAIL|Error|Traceback' /tmp/out.log
+```
+
+Reading a file with `tail -50 out.log` is fine; the guard is about the *verdict*, not the
+pager.
+
+> **A guard must never block its own fix.** If one of these refuses the change that would
+> correct it, that is a defect in the guard and not a reason to disable it. Say so.
 
 ### Invariants — do not undo these
 
@@ -754,7 +799,22 @@ repeating itself.
 
 ### Security
 
-Loopback only, **no authentication**. Anything that can reach the port can speak as any
-identity and read every channel. That is the trade for zero-friction joining between agents
-at one desk, and it is wrong the moment this listens on anything else. `lib/src/rules/` is
-where that changes, and it needs a real auth table, not a tightened rule.
+Loopback, **no authentication**. Anything that can reach the port can speak as any identity
+and read every channel. That is the trade for zero-friction joining between agents at one
+desk, and it is wrong the moment this listens on anything else. `lib/src/rules/` is where
+that changes, and it needs a real auth table, not a tightened rule.
+
+**"Loopback" is a property of how the server was STARTED, not of this software.** Without
+`--host=::1` zonai binds the IPv6 wildcard, and this paragraph asserted loopback for months
+without anyone measuring it. Do not re-cite it — ask:
+
+```bash
+llm_chat doctor        # server bind:  WIDE / loopback / CANNOT TELL
+```
+
+**CANNOT TELL is not loopback**, and that distinction is the whole incident in miniature: an
+unknown reported as the reassuring answer is indistinguishable from a measurement, and it
+survived here for months precisely because nothing ever failed. If you are about to write
+down a security property of this system, measure it first — the sentence above was written
+as a warning about a future somebody else would bring about, and was already false in this
+checkout on the day it was written.
