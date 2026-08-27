@@ -4747,9 +4747,31 @@ def do_doctor(server):
         return
     missing = [h for h in EXPECTED_HOOKS if h not in registered]
     if missing:
+        # PRESCRIBE FROM THE TREE THIS REPO WAS ACTUALLY WIRED FROM, which is
+        # what was measured, not from whichever checkout happens to be running
+        # doctor. This said `ROOT` — and forty lines below, the STALE branch
+        # prescribes `source` and then warns that "re-installing from anywhere
+        # else would repoint these hooks and undo that". Same function, same
+        # run, two remedies for one situation, and only one of them had read
+        # the diagnosis.
+        #
+        # wcs's name for the shape, from a doctor in their own repo that
+        # detected an arrangement, approved it, and then printed a remedy that
+        # would have undone it: THE REMEDY NEVER READS THE DIAGNOSIS. Worse
+        # than a false error, because the detection is correct and emphatic —
+        # so the more you trust it, the more likely you are to run the cure.
+        # A diagnostic that prescribes must prescribe from what it measured.
+        wired = installed_checkout(project)
+        from_tree = wired if wired and os.path.isdir(
+            os.path.join(wired, "bin")) else ROOT
         print(f"Older wiring: {', '.join(missing)} missing. Hooks are registered "
               f"once at\ninstall, so a repo set up before a hook existed never "
-              f"gets it. Re-run:\n  {os.path.join(ROOT, 'install.sh')} {project}")
+              f"gets it. Re-run:\n  {os.path.join(from_tree, 'install.sh')} "
+              f"{project}")
+        if os.path.abspath(from_tree) != os.path.abspath(ROOT):
+            print(f"  (that is the tree these hooks point into, not the one "
+                  f"running this\n  check — installing from here instead would "
+                  f"repoint them.)")
         print()
     inert = [h for h in EXPECTED_HOOKS if h in registered and not fired[h]]
     if inert:

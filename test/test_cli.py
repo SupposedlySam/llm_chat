@@ -1997,6 +1997,48 @@ class DoctorTest(unittest.TestCase):
         self.dirty(False)
         self.assertNotIn("UNCOMMITTED CHANGES", self.report())
 
+    def test_the_MISSING_HOOK_remedy_names_the_tree_that_wired_this_repo(self):
+        """wcs's shape: THE REMEDY NEVER READS THE DIAGNOSIS.
+
+        Their `doctor` detected an arrangement, described it correctly,
+        approved it — and eleven lines later printed a remedy computed from a
+        different subject, which would have undone what it had just praised.
+        Worse than a false error: the detection is right and emphatic, so the
+        more you trust it the more likely you are to run the cure.
+
+        Mine had it. This branch prescribed `install.sh` from whichever
+        checkout was running doctor, while the STALE branch below prescribes
+        the tree the hooks actually point into AND warns that installing from
+        anywhere else repoints them. Same function, same run, two remedies for
+        one situation, one of which had read the diagnosis.
+        """
+        with tempfile.TemporaryDirectory() as tree:
+            os.makedirs(os.path.join(tree, "bin"))
+            self.half_wired(tree)
+            text = self.report()
+            self.assertIn("Older wiring", text)
+            self.assertIn(os.path.join(tree, "install.sh"), text)
+            self.assertIn("repoint them", text)
+
+    def test_it_falls_back_when_that_tree_is_GONE(self):
+        """Paired. A vanished checkout cannot be installed from, so the
+        running copy is the only honest suggestion left — and the caveat must
+        not fire, because there is nothing better to point at."""
+        self.half_wired("/no/such/tree")
+        here = os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+        text = self.report()
+        self.assertIn(os.path.join(here, "install.sh"), text)
+        self.assertNotIn("repoint them", text)
+
+    def half_wired(self, checkout):
+        """Registered, but with a hook missing — the 'Older wiring' state."""
+        write_settings(self.project,
+                       PostToolUse=["/x/bin/llm-chat-deliver"])
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "installed.json"), "w") as f:
+            json.dump({"fingerprint": "old", "checkout": checkout}, f)
+
     def human_room(self, room, verdict):
         """Put one human-named room in this project and fix its verdict."""
         real_joined, real_bridge = cli.read_joined, cli.bridge_for
