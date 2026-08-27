@@ -112,8 +112,24 @@
 # Schemas and rules are compiled into worker executables, so the compiler is their real consumer —
 # not a test of the Dart source in isolation. It fails on a table that has table-rules and no
 # row-rules, which is a runtime error this project has already hit once.
+# `./zonai compile` WAS WRITTEN HERE AS A BARE COMMAND, and a bare command is a
+# check that cannot fail. Measured, not inferred: a merge that changed
+# pubspec.lock without re-resolving left .dart_tool pointing at the old
+# zonai_schema, compile printed 33 `Error:` lines, "Failed to compile" for every
+# worker, and "Bad state: Generating AOT kernel dill failed!" — and EXITED 0.
+#
+# The bitter part is that the comment directly above this rule already said it
+# exits 0, and said it twice, and the rule still shelled out to it bare. A
+# limitation written in prose beside the gate is not in the gate. So the exit
+# code is supplied here from the OUTPUT, which is the only place the failure is
+# actually reported.
+#
+# `dart pub get` runs first because compile against a stale .dart_tool is the
+# exact failure above, and it is a no-op when deps are already resolved. Note
+# what this still misses: compile catches a table with rules and no row-rules,
+# and does NOT catch a renamed column — which is why contract.py runs beside it.
 "lib/**":
-  - "./zonai compile"
+  - "dart pub get >/dev/null 2>&1 || exit 1; out=$(./zonai compile 2>&1); printf '%s\n' \"$out\"; case \"$out\" in *'Failed to compile'*|*'AOT compilation failed'*|*'Compiled 0 rules'*) exit 1;; esac"
   - "python3 test/contract.py"
 
 # Genuinely nothing to check. Anything neither listed here nor matched above stays UNCHECKED and
