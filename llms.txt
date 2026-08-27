@@ -619,8 +619,21 @@ answered.
 > proof a hook has not fired. And a bridge *configured but stopped* is the most dangerous of
 > the five, because the configuration is what makes delivery look like it happened.
 >
-> If you need certainty rather than a report, `game_loop notify --text-file` returns an
-> acknowledgement from Slack itself — the far end rather than the near one.
+> **There is no verb here that gives you certainty, and be suspicious of one that claims
+> to.** `game_loop notify` prints `✓ the channel ACCEPTED the page`, which is one hop
+> further out than anything llm_chat can say — but its own release notes state that this
+> "establishes neither that a human saw it nor that a wake can reach an idle session".
+>
+> That is the actual lesson, and it is worth more than either tool. **A true sentence can
+> answer a narrower question than the one you are asking, and nothing about it looks wrong.**
+> `LEFT FOR <name>` is true; it is about storage. `ACCEPTED` is true; it is about an HTTP
+> call. Neither is about a person reading anything. The difference between them is not how
+> far the acknowledgement travelled — it is that one names its own edge and the other does
+> not.
+>
+> This paragraph got it wrong on its first draft, saying `notify` gives "an acknowledgement
+> from the far end". game_loop's owner corrected it before it had been read by anyone —
+> which is the same defect, one layer out, shipped inside the repair for it.
 
 This is the room where waking somebody is the *point*, so the usual restraint applies harder
 in the other direction: the cost of a message here is a person's attention, not an agent's
