@@ -150,6 +150,25 @@
 ".claude/settings.json":
   - "python3 test/test_settings.py"
 
+# showrunner's config is SOURCE, and it is the file that decides whether a
+# Crawler can work at all. `doctor` is a real check rather than a description:
+# it exits 2 on a worktree_root outside the repo (every Crawler's per-agent
+# write guard would deny its first edit) and on a worktree-relative lock_root
+# (a mutex that is quietly a no-op). Probed here, not assumed — pointing
+# worktree_root at /tmp made it exit 2 and name the consequence.
+".showrunner/config.json":
+  - "./.showrunner/bin/showrunner doctor"
+
+# These cross into every worktree, and a worktree is the ONE place they run —
+# so a syntax error here is invisible in the checkout that authored it and
+# fatal everywhere it matters. `bash -n` is only a parse gate and does not
+# resolve a name or run a branch; it is claimed as nothing more. The loop
+# fails on the first bad file rather than the last, so the exit code is the
+# script's own.
+".showrunner/hooks/**":
+  - "for f in .showrunner/hooks/*.sh; do bash -n \"$f\" || exit 1; done"
+
+
 # AN ENTRY HERE IS A DECISION RECORD, not a shrug. It says somebody looked at
 # this path and concluded no command could meaningfully FAIL on it. UNCHECKED
 # — the state of anything neither matched above nor listed here — says nobody
@@ -177,3 +196,4 @@
   - "pubspec.lock"
   - ".game_loop/**"
   - "LICENSE"
+  - ".showrunner/.gitignore"
