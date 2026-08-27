@@ -216,6 +216,22 @@ class SayPrintsItTest(unittest.TestCase):
             cli.do_say("srv", "wcs_human", "wcs", "the leads", None)
         return out.getvalue()
 
+    def test_an_ambiguous_ADDRESSEE_is_reported_by_say_itself(self):
+        """The verdict has to reach the sender at the moment of sending.
+
+        `who` already computed this ambiguity and nobody runs `who` before
+        every message. wcs's report went to the wrong `owner` while `who`
+        would have shown three of them.
+        """
+        cli.live_identities = lambda: {
+            "supposedlysam": [{"cwd": "/x/llm_chat"}, {"cwd": "/x/lamp"}]}
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_say("srv", "wcs_human", "wcs", "the leads", "supposedlysam")
+        text = out.getvalue()
+        self.assertIn("is ALSO the name of a live agent", text)
+        self.assertIn("did not reach them", text)
+
     def test_the_send_still_SUCCEEDS(self):
         """wcs asked for this explicitly and they are right: the message was
         stored correctly and readable, and a room used as a queue for a bridge
@@ -237,6 +253,74 @@ class SayPrintsItTest(unittest.TestCase):
         self.assertTrue(warn, "no warning printed at all")
         self.assertLess(warn[0] - max(reach), 3,
                         "the correction drifted away from the claim")
+
+
+class SharedNameTest(unittest.TestCase):
+    """`--to owner` names a member of THIS ROOM, not whoever owns the subject.
+
+    wcs sent a detailed, correct bug report about `llm_user_testing` to
+    `owner` in #llm_chat_owner. It arrived at the llm_chat owner, because that
+    is who `owner` is in that room. Measured on the machine at the time:
+
+        owner -> dev/llm_chat, dev/lamp, dev/game_loop
+        wcs   -> dev/wholesale-command-station
+
+    Three live sessions answer to `owner` and none of them was the project the
+    report was about. The delivery was correct by the room's rules and wrong
+    by the sender's intent, and nothing in the output told them apart.
+    """
+
+    def live(self, mapping):
+        return {name: [{"cwd": d} for d in dirs]
+                for name, dirs in mapping.items()}
+
+    def test_a_name_in_SEVERAL_projects_is_flagged(self):
+        note = cli.shared_name_note("owner", self.live(
+            {"owner": ["/x/llm_chat", "/x/lamp", "/x/game_loop"]}))
+        self.assertIn("`owner` is ALSO", note)
+        for project in ("llm_chat", "lamp", "game_loop"):
+            self.assertIn(project, note)
+
+    def test_a_name_in_ONE_project_is_silent(self):
+        """Paired, and load-bearing: a line on every message is one nobody
+        reads, which is how the warning that matters gets skipped."""
+        self.assertEqual(cli.shared_name_note("wcs", self.live(
+            {"wcs": ["/x/wholesale"]})), "")
+
+    def test_the_same_project_TWICE_is_not_ambiguity(self):
+        """Two sessions of one agent in one checkout is the ordinary case —
+        a second terminal. Reporting that as a name collision would fire for
+        everybody who opens two panels."""
+        self.assertEqual(cli.shared_name_note("owner", self.live(
+            {"owner": ["/x/llm_chat", "/x/llm_chat"]})), "")
+
+    def test_the_host_being_UNASKABLE_is_not_reported_as_unambiguous(self):
+        """`live_identities()` returns None when the host could not answer.
+        Saying nothing is right; saying nothing BECAUSE we could not look and
+        saying nothing because the name is unique are the same output, so the
+        one thing that must not happen is inventing a verdict."""
+        self.assertEqual(cli.shared_name_note("owner", None), "")
+
+    def test_the_SENTINELS_are_not_looked_up_as_names(self):
+        """`--to-all` and `--to-none` share the column with identities."""
+        live = self.live({"owner": ["/x/a", "/x/b"]})
+        self.assertEqual(cli.shared_name_note(cli.AUDIENCE_ALL, live), "")
+        self.assertEqual(cli.shared_name_note(cli.AUDIENCE_NONE, live), "")
+
+    def test_EVERY_addressed_name_is_checked_not_just_the_first(self):
+        """`--to a,b` is two claims about two agents."""
+        note = cli.shared_name_note("wcs,owner", self.live(
+            {"wcs": ["/x/wholesale"],
+             "owner": ["/x/llm_chat", "/x/lamp"]}))
+        self.assertIn("`owner`", note)
+        self.assertNotIn("`wcs` is ALSO", note)
+
+    def test_it_says_what_to_do_about_it(self):
+        """A collision reported without the consequence is a curiosity. The
+        consequence is that the agent you meant did not get this."""
+        note = cli.shared_name_note("owner", self.live(
+            {"owner": ["/x/a", "/x/b"]}))
+        self.assertIn("did not reach them", note)
 
 
 class HeartbeatTest(unittest.TestCase):

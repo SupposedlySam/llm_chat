@@ -2228,6 +2228,53 @@ def do_who(as_json=False):
     return 0
 
 
+def shared_name_note(audience, live):
+    """A warning when an addressed name is held in more than one project.
+
+    `--to owner` names a MEMBER OF THIS ROOM. It does not name the agent who
+    owns whatever the message is about, and on a machine where several
+    projects each call their agent `owner` those are different things.
+
+    Measured when it happened: wcs sent a detailed, correct bug report about
+    `llm_user_testing` to `owner` in #llm_chat_owner. It arrived at the
+    llm_chat owner, because that is who `owner` is in that room.
+
+        owner -> dev/llm_chat, dev/lamp, dev/game_loop
+        wcs   -> dev/wholesale-command-station
+
+    Three live sessions answer to `owner`; none of them is the project the
+    report was about. The delivery was CORRECT by the room's rules and wrong
+    by the sender's intent, and nothing in the output distinguished them —
+    the same shape as every other defect this week: a true answer to a
+    narrower question than the one being asked.
+
+    NOT A REFUSAL. The message is stored, the room's member is real, and a
+    shared name is a legitimate convention. What was missing is the fact.
+
+    Silent when the name resolves to one project, or the line becomes noise on
+    every message and stops being read — and silent when the host cannot be
+    asked, because `live` is then None and an unknown must not be reported as
+    unambiguous.
+    """
+    if not audience or audience in (AUDIENCE_ALL, AUDIENCE_NONE) or not live:
+        return ""
+    lines = []
+    for name in audience.split(","):
+        where = sorted({s.get("cwd") for s in live.get(name) or []
+                        if s.get("cwd")})
+        if len(where) > 1:
+            lines.append("  `%s` is ALSO the name of a live agent in %s."
+                         % (name, ", ".join(os.path.basename(w) or w
+                                            for w in where if
+                                            os.path.basename(w))))
+    if not lines:
+        return ""
+    lines.append("  `--to` names a member of THIS ROOM, not whoever owns the "
+                 "subject. If you\n  meant one of the others, this did not "
+                 "reach them.")
+    return "\n".join(lines)
+
+
 def say_reach(server, channel, sender, audience, chan):
     """One line telling the sender who it just woke, and who merely gets to see it.
 
@@ -2800,6 +2847,8 @@ def do_say(server, name, identity, text, audience=None, thread=None,
     # one it is the sentence that made a reader believe a message had been
     # queued for a person when nothing was carrying it.
     if note := bridge_note(name):
+        print(note)
+    if note := shared_name_note(audience, live_identities()):
         print(note)
     if listening:
         print(f"  rang {len(listening)} listening now: {', '.join(listening)}")
