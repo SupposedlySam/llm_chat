@@ -166,7 +166,40 @@ def main():
         return 4
     sweep_floor = max(8, tracked // 10)
 
-    sites, real = {}, builtins.open
+    # AND A SECOND, BINARY CRITERION BESIDE IT, because a threshold in a gap
+    # of two is the weakest part of this instrument and gameloop's version has
+    # no threshold at all. Theirs asks whether the command CONSTRUCTS the path
+    # by name. The runtime equivalent: does the enclosing function's own
+    # source contain this file's name as a literal?
+    #
+    #     open(os.path.join(root, "README.md"))   -> NAMED, the code says which
+    #     for p in tracked_files(): open(p)       -> SWEEP, the code says all
+    #
+    # No line to pick, and it under-counts rather than over-counts when it
+    # cannot tell — the direction gameloop argued is right for a report a
+    # human acts on. The two criteria are computed independently and compared
+    # at the end: agreement is the only reason to believe either, since each
+    # was wrong on its own once already.
+    def names_it(frame, path):
+        """Does the calling function name this file, or sweep a listing?"""
+        key = (frame.f_code.co_filename, frame.f_code.co_firstlineno)
+        if key not in SOURCE_CACHE:
+            try:
+                with real(key[0]) as handle:
+                    lines = handle.read().splitlines()
+                start = key[1] - 1
+                body = lines[start:start + 400]
+                SOURCE_CACHE[key] = "\n".join(body)
+            except Exception:
+                SOURCE_CACHE[key] = None
+        body = SOURCE_CACHE[key]
+        if body is None:
+            return None                 # unknown, counted and printed as such
+        return os.path.basename(path) in body
+
+    SOURCE_CACHE = {}
+    sites, named, swept, unknown = {}, set(), set(), set()
+    real = builtins.open
 
     def watch(file, *args, **kwargs):
         try:
@@ -175,6 +208,9 @@ def main():
             path = os.path.abspath(file)
             if path.startswith(ROOT + os.sep):
                 sites.setdefault(site, set()).add(path)
+                verdict = names_it(frame, path)
+                (named if verdict else swept if verdict is False
+                 else unknown).add(path)
         except Exception:
             pass
         return real(file, *args, **kwargs)
@@ -210,13 +246,30 @@ def main():
         where = site.replace(ROOT + os.sep, "")
         print("      %4d  %-46s %s" % (len(paths), where,
                                        "SWEEP" if site in sweeps else ""))
-    print("exemptions declared            %d" % len(claims))
+    # THE SECOND CRITERION, computed independently of the threshold above.
+    # `named`, NOT `named - swept`, and the difference was a real defect the
+    # disagreement report caught on its first run. README.md is opened BOTH by
+    # a test that names it and by mutate's whole-tree sweep; subtracting the
+    # sweeps removed it, so the binary criterion called it unread while the
+    # threshold criterion called it read. One call site naming a file is
+    # enough — a command can fail on it — and a sweep touching the same file
+    # says nothing either way.
+    by_name = {os.path.relpath(p, ROOT) for p in named}
+    print("\n  by the BINARY criterion — does the calling function name the "
+          "file:")
+    print("      named %d   swept %d   could not tell %d"
+          % (len(named), len(swept), len(unknown)))
+
+    print("\nexemptions declared            %d" % len(claims))
     print("files the suite opened in-tree %d" % len(inside))
-    stale = []
+    stale, disputed = [], []
     for claim in claims:
         hits = sorted(r for r in inside if covered_by(claim, r))
+        other = sorted(r for r in by_name if covered_by(claim, r))
         if hits:
             stale.append((claim, hits))
+        if bool(hits) != bool(other):
+            disputed.append(claim)
     print("exemptions the suite READS     %d" % len(stale))
     for claim, hits in stale:
         print("\n  %s" % claim)
@@ -225,6 +278,28 @@ def main():
     if not stale:
         print("\n  none — every exemption still describes files no command "
               "opens.")
+    # AGREEMENT IS THE ONLY REASON TO BELIEVE EITHER. Each criterion has been
+    # wrong on its own already — the threshold one reported 6 of 6 before the
+    # sweeps were excluded, and a name-based rule under-counts silently by
+    # construction. Where they disagree, say so instead of picking a winner.
+    if disputed:
+        print("\n  THE TWO CRITERIA DISAGREE ON %d: %s"
+              % (len(disputed), ", ".join(disputed)))
+        print("      Read those by hand. A disagreement is a finding about "
+              "this tool,\n      not a verdict about the exemption.")
+    else:
+        print("\n  both criteria agree on every entry.")
+        if len(named) == len(inside):
+            # HOW MUCH THAT AGREEMENT IS WORTH, said rather than implied. When
+            # every non-swept path is also a named one, the two criteria have
+            # partitioned this repo identically — so they agree because the
+            # data did not separate them, not because two independent methods
+            # converged. That is a fact about this tree, and it would stop
+            # being true the moment a test opened a path it does not name.
+            print("      (and they partition this tree IDENTICALLY — %d named "
+                  "= %d non-sweep —\n       so the agreement is weak evidence: "
+                  "nothing here separates them.)"
+                  % (len(named), len(inside)))
     # REPORTS, does not gate. Whether a read makes an exemption wrong is a
     # judgement about that path, and failing a build on it would move the
     # decision from a person to a filename match.
