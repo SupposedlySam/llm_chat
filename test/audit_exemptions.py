@@ -289,17 +289,49 @@ def main():
               "this tool,\n      not a verdict about the exemption.")
     else:
         print("\n  both criteria agree on every entry.")
-        if len(named) == len(inside):
-            # HOW MUCH THAT AGREEMENT IS WORTH, said rather than implied. When
-            # every non-swept path is also a named one, the two criteria have
-            # partitioned this repo identically — so they agree because the
-            # data did not separate them, not because two independent methods
-            # converged. That is a fact about this tree, and it would stop
-            # being true the moment a test opened a path it does not name.
-            print("      (and they partition this tree IDENTICALLY — %d named "
-                  "= %d non-sweep —\n       so the agreement is weak evidence: "
-                  "nothing here separates them.)"
-                  % (len(named), len(inside)))
+        # HOW MUCH THAT AGREEMENT IS WORTH, computed rather than asserted.
+        #
+        # gameloop named the case that would separate the two rules: a file
+        # under an exemption opened by a NON-SWEEP call site THROUGH A
+        # VARIABLE, and by nothing else. The threshold rule counts it (its
+        # site is small); the naming rule misses it (the code never spells
+        # it). Anything else and the two cannot disagree, so their agreement
+        # is a fact about the tree rather than about either rule.
+        #
+        # Both repos that have run this have zero such files — mine partitions
+        # identically, theirs diverges at the call site and converges at the
+        # verdict. So neither result confirms either rule, and a third repo
+        # should read this number before quoting the one above it.
+        # UNDER AN EXEMPTION IS PART OF THE CONDITION, not a detail. A file
+        # the two rules classify differently changes nothing unless some
+        # exemption claims it — separation has to be separation OF A VERDICT.
+        # Without this clause the first run reported three "separating" files,
+        # two of them a fixture path and a heartbeat tempfile.
+        #
+        # AND THE CHECK BEFORE THIS ONE COMPARED CARDINALITIES: `len(named) ==
+        # len(inside)`, which was 19 == 19 and reported that the two rules had
+        # partitioned the tree identically. They had not — equal sizes,
+        # different members. A sum is not a distribution, which is this
+        # repo's own rule, broken inside the check written to be honest about
+        # how much the agreement was worth.
+        separating = sorted(p for p in inside
+                            if os.path.join(ROOT, p) not in named
+                            and any(covered_by(c, p) for c in claims))
+        if not separating:
+            unnamed = len([p for p in inside
+                           if os.path.join(ROOT, p) not in named])
+            print("      AND NOTHING HERE COULD SEPARATE THEM. The two rules "
+                  "do classify %d\n      non-sweep open(s) differently, but "
+                  "none of those files is under an\n      exemption, so no "
+                  "verdict could have differed. The agreement is weak\n"
+                  "      evidence about the rules and says nothing about "
+                  "either.\n      What would separate them: a file UNDER AN "
+                  "EXEMPTION opened by a\n      non-sweep site through a "
+                  "VARIABLE and by nothing else." % unnamed)
+        else:
+            print("      %d file(s) COULD have separated them and did not, "
+                  "which makes the\n      agreement worth something: %s"
+                  % (len(separating), ", ".join(separating[:4])))
     # REPORTS, does not gate. Whether a read makes an exemption wrong is a
     # judgement about that path, and failing a build on it would move the
     # decision from a person to a filename match.
