@@ -48,6 +48,18 @@
       "lane": "serialized",
       "match": {
         "labels": [
+          "server",
+          "serve"
+        ],
+        "title": "serve|listen|bind|boot"
+      },
+      "name": "server-work",
+      "resource": "loopback-port"
+    },
+    {
+      "lane": "serialized",
+      "match": {
+        "labels": [
           "device",
           "deploy"
         ],
@@ -79,6 +91,14 @@
       ],
       "name": "device",
       "note": "the physical device / deploy target \u2014 one consumer at a time"
+    },
+    {
+      "match": [
+        "\\bzonai serve\\b",
+        "\\b--port\\s+77\\d\\d\\b"
+      ],
+      "name": "loopback-port",
+      "note": "a bound TCP port on this machine \u2014 one consumer at a time. 7717 is the personal room and 7718 the shared one; both may be LIVE, so a leaf that binds anything in that range serializes rather than racing a real server."
     }
   ],
   "scratch_root": ".showrunner/scratch",
