@@ -2673,6 +2673,18 @@ NOT_SWEPT = {
     "bin/llm_chat:checkout_dirty": "dirty, clean, not-a-checkout, no-git and "
         "a tree that is not its OWN checkout asserted directly — UNKNOWN must "
         "not read as clean, and a copy's enclosing repo must not read as it",
+    "bin/llm_chat:bridge_for": "all five verdicts asserted directly, "
+        "including that NO RECORD is not STOPPED and that a heartbeat for "
+        "another room does not vouch for this one",
+    "bin/llm_chat:bridge_note": "every state's wording asserted directly, "
+        "including that a LIVE bridge prints nothing — a line that fires for "
+        "every human room is one the reader learns to skip",
+    "bin/llm_chat:human_age": "minutes, hours, days and None asserted "
+        "directly; the wrong unit is not a rounding error when somebody is "
+        "deciding whether their escalation reached a person",
+    "bin/llm-chat-slack:beat": "contents, directory creation and the "
+        "unwritable case asserted directly — a diagnostic that can take down "
+        "the bridge it describes is worse than no diagnostic",
     "bin/llm_chat:server_bind": "wide, loopback, nothing-listening, remote, "
         "no-lsof and unparseable asserted directly — the four bind shapes "
         "against REAL sockets, because a stub of lsof's format proves nothing "

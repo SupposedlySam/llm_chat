@@ -1997,6 +1997,60 @@ class DoctorTest(unittest.TestCase):
         self.dirty(False)
         self.assertNotIn("UNCOMMITTED CHANGES", self.report())
 
+    def human_room(self, room, verdict):
+        """Put one human-named room in this project and fix its verdict."""
+        real_joined, real_bridge = cli.read_joined, cli.bridge_for
+        cli.read_joined = lambda: {room: {"identity": "me"}}
+        cli.bridge_for = lambda name: verdict
+        self.addCleanup(lambda: setattr(cli, "read_joined", real_joined))
+        self.addCleanup(lambda: setattr(cli, "bridge_for", real_bridge))
+
+    def test_doctor_reports_an_UNBRIDGED_human_room(self):
+        """Reachable without sending anything, which is the point. wcs found
+        their bridge was down because their human happened to mention a
+        message he never received."""
+        self.human_room("wcs_human", ("none", None))
+        self.assertIn("NO BRIDGE CONFIGURED", self.report())
+
+    def test_doctor_reports_a_bridge_aimed_at_ANOTHER_room(self):
+        self.human_room("supposedlysam_human", ("other", "wcs_human"))
+        text = self.report()
+        self.assertIn("NOT this room", text)
+        self.assertIn("#wcs_human", text)
+
+    def test_doctor_says_LAST_CHECKED_IN_for_a_live_bridge(self):
+        """Paired: the healthy state is reported too, with its age, so the
+        line is read rather than skipped as an alarm that is always on."""
+        self.human_room("wcs_human", ("live", 120000))
+        self.assertIn("last checked in 2m ago", self.report())
+
+    def test_doctor_distinguishes_NO_RECORD_from_STOPPED(self):
+        self.human_room("wcs_human", ("norecord", None))
+        stated = self.report()
+        self.assertIn("NO RECORD", stated)
+        self.assertNotIn("STOPPED", stated)
+
+    def test_doctor_reports_a_bridge_that_STOPPED(self):
+        """The state wcs called the most dangerous, and they are right: a
+        config is what makes a reader believe delivery happened, so a
+        configured bridge that died reads healthier than no bridge at all."""
+        self.human_room("wcs_human", ("stale", 4 * 60 * 60 * 1000))
+        text = self.report()
+        self.assertIn("STOPPED CHECKING IN 4h ago", text)
+
+    def test_an_UNKNOWN_verdict_prints_no_line_at_all(self):
+        """A sixth state added later must not fall through to whichever
+        branch happens to be last. Silence is the honest default for a
+        verdict this code has never heard of."""
+        self.human_room("wcs_human", ("something-new", None))
+        self.assertNotIn("wcs_human", self.report())
+
+    def test_an_ORDINARY_room_gets_no_bridge_line(self):
+        """`bridge_for` returns None for a room nobody expects to leave the
+        machine, and doctor must print nothing rather than a fifth state."""
+        self.human_room("learnings", None)
+        self.assertNotIn("BRIDGE", self.report())
+
     def bind(self, verdict):
         real = cli.server_bind
         cli.server_bind = lambda server: verdict

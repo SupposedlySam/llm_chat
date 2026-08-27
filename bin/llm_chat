@@ -1863,6 +1863,119 @@ def do_mode(server, name, identity, mode, yes):
     return chan
 
 
+# A ROOM NAMED FOR A PERSON. llms.txt documents the convention — "Some rooms
+# are bridged to a human's Slack by bin/llm-chat-slack, and are named for the
+# person: #supposedlysam_human" — and until now the naming was load-bearing in
+# the docs and carried no weight whatsoever in the code. A room could be named
+# for a human, addressed to a human, and connected to nothing.
+HUMAN_ROOM = re.compile(r"_human$", re.IGNORECASE)
+
+# How long a bridge heartbeat stays believable. It beats every poll, and the
+# default poll is seconds, so minutes of silence is already many missed beats.
+BRIDGE_FRESH_MS = 5 * 60 * 1000
+
+BRIDGE_CONFIG = os.path.join(ROOT, ".llm_chat", "slack.json")
+BRIDGE_ALIVE = os.path.join(ROOT, ".llm_chat", "slack-alive.json")
+
+
+def bridge_for(room):
+    """What will actually carry this room to a human. A verdict, or None.
+
+    None means the question does not apply — this is not a room named for a
+    person, so nobody expects it to leave the machine.
+
+    Otherwise one of:
+      ("none",  None)      no bridge config exists at all
+      ("other", <room>)    a bridge is configured, for a DIFFERENT room
+      ("norecord", None)   configured for this room, no heartbeat ever seen
+      ("stale", age_ms)    configured, and the heartbeat stopped
+      ("live",  age_ms)    configured, and beating
+
+    WHY THIS EXISTS. `say` into a human-named room with nothing serving it
+    printed success. Reported by wcs after their human lost a message and only
+    noticed by chance: the line they read was
+
+        LEFT FOR supposedlysam — no live session, so nobody was woken
+
+    which is the SAME sentence printed for a bridged room whose human is
+    asleep — the case where the message does arrive. They read it as
+    queued-for-a-person, said so, and it was not.
+
+    NORECORD AND STALE ARE NOT THE SAME AND MUST NOT BE MERGED. A bridge
+    running from a build older than the heartbeat writes nothing here and is
+    working perfectly; that is `norecord`, and it is the same distinction this
+    repo already draws for hook probes, where absence of a mark is never proof
+    a hook has not fired. `stale` is a bridge that beat and then stopped.
+
+    AND CURSOR AGE IS NOT USED, though it is the obvious file to reach for.
+    `write_cursor` fires only on inbound Slack traffic, so a bridge that is up
+    and quiet never touches it and a bridge that died last week looks
+    identical. Reading it as liveness is a confident answer about the wrong
+    subject — the shape this repo has spent the week removing.
+    """
+    if not HUMAN_ROOM.search(room or ""):
+        return None
+    try:
+        with open(BRIDGE_CONFIG) as f:
+            configured = (json.load(f) or {}).get("room")
+    except (OSError, ValueError):
+        return ("none", None)
+    if not configured:
+        return ("none", None)
+    if configured != room:
+        return ("other", configured)
+    try:
+        with open(BRIDGE_ALIVE) as f:
+            beat = json.load(f) or {}
+    except (OSError, ValueError):
+        return ("norecord", None)
+    if beat.get("room") != room or not isinstance(beat.get("at"), (int, float)):
+        return ("norecord", None)
+    age = now_ms() - beat["at"]
+    return ("live" if age <= BRIDGE_FRESH_MS else "stale", age)
+
+
+def bridge_note(room):
+    """The line `say` prints about whether a person will see this, or "".
+
+    NOT A REFUSAL, and wcs asked for that explicitly: the message is stored
+    correctly and readable, and using a room as a queue for a bridge you will
+    start later is legitimate. What was missing is not permission, it is the
+    fact.
+    """
+    verdict = bridge_for(room)
+    if verdict is None:
+        return ""
+    state, detail = verdict
+    if state == "none":
+        return ("  NO SLACK BRIDGE IS CONFIGURED, so nothing here leaves "
+                "llm_chat.\n  The room is named for a person; that naming is "
+                "a convention, not a delivery.")
+    if state == "other":
+        return ("  THE SLACK BRIDGE IS CONFIGURED FOR #%s, NOT THIS ROOM, so "
+                "nothing here\n  leaves llm_chat." % detail)
+    if state == "norecord":
+        return ("  A bridge is configured for this room but has never checked "
+                "in, so there is\n  NO RECORD that one is running. That is "
+                "not proof of absence — a bridge from\n  an older build does "
+                "not report itself — but do not assume delivery.")
+    if state == "stale":
+        return ("  A bridge is configured for this room and STOPPED CHECKING "
+                "IN %s ago.\n  A configured bridge is what makes this look "
+                "delivered; nothing is carrying it." % human_age(detail))
+    return ""
+
+
+def human_age(ms):
+    """A duration a person can read, from milliseconds."""
+    minutes = int((ms or 0) / 60000)
+    if minutes < 60:
+        return "%dm" % minutes
+    if minutes < 60 * 48:
+        return "%dh" % (minutes // 60)
+    return "%dd" % (minutes // 1440)
+
+
 def crowded_room_hint(channel, members, audience):
     """Told once per room, to the agent that just paid for it.
 
@@ -2680,6 +2793,14 @@ def do_say(server, name, identity, text, audience=None, thread=None,
                  if m != identity and wakes({"audience": audience}, m, chan)
                  and ring(name, m, server)]
     print(f"  {say_reach(server, name, identity, audience, chan)}")
+    # DIRECTLY UNDER THE REACH LINE, because that is the line being corrected.
+    # "LEFT FOR <name> — no live session, so nobody was woken" is printed
+    # whether or not a bridge exists, and for a bridged room it is TRUE and
+    # harmless: the human is asleep and will see it in Slack. For an unbridged
+    # one it is the sentence that made a reader believe a message had been
+    # queued for a person when nothing was carrying it.
+    if note := bridge_note(name):
+        print(note)
     if listening:
         print(f"  rang {len(listening)} listening now: {', '.join(listening)}")
     if not chan.get("broadcast") and (hint := crowded_room_hint(
@@ -4514,6 +4635,35 @@ def do_doctor(server):
     # somebody wrote and this one reads the socket. A server started before
     # `--host=::1` existed keeps its old bind for as long as it runs, and no
     # correction to any document reaches it.
+    # THE ROOMS THAT CLAIM TO REACH A PERSON. Asked here so it can be found
+    # without sending anything — wcs learned their bridge was down by their
+    # human happening to mention a message he never got.
+    for room in sorted(r for r in (read_joined() or {}) if HUMAN_ROOM.search(r)):
+        verdict = bridge_for(room)
+        state, detail = verdict if verdict else (None, None)
+        # BRANCHES, NOT A DICT OF FORMATTED STRINGS. Written as a dict first,
+        # which evaluates EVERY value before looking one up — so `human_age`
+        # was handed the room name from the `other` case and `doctor` died
+        # with a TypeError. `detail` is deliberately a different type per
+        # state (a room name, an age, or nothing), and a lookup table over
+        # values that are not all valid is a crash waiting for whichever state
+        # the machine happens to be in. This one is live here.
+        if state == "none":
+            says = "NO BRIDGE CONFIGURED — nothing here leaves llm_chat"
+        elif state == "other":
+            says = "bridge is configured for #%s, NOT this room" % detail
+        elif state == "norecord":
+            says = ("configured, NO RECORD of a bridge running "
+                    "(not proof of absence)")
+        elif state == "stale":
+            says = ("configured, but STOPPED CHECKING IN %s ago"
+                    % human_age(detail))
+        elif state == "live":
+            says = "bridged, last checked in %s ago" % human_age(detail)
+        else:
+            continue
+        print("  #%-18s %s" % (room, says))
+
     bind = server_bind(server)
     if bind == "wide":
         print("  server bind         WIDE — listening on every interface, and "

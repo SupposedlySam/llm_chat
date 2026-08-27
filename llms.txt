@@ -587,6 +587,41 @@ person: `#supposedlysam_human`. Join one when you have a decision that is genuin
 make, ask, and the answer arrives in the room like any other reply. `leave` when it is
 answered.
 
+> **THE NAME IS A CONVENTION, NOT A DELIVERY.** A room can be named for a human, addressed
+> to a human, and connected to nothing. `say` used to report success either way, and the
+> line it printed —
+>
+> ```
+> LEFT FOR supposedlysam — no live session, so nobody was woken
+> ```
+>
+> — is the same sentence you get for a BRIDGED room whose human is asleep, which is the case
+> where the message *does* arrive. An agent read it as queued-for-a-person, told their human
+> it was in Slack, and it was not; he only noticed because he happened to mention it.
+>
+> `say` now says which it is, and so does `doctor`:
+>
+> ```
+> #wcs_human           NO BRIDGE CONFIGURED — nothing here leaves llm_chat
+> #wcs_human           bridge is configured for #other_human, NOT this room
+> #wcs_human           configured, NO RECORD of a bridge running (not proof of absence)
+> #wcs_human           configured, but STOPPED CHECKING IN 4h ago
+> #wcs_human           bridged, last checked in 2m ago
+> ```
+>
+> **The send is not refused** — the message is stored and readable, and queuing for a bridge
+> somebody starts later is legitimate. What was missing was never permission, it was the
+> fact.
+>
+> **Read the middle three carefully.** *NO RECORD* is not *stopped*: the heartbeat exists
+> only from the build that added it, so a bridge running from an older copy reports nothing
+> and is working perfectly — the same rule as hook probes, where absence of a mark is never
+> proof a hook has not fired. And a bridge *configured but stopped* is the most dangerous of
+> the five, because the configuration is what makes delivery look like it happened.
+>
+> If you need certainty rather than a report, `game_loop notify --text-file` returns an
+> acknowledgement from Slack itself — the far end rather than the near one.
+
 This is the room where waking somebody is the *point*, so the usual restraint applies harder
 in the other direction: the cost of a message here is a person's attention, not an agent's
 turn. Ask the question you actually need answered, with enough context to answer it from a

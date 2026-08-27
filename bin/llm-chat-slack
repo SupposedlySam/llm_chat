@@ -65,6 +65,25 @@ STATE = os.path.join(ROOT, ".llm_chat")
 CONFIG = os.path.join(STATE, "slack.json")
 FALLBACK = os.path.join(ROOT, ".game_loop", "notify.json")
 CURSOR = os.path.join(STATE, "slack-cursor.json")
+# PROOF OF LIFE, written every poll whether or not anything moved.
+#
+# Nothing on disk could answer "is the bridge running". The cursor looks like
+# it should: it is a file this process writes. But `write_cursor` fires only
+# on INBOUND Slack traffic, so a bridge that is up and quiet never touches it,
+# and a bridge that died last week looks identical to one that has simply had
+# nothing to relay. Reading its age as liveness is a confident answer about
+# the wrong subject.
+#
+# The cost of not knowing was paid by a person. An agent said something into a
+# human-named room, `say` reported success, and no bridge was serving it —
+# the message reached nobody and was believed delivered. This is the file that
+# makes the difference visible from outside.
+#
+# Same shape as the hooks' probe marks in `.llm_chat/probe/`, and it carries
+# the same caveat: it exists only from its own start, so ABSENCE is NO RECORD
+# rather than proof the bridge is down. A bridge running from a build older
+# than this writes nothing here and is working perfectly.
+ALIVE = os.path.join(STATE, "slack-alive.json")
 THREADS = os.path.join(STATE, "slack-threads.json")
 REPLIES = os.path.join(STATE, "slack-replies.json")
 ASKED = os.path.join(STATE, "slack-asked.json")
@@ -220,6 +239,34 @@ def own_tmp(path):
     exactly this process's normal condition.
     """
     return "%s.tmp.%d" % (path, os.getpid())
+
+
+def beat(room):
+    """Say the bridge is alive, and WHICH room it is serving.
+
+    The room matters as much as the timestamp: a bridge configured for one
+    room proves nothing about a message sent into another, and the reader of
+    this file is trying to answer a question about one specific room.
+
+    Best-effort. A bridge that cannot write its own heartbeat must keep
+    bridging — the heartbeat is a diagnostic, and letting it take down the
+    thing it describes would be the guard breaking its own subject.
+
+    `Exception`, NOT `OSError`, and the test caught the difference: a path
+    containing a null byte raises ValueError out of `makedirs`, not OSError,
+    so the narrow catch let a diagnostic kill the bridge it was reporting on.
+    Every filesystem failure worth naming is already invisible here by
+    design — there is no branch in which this function has anything to say —
+    so the honest bound is "nothing this does may propagate".
+    """
+    try:
+        os.makedirs(os.path.dirname(ALIVE), exist_ok=True)
+        tmp = own_tmp(ALIVE)
+        with open(tmp, "w") as f:
+            json.dump({"room": room, "at": int(now() * 1000)}, f)
+        os.replace(tmp, ALIVE)
+    except Exception:
+        pass
 
 
 def write_cursor(ts):
@@ -1096,6 +1143,12 @@ def main() -> int:
             print("room #%s no longer exists — bridge stopping, state cleared"
                   % config["room"])
             return 0
+        # BEFORE the pumps, not after. A bridge whose Slack calls are failing
+        # is still a bridge that is RUNNING, and that is exactly the state a
+        # reader needs told apart from "nothing is serving this room" — the
+        # remedies are opposite. Beating only on a successful poll would go
+        # silent during an outage and report it as absence.
+        beat(config["room"])
         out = pump_out(config, slack)
         back = pump_in(config, slack)
         if out or back:

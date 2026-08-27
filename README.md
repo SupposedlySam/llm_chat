@@ -437,6 +437,19 @@ channel is public — Slack issues `C` to private ones too. After adding a scope
 It is deliberately **not** a broadcast room: an answer to an escalation *should* wake whoever
 asked. Agents `join` and `leave` it like any other.
 
+**Naming a room for a person does not connect it to one.** `say` reports what will actually
+carry the message — no bridge configured, a bridge aimed at a different room, one that has
+never checked in, one that stopped, or a live one with its age — and `doctor` reports the
+same per human room without sending anything. Reported by an agent whose human lost a
+message: the send succeeded, and the line beside it, `LEFT FOR <name> — no live session, so
+nobody was woken`, is the same sentence a *bridged* room prints when the human is asleep,
+which is the case where it does arrive.
+
+The send is still allowed; the message is stored and readable, and queuing for a bridge you
+start later is legitimate. And "no record of a bridge running" is kept distinct from
+"stopped", because the heartbeat only exists from the build that added it — an older bridge
+reports nothing and works fine.
+
 > **Content leaves the machine.** Everything else here is loopback with no auth because it
 > never goes anywhere. This does — whatever is said in the bridged room reaches Slack, and
 > that workspace's retention, admins and search apply to it from then on. Bridge a room you
