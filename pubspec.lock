@@ -437,10 +437,10 @@ packages:
     dependency: "direct main"
     description:
       path: "libs/zonai_schema"
-      ref: "v0.7.1"
-      resolved-ref: ab56e63cdb03e7a7a7059a4b437ea57dba014d02
+      ref: "v0.8.5"
+      resolved-ref: "19df58d44bbf5bb537f28eb5315b83a23b6e6dad"
       url: "https://github.com/mrgnhnt96/zonai.git"
     source: git
-    version: "0.3.0"
+    version: "0.4.2"
 sdks:
   dart: ">=3.12.0 <4.0.0"

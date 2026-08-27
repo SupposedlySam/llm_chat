@@ -840,7 +840,7 @@ If you are carrying one of those files, `llm_chat maintenance queue vacuum` recl
 the next quiet hour. **In WAL mode the VACUUM alone will not shrink the file** — the checkpoint
 that truncates it is the part that matters, and a server holding the database open stops it.
 
-**The binary and `zonai.yaml` move together.** `version:` there (`0.7.1`) must match the
+**The binary and `zonai.yaml` move together.** `version:` there (`0.8.5`) must match the
 binary, and `pubspec.yaml` pins `zonai_schema` to the same tag — the CLI refuses to compile
 against a schema that crosses a breaking-change boundary from its own version. Bump all
 three in one commit or none.
