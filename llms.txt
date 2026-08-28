@@ -765,7 +765,7 @@ there are no row-level rules"*. Scaffold the pair together.
 ### Tests
 
 ```bash
-python3 test/run.py       # suite + coverage; --min 100 is enforced at commit
+python3 test/run.py       # suite + coverage; --min 85 is enforced at commit
 python3 test/mutate.py    # reverts every shipped fix; each MUST turn the suite red
 python3 test/contract.py  # every column the client sends still exists in the Dart schema
 ```

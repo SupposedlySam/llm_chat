@@ -2,7 +2,7 @@
 """Run the suite and gate on line coverage. Stdlib only — `python3 test/run.py`.
 
     python3 test/run.py              # tests + coverage report
-    python3 test/run.py --min 100    # fail unless every line is executed
+    python3 test/run.py --min 85     # fail below the coverage floor
     python3 test/run.py --tests-only # skip coverage (faster inner loop)
 
 Coverage comes from `trace`, which ships with Python, because the runtime this

@@ -21,10 +21,15 @@
 #
 #   · It does NOT run the mutation sweep. That is the check that says whether
 #     a behaviour is DEFENDED rather than merely covered, and it is the more
-#     valuable of the two — but it reverts 179 fixes and runs the whole suite
-#     against each, in eight shards, and takes tens of minutes. It stays on
-#     the commit gate. A green tick here means the tests pass, not that the
-#     tests would notice if the code broke.
+#     valuable of the two — but it reverts every fix in its table and runs the
+#     whole suite against each, self-sharded, and takes tens of minutes. This
+#     paragraph used to end "It stays on the commit gate." It no longer does:
+#     it was the largest cost of touching bin/, test/ or triggers/, gated
+#     nothing anybody was waiting on, and was being killed mid-run rather than
+#     obeyed. It is now `.github/workflows/mutation-sweep.yml`, nightly, and
+#     it files one issue. A green tick here means the tests pass, not that the
+#     tests would notice if the code broke — and that second question is now
+#     answered the following morning rather than at the commit.
 #   · Some tests SKIP here and run locally: the macOS-only reload path, the
 #     ones needing the `claude` CLI, and the ones reading a gitignored
 #     per-machine config. They announce their reason rather than vanishing,

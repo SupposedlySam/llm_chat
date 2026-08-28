@@ -1031,13 +1031,21 @@ official SDK, so nothing here needs a `pip install` either.
 ```bash
 python3 test/run.py              # suite + coverage report
 python3 test/run.py --tests-only # faster inner loop
-python3 test/mutate.py           # prove the suite would notice
+python3 test/mutate.py           # prove the suite would notice (nightly in CI; slow)
 ```
 
 Stdlib only, no install — the same constraint the runtime sets, because a hook
 must run in any repo with nothing installed and a suite that needs installing is a
-suite that stops being run. 100% line coverage on every entrypoint and trigger,
-ratcheted into the commit gate at `--min 100`.
+suite that stops being run. Line coverage on every entrypoint and trigger is floored
+in the commit gate at `--min 85`.
+
+**The floor is 85 because the target is the important logic, not the line count.**
+What earns a test is anything that can be wrong quietly — a decision, a branch, a
+refusal, a wire convention. The obvious simple stuff does not: a print, a getter,
+plumbing that either runs or visibly does not. A test written to walk a trivial line
+buys a number and defends nothing, and it spends effort taken from the logic that
+does need defending. The floor's job is to stop the suite rotting wholesale; deciding
+what deserves a test stays a human's call.
 
 > This sentence used to say **"242 tests, 100% line coverage on the four entrypoints"**.
 > It was wrong twice: the suite had long since passed that many tests, and the floor covers

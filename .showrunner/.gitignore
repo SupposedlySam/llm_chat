@@ -23,3 +23,4 @@ seen-issues.json
 # file is first created never reaches anybody who already had the tool.
 bin/
 lib/
+merged-proof-*.txt

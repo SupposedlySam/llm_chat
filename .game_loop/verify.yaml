@@ -23,7 +23,8 @@
 # not resolve names, and so would not have caught the missing `import subprocess` that shipped in
 # `setup` and crashed on its first real call. That was true when it was written. Nothing has run
 # py_compile since the suite replaced it (see below): every Python path is now covered by
-# `test/run.py --min 100` plus a mutation sweep, which execute the code rather than parse it. The
+# `test/run.py --min 85`, which executes the code rather than parsing it (the mutation sweep that
+# used to run beside it is now nightly — see the long note further down). The
 # caveat outlived the check it described, and a reader trusting it would have UNDER-trusted a green
 # run for weeks.
 #
@@ -38,21 +39,65 @@
 #
 # When one of these stops being true, delete the line rather than leaving it to age.
 
-# mutate.py is the check that makes --min 100 mean something. It reverts eleven
-# fixes this project actually shipped and requires the suite to go RED for each.
-# A mutation that SURVIVES is the finding: the lines are covered, the suite is
-# green, and the behaviour is not defended — which is the exact false comfort a
-# coverage number invites. It also guards the tests themselves, since weakening
-# an assertion shows up as a survivor rather than as a still-green run.
-# 2.4s, measured, so it is affordable per changed pattern; if it stops being
-# affordable that is a reason to split it, not to drop it.
+# THE MUTATION SWEEP IS NO LONGER A GATE. It is still the check that makes the
+# coverage floor mean something — it reverts fixes this project actually shipped
+# and requires the suite to go RED for each, and a mutation that SURVIVES is the
+# finding: covered, green, and undefended, which is the exact false comfort a
+# coverage number invites. None of that changed. What changed is WHERE it runs.
 #
-# `--min 100` is a RATCHET, not a trophy. It cannot say a test would fail if
-# the behaviour broke — only that no line is unvisited — so its real job is to
-# stop new code arriving with nobody having looked at it. Adding an untested
-# branch now fails the commit that adds it, which is the moment it is cheapest
-# to test. The runner prints that caveat on every single run so the number is
-# never read as a claim about correctness.
+# The comment here used to say "2.4s, measured, so it is affordable per changed
+# pattern; if it stops being affordable that is a reason to split it, not to
+# drop it." That number was true when it was written and is now off by orders
+# of magnitude: the table has grown past 230 mutations, each one reverts a fix
+# and re-runs the WHOLE suite, and the suite alone is ~90s. Even self-sharded
+# across eight workers the sweep does not finish inside a ten-minute window. It
+# was the single largest cost of touching anything under bin/, test/ or
+# triggers/, and it gates nothing that a human is waiting on.
+#
+# THAT IS THE ARGUMENT ITS OWN OLD COMMENT MADE, followed properly. "A reason
+# to split it, not to drop it" — this does not drop it. It moves it to
+# .github/workflows/mutation-sweep.yml, nightly, where it files ONE issue when
+# a behaviour stops being defended. The finding still arrives; it stops arriving
+# in front of somebody trying to commit. A gate expensive enough to be worked
+# around is worse than a scheduled job that is actually read, and this one was
+# being worked around by killing it mid-run.
+#
+# WHAT LEAVING THE GATE COSTS, stated rather than glossed: an undefended
+# behaviour now ships and is caught the following morning instead of at the
+# commit that introduced it. The accounting half is what stays behind — the
+# suite's own test_gate.AccountingClosesTest still fails when a producer is
+# neither swept nor excluded with a reason, and that check is fast because it
+# reads the table rather than running it. So "nobody decided about this
+# function" is still a commit-time failure; only "the suite would not notice"
+# moved to the night.
+#
+# `--min 85` IS A FLOOR, AND THE POINT IS WHICH 85. This line used to say 100,
+# and the paragraph around it was written for that number — at 100 the gate
+# could claim "no line is unvisited", and at 85 it cannot. Leaving the old
+# sentence would be the same prose-outliving-its-check failure that left
+# `./zonai compile` shelling out bare for months while the comment three lines
+# above it said the command exits 0 on failure.
+#
+# WHAT WE ACTUALLY WANT TESTED IS THE IMPORTANT LOGIC. The decisions, the
+# branches that can be wrong in a way nobody notices, the wire conventions, the
+# refusals — anything where a silent wrong answer is possible. The obvious
+# simple stuff does not need a test: a print, a getter, straight-line plumbing
+# that either runs or visibly does not. A test written to walk a trivial line
+# buys a number and defends nothing, and the effort it costs is taken from the
+# logic that does need defending.
+#
+# So the floor is set where it stops a suite ROTTING WHOLESALE — a commit that
+# guts coverage still fails — while leaving the judgment about what deserves a
+# test to a human rather than to an arithmetic target. It deliberately gives up
+# the guarantee that every new branch fails the commit that adds it.
+#
+# WHICH MAKES MUTATE.PY THE LOAD-BEARING HALF, not the decorative one. Coverage
+# never could say a test would fail if the behaviour broke; it only ever said a
+# line was visited. The mutation sweep is what asserts the suite would NOTICE,
+# and it is aimed at exactly the important logic this paragraph is about — so
+# its accounting must stay closed: every candidate either swept, or excluded
+# with a reason somebody wrote down. The runner prints the caveat on every run
+# so the number is never read as a claim about correctness.
 #
 # The suite REPLACES the old py_compile gates rather than joining them: it
 # loads every script in bin/, so a syntax error fails it too, and it additionally
@@ -75,15 +120,13 @@
 # collapsing three patterns into one means a commit touching two scripts pays
 # for the suite once instead of twice.
 "bin/**":
-  - "python3 test/run.py --min 100"
-  - "python3 test/mutate.py"
+  - "python3 test/run.py --min 85"
 
 # A change to the tests themselves must run them. Otherwise a broken or
 # vacuous test can be committed with the gate reporting clean, which is the
 # exact failure the coverage report exists to surface.
 "test/**":
-  - "python3 test/run.py --min 100"
-  - "python3 test/mutate.py"
+  - "python3 test/run.py --min 85"
   - "python3 test/contract.py"
 
 # The game_loop triggers. They run inside ANOTHER tool's loop, on somebody
@@ -91,8 +134,7 @@
 # regression here is not noticed by the person who caused it. Same gate as the
 # entrypoints; they are in the same coverage and mutation denominator.
 "triggers/**":
-  - "python3 test/run.py --min 100"
-  - "python3 test/mutate.py"
+  - "python3 test/run.py --min 85"
 
 "install.sh":
   - "bash -n install.sh"

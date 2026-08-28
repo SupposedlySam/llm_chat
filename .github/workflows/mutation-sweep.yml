@@ -1,0 +1,137 @@
+# The mutation sweep, moved OFF the interactive path.
+#
+# The sweep reverts fixes this project actually shipped, one at a time, and re-runs the whole
+# suite against each to see which assertions actually notice. It is the only instrument here for
+# "does that test test anything" — a mutation that SURVIVES is covered, green and undefended,
+# which is the exact false comfort a coverage number invites.
+#
+# It used to run on the commit gate, and verify.yaml justified that with "2.4s, measured". The
+# table has since grown past 230 mutations; each one re-runs a ~90s suite, and even self-sharded
+# across eight workers it does not finish inside a ten-minute window. It became the single largest
+# cost of touching anything under bin/, test/ or triggers/ — and it gates nothing anybody is
+# waiting on. A gate expensive enough to get worked around is worse than a scheduled job that is
+# actually read.
+#
+# So the finding still arrives; it stops arriving in front of a human trying to commit.
+#
+# WHAT STAYED ON THE GATE. The ACCOUNTING half — test_gate.AccountingClosesTest — still fails a
+# commit when a producer is neither swept nor excluded with a written reason. It reads the table
+# rather than running it, so it is fast. "Nobody decided about this function" is still caught at
+# commit time; only "the suite would not notice" moved to the night.
+#
+# WHY macOS. mutate.py copies the repo, shells out, and the suite makes real git calls; some tests
+# skip off macOS and announce that they did. Every measurement behind this sweep was taken on a
+# Mac, and a nightly that fails for platform reasons rather than coverage reasons is a nightly
+# people learn to ignore — which costs more than not having one.
+#
+# WHY NO OUTER SHARD MATRIX. mutate.py shards itself, across `min(8, cpus - 1)` workers, each in
+# its own throwaway copy, and it sets LLM_CHAT_SWEEP_SHARD on the workers it spawns. Setting that
+# variable from outside would make the run believe it IS a worker and sweep a fraction while
+# reporting clean — the failure mode game_loop's own sweep workflow calls out. If this outgrows
+# the timeout, the fix is a shard flag mutate.py owns, not an env var set over its head.
+name: mutation sweep (nightly)
+
+on:
+  schedule:
+    # 08:00 UTC — roughly 1am Pacific, so a failure is waiting in the morning rather than
+    # interrupting the day.
+    - cron: "0 8 * * *"
+  workflow_dispatch:
+
+# Least privilege: read the code, write one issue. Nothing here pushes.
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  # A sweep still running when the next night arrives should finish, not be raced by a second one.
+  group: mutation-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    name: sweep
+    runs-on: macos-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # mutate.py copies the tree and the suite makes real git calls of its own.
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: run the sweep
+        run: |
+          set -o pipefail
+          python3 test/mutate.py 2>&1 | tee sweep.log
+
+      - name: keep the log either way
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sweep
+          path: sweep.log
+          retention-days: 14
+
+  report:
+    name: file an issue if anything regressed
+    needs: sweep
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: logs
+
+      - name: open ONE issue, and only if none is open
+        # A nightly that opens an issue every night is a nightly nobody reads. One open issue at a
+        # time: while it stands, later failures are visible in this workflow's own run history,
+        # and closing it is what re-arms the report.
+        if: needs.sweep.result != 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        run: |
+          set -euo pipefail
+          # The label has to exist before it can be filtered on or applied, and a fresh clone has
+          # none but the defaults. Creating it is idempotent.
+          gh label create mutation-sweep --repo "$GITHUB_REPOSITORY" \
+             --color B60205 --description "the nightly mutation sweep is not clean" \
+             2>/dev/null || true
+
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                       --label mutation-sweep --state open \
+                       --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            echo "issue #$existing is already open for this; not filing another."
+            exit 0
+          fi
+
+          {
+            echo "The nightly mutation sweep did not come back clean."
+            echo
+            echo "Run: $RUN_URL"
+            echo
+            echo "A mutation that SURVIVES is the finding: the lines are covered, the suite is"
+            echo "green, and the behaviour is not defended. A CRASHED mutation is not a pass"
+            echo "either — it means the mutant killed its test by raising rather than by being"
+            echo "measured, and that number may only go down."
+            echo
+            echo "What the sweep said:"
+            echo
+            echo '```'
+            grep -hE 'SURVIVED|CRASHED|mutation\(s\)|ceiling' logs/*/sweep.log 2>/dev/null \
+              | sort -u | head -40 || echo "(no verdict lines — see the run)"
+            echo '```'
+            echo
+            echo "Opened by \`.github/workflows/mutation-sweep.yml\`. While this stays open no"
+            echo "further issues are filed, so close it once the sweep is clean again."
+          } > body.md
+
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "mutation sweep: a behaviour is covered but not defended" \
+            --label mutation-sweep \
+            --body-file body.md
