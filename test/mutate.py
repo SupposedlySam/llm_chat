@@ -240,15 +240,15 @@ def sole_sweep():
 
 # (name, file, find, replace-with, what breaking it should mean)
 MUTATIONS = [
-    ("the .aot snapshots are deleted after every compile", "bin/llm_chat",
-     "            os.remove(path)\n            dropped.append(name)",
-     "            dropped.append(name)",
-     "the snapshots survive the compile that produced them, so zonai's "
-     "mailman hands one to Isolate.spawnUri, the spawn aborts the VM in "
-     "snapshot_utils.cc instead of throwing, and the server that setup just "
-     "started dies on the FIRST /db request — with the client seeing a closed "
-     "connection and no status code, which reads as a network fault rather "
-     "than a build one"),
+    ("the compile runs under the SDK the host embeds", "bin/llm_chat",
+     "    env = dict(os.environ, DART_SDK=sdk)",
+     "    env = dict(os.environ)",
+     "the workers and their .aot snapshots are built by whatever dart "
+     "raindrop resolves first — which is FVM's, ahead of PATH, on any machine "
+     "with ~/fvm — so a newer SDK produces a snapshot the host cannot load, "
+     "Isolate.spawnUri aborts the VM in snapshot_utils.cc instead of throwing, "
+     "and the server dies on the FIRST /db request with the client seeing a "
+     "closed connection and no status code"),
 
     ("cursor high-water", "bin/llm_chat",
      'high_water = max((m["seq"] for m in fetched), default=since)',
@@ -2282,6 +2282,17 @@ MUTATIONS = [
 NOT_SWEPT = {
     # Asserted directly, so a mutation would be redundant rather than absent:
     # these have tests that fail the moment their behaviour changes.
+    "bin/llm_chat:sdk_version": "asserted directly: a real SDK root and a "
+        "directory that is not one",
+    "bin/llm_chat:matching_dart_sdk": "asserted directly over the three cases "
+        "that matter — DART_SDK matching, DART_SDK set to the WRONG version, "
+        "and a prefix that must not count as a match",
+    "bin/llm_chat:host_dart_version": "asserted directly against the real "
+        "binary, and for the unextracted-cache case that must read as None",
+    "bin/llm_chat:dart_sdk_candidates": "a generator of PATHS, not a decision. "
+        "Every ordering property it has is asserted through "
+        "matching_dart_sdk, which is the only caller and IS covered above; "
+        "mutating it would only reorder a list whose consumer is checked",
     "bin/llm_chat:b": "wire convention asserted directly (0/1, not true/false)",
     "bin/llm_chat:now_ms": "wire convention asserted directly (epoch millis)",
     "bin/llm_chat:eq": "query shape asserted directly",

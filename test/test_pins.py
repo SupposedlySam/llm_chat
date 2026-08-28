@@ -69,5 +69,38 @@ class VersionPinTest(unittest.TestCase):
         self.assertEqual(schema_ref(), binary_version())
 
 
+class HostDartPinTest(unittest.TestCase):
+    """The FOURTH thing that must agree, and the one with no loud failure.
+
+    The other three refuse or misbehave visibly. This one does not: build the
+    workers with an SDK newer than the host's and everything reports success —
+    compile prints its counts, the workers exist, the suite is green — and the
+    server then aborts the VM on the first /db request, which reaches the
+    client as a closed connection rather than any kind of error.
+
+    So it is checked here, against the binary itself rather than against a note
+    somebody kept up to date.
+    """
+
+    def setUp(self):
+        sys.path.insert(0, os.path.join(ROOT, "test"))
+        from support import load
+        self.cli = load("llm_chat")
+
+    def test_HOST_DART_matches_the_vendored_binary(self):
+        found = self.cli.host_dart_version()
+        if found is None:
+            self.skipTest(
+                "the fat binary has not been extracted yet — only the "
+                "unpacked slice in ~/.cache/zonai/fat carries the version in "
+                "the clear, so a tree that has never run ./zonai cannot "
+                "answer this. Run any zonai command and re-run.")
+        self.assertEqual(
+            self.cli.HOST_DART, found,
+            "bin/llm_chat pins Dart %s and the vendored zonai host embeds %s; "
+            "the workers would be built for a runtime that cannot load them"
+            % (self.cli.HOST_DART, found))
+
+
 if __name__ == "__main__":
     unittest.main()

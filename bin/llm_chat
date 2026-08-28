@@ -5350,62 +5350,107 @@ def missing_workers():
             if not os.path.isfile(os.path.join(built, w + ".exe"))]
 
 
-# The AOT snapshots `zonai compile` writes beside the workers, and the reason
-# this project deletes them the moment they appear.
+# The Dart SDK zonai must build with, and why this is a PIN rather than
+# whatever `dart` happens to be first on PATH.
 #
-# zonai's mailman prefers in-process dispatch: when
-# `.zonai/executables/db_rules.aot` exists it hands that path to
-# `Isolate.spawnUri`, and falls back to the worker PROCESS only when the spawn
-# fails. That fallback is real, and zonai's own comment beside it says dispatch
-# "serves identically" through it — but it is never reached here, because the
-# failure is not an exception. The spawn aborts the VM inside the runtime:
+# `zonai compile` shells out to a `dart` to build the workers and the
+# `.aot` snapshots beside them. The zonai host then loads those snapshots
+# in-process via `Isolate.spawnUri`. Build them with an SDK newer than the one
+# the host embeds and the spawn does not throw — it aborts the VM:
 #
 #     ../../runtime/bin/snapshot_utils.cc: 269:
 #       error: Failed to resolve symbol 'kDartIsolateSnapshotData'
 #
-# A native FATAL, so the `catch` around the spawn never runs and neither does
-# the fallback. The server binds, logs "Serving at", and then dies on the FIRST
-# /db request — the client sees a closed connection rather than a status code,
-# which reads as a network fault rather than a build one.
+# A native FATAL, so zonai's `catch` around the spawn never runs and neither
+# does its fallback to the worker process. The server binds, logs "Serving at",
+# and dies on the FIRST /db request with the client seeing a closed connection
+# and no status code.
 #
-# MEASURED IN BOTH DIRECTIONS on 2026-08-27, so this is cause and not
-# correlation: with the two files removed, `llm_chat channels` answers, a
-# channel opens, a message round-trips and the server is still alive; copy them
-# back and the very next request kills it. Reproduced on zonai 0.8.5 and 0.7.1,
-# and under Dart 3.13.2 and 3.12.0 — neither the version bump nor the SDK is
-# the variable, the snapshots are.
+# WHICH DART GETS PICKED IS NOT PATH. raindrop's DartExecutable.resolve tries,
+# in order: a configured path, DART_SDK, DART_HOME, then FVM AND FLUTTER
+# INSTALL PATHS, then Platform.resolvedExecutable, and only then `dart` on
+# PATH. On a machine with `~/fvm/default` that is Flutter's bundled Dart, and
+# putting the right SDK on PATH does nothing at all — a whole afternoon was
+# spent concluding the SDK was irrelevant on exactly that mistake, because the
+# test never used the SDK it thought it was using. DART_SDK is set here because
+# it is position 2 and beats the FVM candidates.
 #
-# DELETING THE ARTIFACT IS THE FIX HERE, not a workaround dressed up as one:
-# the worker processes beside these files do the same job, so what is lost is
-# an optimisation that currently cannot run at all. The real repair belongs in
-# zonai, where the spawn should fail catchably instead of aborting the VM.
-SNAPSHOTS = ("db_rules.aot", "db_operations.aot")
+# 3.12.0 IS NOT A GUESS. It is the runtime compiled into the vendored `zonai`
+# host, read out of the extracted binary, and `test/test_pins.py` fails when
+# this constant and that binary disagree — so upgrading zonai without moving
+# this line is caught rather than discovered through a dead server.
+HOST_DART = "3.12.0"
 
 
-def drop_isolate_snapshots():
-    """Delete the .aot snapshots, returning the names that were actually there.
+def host_dart_version():
+    """The Dart the vendored `zonai` host embeds, or None if unreadable.
 
-    Runs after every compile this project performs, because `zonai compile`
-    RECREATES them — so this is not a one-time cleanup and a tree that skips it
-    cannot serve. Returning the list rather than a bool is what lets the caller
-    say which files it removed, and lets a test tell "removed two" from
-    "removed nothing and found nothing".
+    Only the EXTRACTED fat slice carries it in the clear: the committed
+    launcher is a /bin/sh header over an xz payload, so `strings` on the repo
+    file finds nothing. The slice appears in ~/.cache/zonai/fat/ the first time
+    the binary runs, which means a fresh clone legitimately cannot answer this
+    yet — hence None rather than a raise, and a caller that treats None as
+    "cannot check" rather than as "mismatch".
     """
-    built = os.path.join(ROOT, ".zonai", "executables")
-    dropped = []
-    for name in SNAPSHOTS:
-        path = os.path.join(built, name)
-        if os.path.isfile(path):
-            os.remove(path)
-            dropped.append(name)
-    if dropped:
-        # SAID OUT LOUD, because a silent delete of a file the build just
-        # produced is indistinguishable from a build that never produced it —
-        # and the next person debugging a missing artifact deserves the reason
-        # rather than a mystery.
-        print("  dropped %s (loading one aborts the VM on the first /db "
-              "request)" % ", ".join(dropped), flush=True)
-    return dropped
+    import glob
+    import re
+    cache = os.path.expanduser("~/.cache/zonai/fat")
+    slices = glob.glob(os.path.join(cache, "zonai-*"))
+    if not slices:
+        return None
+    newest = max(slices, key=os.path.getmtime)
+    try:
+        with open(newest, "rb") as handle:
+            blob = handle.read()
+    except OSError:
+        return None
+    found = re.search(rb"(\d+\.\d+\.\d+) \(stable\)", blob)
+    return found.group(1).decode() if found else None
+
+
+def sdk_version(root):
+    """The version an SDK root declares, from its own `version` file.
+
+    Reading the file rather than running `dart --version` because this is
+    called for every candidate and a subprocess per candidate is a visible
+    pause on a command that should feel instant.
+    """
+    try:
+        with open(os.path.join(root, "version")) as handle:
+            return handle.read().strip()
+    except OSError:
+        return None
+
+
+def dart_sdk_candidates():
+    """Where a matching SDK might live, most explicit first.
+
+    DART_SDK comes first so a human who has already answered this question is
+    not overruled. The rest are the two version managers this project has
+    actually been used under; a machine using neither falls through to None and
+    gets told what to do rather than being guessed at.
+    """
+    import glob
+    home = os.path.expanduser("~")
+    configured = os.environ.get("DART_SDK")
+    if configured:
+        yield configured
+    yield os.path.join(home, ".dvm", "darts", HOST_DART)
+    fvm = os.path.join(home, "fvm", "versions")
+    for root in sorted(glob.glob(os.path.join(fvm, "*"))):
+        yield os.path.join(root, "bin", "cache", "dart-sdk")
+
+
+def matching_dart_sdk():
+    """An SDK root whose version is exactly HOST_DART, or None.
+
+    Exact, not "close enough": the failure this prevents is a snapshot format
+    the host cannot load, and patch releases are free to move that.
+    """
+    for root in dart_sdk_candidates():
+        if sdk_version(root) == HOST_DART:
+            return root
+    return None
 
 
 def start_server(server) -> None:
@@ -5420,17 +5465,29 @@ def start_server(server) -> None:
         steps.append(["dart", "pub", "get"])
     steps += [["./zonai", "compile"], ["./zonai", "db", "migrate", "apply"]]
 
+    sdk = matching_dart_sdk()
+    if sdk is None:
+        raise SystemExit(
+            "no Dart %s SDK found, and the vendored zonai host embeds that "
+            "runtime.\n"
+            "  Building the workers with anything newer makes the server abort "
+            "on its\n  first /db request rather than fail in a way anything "
+            "can catch.\n"
+            "  Install it (`dvm install %s`) or point DART_SDK at one."
+            % (HOST_DART, HOST_DART))
+    env = dict(os.environ, DART_SDK=sdk)
+    print(f"  DART_SDK={sdk}", flush=True)
+
     for step in steps:
         print(f"  {' '.join(step)}", flush=True)
         done = subprocess.run(step, cwd=ROOT, capture_output=True, text=True,
-                              timeout=900)
+                              timeout=900, env=env)
         output = (done.stdout or "") + (done.stderr or "")
         if done.returncode != 0 or compile_failed(step, output):
             raise SystemExit(
                 f"setup failed at `{' '.join(step)}`:\n"
                 + (output.strip()[:800] or "(no output)")
             )
-    drop_isolate_snapshots()
 
     missing = missing_workers()
     if missing:
@@ -5457,7 +5514,7 @@ def start_server(server) -> None:
         subprocess.Popen(
             command,
             cwd=ROOT, stdout=log, stderr=log, stdin=subprocess.DEVNULL,
-            start_new_session=True,
+            start_new_session=True, env=env,
         )
 
     for _ in range(60):

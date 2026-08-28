@@ -840,32 +840,40 @@ If you are carrying one of those files, `llm_chat maintenance queue vacuum` recl
 the next quiet hour. **In WAL mode the VACUUM alone will not shrink the file** — the checkpoint
 that truncates it is the part that matters, and a server holding the database open stops it.
 
-**The `.aot` snapshots must be deleted after every compile, or the server dies on the
-first request.** `zonai compile` writes `db_rules.aot` and `db_operations.aot` beside the
-worker executables. zonai's mailman prefers in-process dispatch, so when those files exist it
-hands the path to `Isolate.spawnUri` — and the spawn does not throw when it cannot load the
-snapshot. It aborts the VM:
+**Build the workers with the SAME Dart the `zonai` host embeds, or the server dies on
+the first request.** `zonai compile` shells out to a `dart` to build the workers and the
+`.aot` snapshots beside them; the host then loads those snapshots in-process through
+`Isolate.spawnUri`. Build them with a newer SDK and the spawn does not throw — it aborts
+the VM:
 
 ```
 ../../runtime/bin/snapshot_utils.cc: 269:
   error: Failed to resolve symbol 'kDartIsolateSnapshotData'
 ```
 
-A native FATAL, so zonai's own `catch` — and the fallback to the worker process that it
-guards, which serves identically — never runs. The server binds, logs `Serving at`, and then
-dies on the FIRST `/db` request. The client gets a closed connection and no status code, so
-it presents as a network fault rather than a build one.
+A native FATAL, so zonai's own `catch` never runs and neither does its fallback to the
+worker process. The server binds, logs `Serving at`, and then dies on the FIRST `/db`
+request — the client gets a closed connection and no status code, which reads as a
+network fault rather than a build one.
 
-`llm_chat setup` deletes them after it compiles, which is why the bootstrap works. **A bare
-`./zonai compile` followed by `./zonai serve` does not** — the snapshots are back and the
-next request kills the server. `rm -f .zonai/executables/*.aot` is the whole remedy.
+**`PATH` is the wrong lever, and this is the part that costs the afternoon.** raindrop's
+`DartExecutable.resolve` tries a configured path, then `DART_SDK`, then `DART_HOME`, then
+**FVM and Flutter install paths**, then the running executable, and only then `dart` on
+`PATH`. On any machine with `~/fvm/default` the FVM candidate wins, so exporting the right
+SDK on `PATH` changes nothing at all. A session spent hours here concluding "the SDK is
+irrelevant, both zonai versions crash identically" — every one of its compiles had
+silently used Flutter's bundled Dart, so it never once tested the thing it believed it was
+testing. Set `DART_SDK`; it is position two and beats FVM.
 
-Measured in both directions rather than inferred: with the two files gone a channel opens, a
-message round-trips and the server is still alive; copy them back and the next request kills
-it. Reproduced on zonai 0.8.5 and 0.7.1, and under Dart 3.13.2 and 3.12.0 — an earlier reading
-of this blamed the SDK, on nothing stronger than the version in the crash dump, and building
-the workers with the host's own 3.12.0 changed nothing. The real repair belongs in zonai,
-where the spawn should fail catchably instead of aborting the VM.
+`llm_chat setup` does that for you: it resolves an SDK whose version is exactly the one the
+vendored host embeds and refuses to build if it cannot find one, rather than compiling with
+something that will not load. `bin/llm_chat`'s `HOST_DART` is that version, and it is a
+**fourth pin** — `test/test_pins.py` reads the real runtime out of the extracted binary and
+fails when the two disagree, so upgrading zonai without moving it is caught rather than
+discovered through a dead server.
+
+A bare `./zonai compile && ./zonai serve` gets none of this. Export `DART_SDK` yourself, or
+go through `setup`.
 
 **The binary and `zonai.yaml` move together.** `version:` there (`0.8.5`) must match the
 binary, and `pubspec.yaml` pins `zonai_schema` to the same tag — the CLI refuses to compile

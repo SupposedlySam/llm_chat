@@ -245,10 +245,10 @@ packages:
     dependency: transitive
     description:
       name: revali_core
-      sha256: "72089a73b3d0139ef29c75be1884e801cd2121cc56d9c14184a8eb96f13420fe"
+      sha256: "9f922d6ca8c3c6d88194b7cdad1b939656edc622b6ef7927d035371bf67910b9"
       url: "https://pub.dev"
     source: hosted
-    version: "3.0.0"
+    version: "3.2.0"
   scoped_deps:
     dependency: transitive
     description:
@@ -301,10 +301,10 @@ packages:
     dependency: transitive
     description:
       name: source_maps
-      sha256: "190222579a448b03896e0ca6eca5998fa810fda630c1d65e2f78b3f638f54812"
+      sha256: "14c2945847669b44089bb1222f66873d7ff7103c58911917f2a63c5a62327898"
       url: "https://pub.dev"
     source: hosted
-    version: "0.10.13"
+    version: "0.10.14"
   source_span:
     dependency: transitive
     description:
@@ -381,10 +381,10 @@ packages:
     dependency: transitive
     description:
       name: vm_service
-      sha256: "0016aef94fc66495ac78af5859181e3f3bf2026bd8eecc72b9565601e19ab360"
+      sha256: "5f37239c4851efcef929cea7824e76df7f2f0970aef85d66bbc430afa40e72f0"
       url: "https://pub.dev"
     source: hosted
-    version: "15.2.0"
+    version: "15.3.0"
   watcher:
     dependency: transitive
     description:
