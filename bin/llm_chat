@@ -574,7 +574,7 @@ def retry_waits():
     return HOOK_RETRY_WAITS if os.environ.get(HOOK_ENV) else RETRY_WAITS
 
 
-def throttled_advice():
+def throttled_advice(seconds=None):
     """What a caller should do once the retries are spent.
 
     Different for the two, and this is the half that makes the split worth
@@ -609,11 +609,63 @@ def throttled_advice():
     # THE REQUEST is the thing this function actually knows about. What the
     # surrounding operation left behind is for the caller to say, and `do_join`
     # now does.
+    # THE SERVER'S OWN NUMBER IF IT GAVE ONE, and no number at all if it did
+    # not. This sentence used to end "the window has been measured at 40s or
+    # more", which is the defect issue #31 is about: a FLOOR stated where a
+    # reader looks for an EXPECTATION.
+    #
+    # Two measurements, and they do not agree with each other or with 40s:
+    #
+    #   reported  four writes refused across ~30 minutes, then quiet, then
+    #             one write succeeded first time. Reads stayed 200 throughout.
+    #   measured  three throttled `say`s in one session, each clearing after
+    #             90-120s of quiet.
+    #
+    # So the window moves with what has been spent, and no fixed number is
+    # honest here. "40s or more" is not false — thirty minutes is more than
+    # forty seconds — but a floor reads as the expected wait, and this one sat
+    # far enough below the observed values to make the rational response
+    # (wait a minute, retry) exactly the retry pattern that keeps the bucket
+    # empty. The message caused the storm it existed to prevent.
+    #
+    # `call` already captures `Retry-After` and this function ignored it: the
+    # answer was in hand and the sentence was composed from somewhere else.
+    # PARSED BEFORE IT IS QUOTED. A header that is present but not a number —
+    # `Retry-After` also permits an HTTP-date, and a proxy can put anything
+    # there — must fall through to the unknown branch, not produce "the server
+    # says to retry after the time it gave", which asserts a time was named
+    # when none was understood. Caught by trying it: that sentence is the same
+    # defect as the one being fixed, one branch over.
+    if human_wait(seconds):
+        return ("  Throttled — this request was not applied. The server says "
+                "to retry after %s.\n  Anything the same command already "
+                "wrote is reported separately, so read on\n  before assuming "
+                "nothing happened." % human_wait(seconds))
     return ("  Throttled — this request was not applied. The server is asking "
-            "you to wait,\n  not refusing you; the window has been measured "
-            "at 40s or more. Anything the\n  same command already wrote is "
-            "reported separately, so read on before\n  assuming nothing "
-            "happened.")
+            "you to wait,\n  not refusing you, and did NOT say for how long. "
+            "Observed windows range from\n  under two minutes to about half "
+            "an hour, and retrying early keeps the bucket\n  empty — stop "
+            "sending and come back rather than polling. Anything the same\n"
+            "  command already wrote is reported separately, so read on "
+            "before assuming\n  nothing happened.")
+
+
+def human_wait(seconds):
+    """A retry delay a person reads, or None when the header said nothing.
+
+    None is the signal to say the window is UNKNOWN rather than to invent a
+    phrase for it. Zero and negative are None too: a server naming them is
+    saying "now", which is not a wait a reader should be told to observe.
+    """
+    try:
+        seconds = int(float(seconds))
+    except (TypeError, ValueError):
+        return None
+    if seconds <= 0:
+        return None
+    if seconds < 90:
+        return "%ds" % seconds
+    return "~%dm" % round(seconds / 60.0)
 
 
 def call(server, method, path, body=None, query=None, timeout=10):
@@ -653,7 +705,7 @@ def call(server, method, path, body=None, query=None, timeout=10):
                 # entirely. A bare "HTTP 429 Rate limit exceeded" leaves a
                 # direct caller unable to tell whether the write landed — and
                 # #27 was exactly a case where it HAD.
-                found["advice"] = throttled_advice()
+                found["advice"] = throttled_advice(found["retry_after"])
             return found
         except urllib.error.URLError:
             # AFTER HTTPError, which subclasses it. Not retried HERE: nothing

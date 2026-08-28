@@ -2916,6 +2916,9 @@ NOT_SWEPT = {
         "an empty answer — and the one thing that could go wrong silently, "
         "a failure read as a hash, is swept where it bites in "
         "divergent_checkouts",
+    "bin/llm_chat:human_wait": "seconds, minutes, zero, negative, an HTTP-date "
+        "and an empty header asserted directly — None is the signal to say the "
+        "window is UNKNOWN rather than invent a phrase for it",
     "bin/llm_chat:throttled_advice": "both branches asserted directly, and "
         "asserted to be OPPOSITE — the hook's message is reassurance that "
         "something else will collect this, the direct caller's is a warning "

@@ -225,6 +225,52 @@ class CallTest(unittest.TestCase):
         self.in_hook(False)
         self.assertIn("not applied", cli.throttled_advice())
 
+    def test_the_SERVERS_OWN_NUMBER_is_quoted_when_it_gives_one(self):
+        """Issue #31. `call` already captured `Retry-After` and this function
+        ignored it, printing a hardcoded window instead — the answer in hand
+        and the sentence composed from somewhere else."""
+        self.in_hook(False)
+        self.assertIn("retry after 45s", cli.throttled_advice("45"))
+        self.assertIn("retry after ~30m", cli.throttled_advice("1800"))
+
+    def test_NO_FIXED_WINDOW_is_stated_when_the_server_gave_none(self):
+        """The defect issue #31 reported: "the window has been measured at 40s
+        or more" is a FLOOR where a reader looks for an EXPECTATION.
+
+        Two measurements disagree with it and with each other — four writes
+        refused across ~30 minutes in the report, and three throttled sends
+        clearing in 90-120s in a later session. So the window moves with what
+        has been spent and no fixed number is honest here.
+
+        The consequence was the opposite of a rate limiter's purpose: reading
+        40s, the rational move is to wait a minute and retry, which is exactly
+        the pattern that keeps the bucket empty.
+        """
+        self.in_hook(False)
+        said = cli.throttled_advice(None)
+        self.assertNotIn("40s", said)
+        self.assertIn("did NOT say for how long", said)
+        self.assertIn("retrying early keeps the bucket", said)
+
+    def test_a_header_it_CANNOT_PARSE_is_treated_as_no_answer(self):
+        """`Retry-After` also permits an HTTP-date, and a proxy can put
+        anything there. The first version said "retry after the time it gave"
+        — asserting a time was named when none was understood, which is the
+        same defect one branch over. Found by trying it."""
+        self.in_hook(False)
+        for raw in ("soon", "Wed, 21 Oct 2026 07:28:00 GMT", "", "0", "-5"):
+            with self.subTest(header=raw):
+                said = cli.throttled_advice(raw)
+                self.assertIn("did NOT say for how long", said)
+                self.assertNotIn("the time it gave", said)
+
+    def test_the_HOOK_message_ignores_the_number_entirely(self):
+        """Paired, and the reason the split exists: inside a hook the advice
+        is reassurance — the next poll picks it up — and a retry time is not
+        something that caller can act on."""
+        self.in_hook(True)
+        self.assertIn("next poll", cli.throttled_advice("45"))
+
     def test_the_advice_travels_WITH_the_error(self):
         """Attached by `call` and appended by `refuse`, so a caller cannot get
         the error without the remedy. A bare "HTTP 429" leaves a direct caller
