@@ -172,8 +172,34 @@ class StartServerTest(unittest.TestCase):
         cli.missing_workers = lambda: list(missing)
         self.addCleanup(lambda: setattr(cli, "missing_workers", real))
 
+    def stub_sdk(self, root="/fake/dart-sdk"):
+        """`matching_dart_sdk` reads the REAL filesystem too, and it is THIRD.
+
+        The docstring above predicted this one and the prediction did not stop
+        it: "a stub that covers `subprocess` but not the filesystem read two
+        lines later leaves the test depending on the developer's working
+        tree." A later change added a Dart-SDK check to `start_server`, ahead
+        of every step these tests are about, that globs `~/.cache/zonai/fat`
+        and `~/fvm` for a version matching the vendored host.
+
+        On a machine that has the SDK it returns a path and nothing changes.
+        On CI it returns None and `start_server` raises the SDK refusal BEFORE
+        the loop — so five tests asserting on downstream messages saw the
+        upstream one and the build went red on main. Green here, red there,
+        for the third time in this fixture and the second time for exactly
+        this reason.
+
+        Stubbed rather than the guard being moved: the guard is correct and
+        belongs before the steps. What was wrong is a test that names one
+        behaviour and depends on another.
+        """
+        real = cli.matching_dart_sdk
+        cli.matching_dart_sdk = lambda: root
+        self.addCleanup(lambda: setattr(cli, "matching_dart_sdk", real))
+
     def stub_subprocess(self, returncode=0):
         self.stub_workers()
+        self.stub_sdk()
         recorder = Recorder()
 
         class Fake:

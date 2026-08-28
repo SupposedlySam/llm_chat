@@ -130,8 +130,11 @@ class CliEdgeTest(unittest.TestCase):
     def test_a_fresh_checkout_installs_dependencies_before_serving(self):
         """`.dart_tool/` is gitignored, so a clone has none of pub get's output
         and cannot compile anything."""
+        # Stubbed for the same reason as its neighbour below: the SDK lookup
+        # reads the real filesystem and runs before the steps this asserts on.
         saved = {"subprocess": cli.subprocess, "server_up": cli.server_up,
-                 "ROOT": cli.ROOT}
+                 "ROOT": cli.ROOT, "matching_dart_sdk": cli.matching_dart_sdk}
+        cli.matching_dart_sdk = lambda: "/fake/dart-sdk"
         steps = []
 
         root = self.tmp.name
@@ -174,8 +177,17 @@ class CliEdgeTest(unittest.TestCase):
         printing that it failed. Without this the bootstrap starts a server
         with no rules worker, which accepts connections and 500s every single
         /db request — so it reads as a wire problem, not a build one."""
+        # `matching_dart_sdk` IS SAVED AND STUBBED WITH THE REST, because it
+        # reads the real filesystem — `~/.cache/zonai/fat`, `~/fvm` — and
+        # `start_server` consults it BEFORE the steps this test is about. On a
+        # developer machine that has the SDK it returns a path and this test
+        # passes; on a cold CI runner it returns None and `start_server`
+        # raises the SDK refusal, so the assertion below saw the wrong
+        # exception and main went red. Third real-filesystem read to catch
+        # this fixture family out, and the second to do it only on CI.
         saved = {"subprocess": cli.subprocess, "server_up": cli.server_up,
-                 "ROOT": cli.ROOT}
+                 "ROOT": cli.ROOT, "matching_dart_sdk": cli.matching_dart_sdk}
+        cli.matching_dart_sdk = lambda: "/fake/dart-sdk"
 
         class Fake:
             Popen = staticmethod(lambda *a, **kw: None)
