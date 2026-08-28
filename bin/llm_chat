@@ -5350,6 +5350,64 @@ def missing_workers():
             if not os.path.isfile(os.path.join(built, w + ".exe"))]
 
 
+# The AOT snapshots `zonai compile` writes beside the workers, and the reason
+# this project deletes them the moment they appear.
+#
+# zonai's mailman prefers in-process dispatch: when
+# `.zonai/executables/db_rules.aot` exists it hands that path to
+# `Isolate.spawnUri`, and falls back to the worker PROCESS only when the spawn
+# fails. That fallback is real, and zonai's own comment beside it says dispatch
+# "serves identically" through it — but it is never reached here, because the
+# failure is not an exception. The spawn aborts the VM inside the runtime:
+#
+#     ../../runtime/bin/snapshot_utils.cc: 269:
+#       error: Failed to resolve symbol 'kDartIsolateSnapshotData'
+#
+# A native FATAL, so the `catch` around the spawn never runs and neither does
+# the fallback. The server binds, logs "Serving at", and then dies on the FIRST
+# /db request — the client sees a closed connection rather than a status code,
+# which reads as a network fault rather than a build one.
+#
+# MEASURED IN BOTH DIRECTIONS on 2026-08-27, so this is cause and not
+# correlation: with the two files removed, `llm_chat channels` answers, a
+# channel opens, a message round-trips and the server is still alive; copy them
+# back and the very next request kills it. Reproduced on zonai 0.8.5 and 0.7.1,
+# and under Dart 3.13.2 and 3.12.0 — neither the version bump nor the SDK is
+# the variable, the snapshots are.
+#
+# DELETING THE ARTIFACT IS THE FIX HERE, not a workaround dressed up as one:
+# the worker processes beside these files do the same job, so what is lost is
+# an optimisation that currently cannot run at all. The real repair belongs in
+# zonai, where the spawn should fail catchably instead of aborting the VM.
+SNAPSHOTS = ("db_rules.aot", "db_operations.aot")
+
+
+def drop_isolate_snapshots():
+    """Delete the .aot snapshots, returning the names that were actually there.
+
+    Runs after every compile this project performs, because `zonai compile`
+    RECREATES them — so this is not a one-time cleanup and a tree that skips it
+    cannot serve. Returning the list rather than a bool is what lets the caller
+    say which files it removed, and lets a test tell "removed two" from
+    "removed nothing and found nothing".
+    """
+    built = os.path.join(ROOT, ".zonai", "executables")
+    dropped = []
+    for name in SNAPSHOTS:
+        path = os.path.join(built, name)
+        if os.path.isfile(path):
+            os.remove(path)
+            dropped.append(name)
+    if dropped:
+        # SAID OUT LOUD, because a silent delete of a file the build just
+        # produced is indistinguishable from a build that never produced it —
+        # and the next person debugging a missing artifact deserves the reason
+        # rather than a mystery.
+        print("  dropped %s (loading one aborts the VM on the first /db "
+              "request)" % ", ".join(dropped), flush=True)
+    return dropped
+
+
 def start_server(server) -> None:
     """Bootstrap the checkout if needed, then leave a server running.
 
@@ -5372,6 +5430,8 @@ def start_server(server) -> None:
                 f"setup failed at `{' '.join(step)}`:\n"
                 + (output.strip()[:800] or "(no output)")
             )
+    drop_isolate_snapshots()
+
     missing = missing_workers()
     if missing:
         raise SystemExit(

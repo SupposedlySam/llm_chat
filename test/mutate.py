@@ -240,6 +240,16 @@ def sole_sweep():
 
 # (name, file, find, replace-with, what breaking it should mean)
 MUTATIONS = [
+    ("the .aot snapshots are deleted after every compile", "bin/llm_chat",
+     "            os.remove(path)\n            dropped.append(name)",
+     "            dropped.append(name)",
+     "the snapshots survive the compile that produced them, so zonai's "
+     "mailman hands one to Isolate.spawnUri, the spawn aborts the VM in "
+     "snapshot_utils.cc instead of throwing, and the server that setup just "
+     "started dies on the FIRST /db request — with the client seeing a closed "
+     "connection and no status code, which reads as a network fault rather "
+     "than a build one"),
+
     ("cursor high-water", "bin/llm_chat",
      'high_water = max((m["seq"] for m in fetched), default=since)',
      'high_water = chan_count_placeholder(server, name, since)',

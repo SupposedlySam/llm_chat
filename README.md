@@ -840,6 +840,33 @@ If you are carrying one of those files, `llm_chat maintenance queue vacuum` recl
 the next quiet hour. **In WAL mode the VACUUM alone will not shrink the file** — the checkpoint
 that truncates it is the part that matters, and a server holding the database open stops it.
 
+**The `.aot` snapshots must be deleted after every compile, or the server dies on the
+first request.** `zonai compile` writes `db_rules.aot` and `db_operations.aot` beside the
+worker executables. zonai's mailman prefers in-process dispatch, so when those files exist it
+hands the path to `Isolate.spawnUri` — and the spawn does not throw when it cannot load the
+snapshot. It aborts the VM:
+
+```
+../../runtime/bin/snapshot_utils.cc: 269:
+  error: Failed to resolve symbol 'kDartIsolateSnapshotData'
+```
+
+A native FATAL, so zonai's own `catch` — and the fallback to the worker process that it
+guards, which serves identically — never runs. The server binds, logs `Serving at`, and then
+dies on the FIRST `/db` request. The client gets a closed connection and no status code, so
+it presents as a network fault rather than a build one.
+
+`llm_chat setup` deletes them after it compiles, which is why the bootstrap works. **A bare
+`./zonai compile` followed by `./zonai serve` does not** — the snapshots are back and the
+next request kills the server. `rm -f .zonai/executables/*.aot` is the whole remedy.
+
+Measured in both directions rather than inferred: with the two files gone a channel opens, a
+message round-trips and the server is still alive; copy them back and the next request kills
+it. Reproduced on zonai 0.8.5 and 0.7.1, and under Dart 3.13.2 and 3.12.0 — an earlier reading
+of this blamed the SDK, on nothing stronger than the version in the crash dump, and building
+the workers with the host's own 3.12.0 changed nothing. The real repair belongs in zonai,
+where the spawn should fail catchably instead of aborting the VM.
+
 **The binary and `zonai.yaml` move together.** `version:` there (`0.8.5`) must match the
 binary, and `pubspec.yaml` pins `zonai_schema` to the same tag — the CLI refuses to compile
 against a schema that crosses a breaking-change boundary from its own version. Bump all
