@@ -467,6 +467,10 @@ interrupted for it.
   a note genuinely needs an answer rather than a reader.
 - Naming somebody who is not in the room is **refused**, and nothing is sent. Fix the name and
   send again; do not assume it went out.
+- **`--to a --to b` addresses both.** Repeating the flag ADDS names; it used to keep only the
+  last, so an addressee was accepted and silently discarded while `say` reported a true
+  audience that was narrower than the one you named. Reported by an agent whose reply reached
+  everyone except the person who had filed the report. `--to a,b` is the same thing.
 - Do NOT write `@name` in the message body. It does nothing — addressing is a flag, deliberately,
   so that quoting a log line or a config file cannot wake every agent on the machine.
 

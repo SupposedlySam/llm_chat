@@ -220,6 +220,128 @@ class DescribeTest(unittest.TestCase):
                          "bob, carol")
 
 
+class RepeatedToTest(unittest.TestCase):
+    """`--to a --to b` addresses BOTH. argparse's default kept only the last.
+
+    Reported by game_loop's owner against a message of their own: they wrote
+    `--to auditor --to owner`, and the person who had filed the report they
+    were answering was the one person not woken. The name was accepted,
+    discarded, and never mentioned — and `say` then printed `wakes owner`,
+    true about a narrower set than the sender had named.
+
+    The README states the rule this broke, about the neighbouring case: "a
+    mention that silently no-ops is the worst failure available here: the
+    sender believes it delivered and waits for an answer that was never going
+    to come."
+    """
+
+    def to(self, *argv):
+        return cli.build_parser().parse_args(
+            ["say", "room", "hi"] + list(argv)).to
+
+    def test_REPEATING_THE_FLAG_ADDS_rather_than_replaces(self):
+        self.assertEqual(self.to("--to", "auditor", "--to", "owner"),
+                         "auditor,owner")
+
+    def test_the_comma_form_is_unchanged(self):
+        """The documented spelling must keep working exactly as before — this
+        fix is not allowed to buy its correctness by moving everyone else."""
+        self.assertEqual(self.to("--to", "a,b"), "a,b")
+
+    def test_the_two_forms_MIX(self):
+        self.assertEqual(self.to("--to", "a,b", "--to", "c"), "a,b,c")
+
+    def test_a_name_given_twice_is_carried_once(self):
+        """Nobody is woken twice by one message, and the audience string does
+        not grow a duplicate that every reader then has to de-duplicate."""
+        self.assertEqual(self.to("--to", "a,b", "--to", "b"), "a,b")
+        self.assertEqual(self.to("--to", "a", "--to", "a"), "a")
+
+    def test_ORDER_IS_PRESERVED(self):
+        """The audience is rendered to the sender, so a stable order means the
+        line they read matches the order they typed."""
+        self.assertEqual(self.to("--to", "z", "--to", "a"), "z,a")
+
+    def test_whitespace_around_names_is_dropped(self):
+        """`--to ' a , b '` is what a human types on a phone-sized keyboard,
+        and a leading space would make the name match nothing."""
+        self.assertEqual(self.to("--to", " a , b "), "a,b")
+
+    def test_no_flag_at_all_is_still_None(self):
+        """None is the sentinel for 'wake the room's default audience'. An
+        empty string would be a different audience entirely."""
+        self.assertIsNone(self.to())
+
+    def test_every_name_reaches_the_recipient_check(self):
+        """The refusal for a name that is not in the room has to see ALL of
+        them. Under the old behaviour it could only ever have judged the last
+        one, so a typo in the first name was accepted twice over: dropped,
+        and then not refused."""
+        names = self.to("--to", "ghost", "--to", "real")
+        self.assertIn("ghost", names.split(","))
+        self.assertIn("real", names.split(","))
+
+
+class RepeatedFileTest(unittest.TestCase):
+    """`--file a --file b` is refused. The dropped value is the MESSAGE.
+
+    Not a new rule: `message_text` already refuses a positional message beside
+    `--file` — "otherwise you cannot know which one was sent" — and two
+    `--file`s are the same wrong belief with the same cost. argparse resolved
+    it to the last one.
+
+    Found by applying game_loop's owner's rule after they reported the `--to`
+    drop: AFTER YOU FIX THE PRODUCER YOU MEASURED, MEASURE THE ONES YOU DID
+    NOT. Twelve options in this parser keep only the last value when repeated;
+    ten are selectors where nothing a caller can be surprised by is lost, and
+    they are deliberately unchanged — one logged failure, not twelve.
+    """
+
+    def parse(self, *argv):
+        stderr = io.StringIO()
+        with redirect_stderr(stderr):
+            try:
+                return cli.build_parser().parse_args(list(argv)), ""
+            except SystemExit:
+                return None, stderr.getvalue()
+
+    def test_ONE_file_is_unaffected(self):
+        args, _ = self.parse("say", "room", "--file", "a.txt")
+        self.assertEqual(args.file, "a.txt")
+
+    def test_TWO_files_are_refused_not_resolved(self):
+        args, why = self.parse("say", "room", "--file", "a", "--file", "b")
+        self.assertIsNone(args, "the second --file was silently accepted")
+        self.assertIn("given twice", why)
+
+    def test_the_refusal_says_WHY_it_is_not_resolved(self):
+        """A refusal that does not say what was at stake reads as pedantry,
+        and the next person routes around it."""
+        _, why = self.parse("say", "room", "--file", "a", "--file", "b")
+        self.assertIn("MESSAGE", why)
+        self.assertIn("did not choose", why)
+
+    def test_it_covers_BRIEFING_too_not_just_say(self):
+        """Both verbs take a `--file` whose contents are stored and read by
+        other agents. Fixing only the one that was reported is how a rule
+        ends up applying to the case somebody happened to hit."""
+        args, why = self.parse("briefing", "room", "--file", "a", "--file", "b")
+        self.assertIsNone(args)
+        self.assertIn("given twice", why)
+
+    def test_the_SELECTORS_are_deliberately_left_alone(self):
+        """The decision, asserted so it is visible rather than assumed.
+
+        `--as`, `--server` and the rest still keep the last value, because
+        repeating them loses nothing a caller can be surprised by — you can
+        only speak as one identity or talk to one server. No gate without a
+        logged failure; there is one here, not twelve. If that stops being
+        true, this test is where the reasoning is written down.
+        """
+        args, _ = self.parse("say", "room", "hi", "--as", "a", "--as", "b")
+        self.assertEqual(args.identity, "b")
+
+
 class ServerTest(unittest.TestCase):
     def setUp(self):
         self.server = FakeServer()

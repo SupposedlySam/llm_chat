@@ -5660,6 +5660,81 @@ class Parser(argparse.ArgumentParser):
         return found
 
 
+class RefuseRepeat(argparse.Action):
+    """`--file a --file b` is refused, not silently resolved to `b`.
+
+    THIS IS NOT A NEW RULE — it is one already made here, applied to a case it
+    had missed. `message_text` refuses a positional message beside `--file`
+    with "give the message as an argument OR --file, not both — otherwise you
+    cannot know which one was sent." Two `--file`s are the same wrong belief
+    with the same cost, and argparse quietly resolved it to the last one.
+
+    Found by taking game_loop's owner's rule literally after they reported the
+    `--to` drop: AFTER YOU FIX THE PRODUCER YOU MEASURED, MEASURE THE ONES YOU
+    DID NOT. A scan of this parser found twelve options that keep only the
+    last value when repeated. Ten are selectors — `--as`, `--server`,
+    `--since` — where last-wins loses nothing a caller can be surprised by,
+    and they are LEFT ALONE and reported rather than changed: no gate without
+    a logged failure, and there is one logged failure here, not twelve.
+
+    `--file` is the exception because the dropped value is the MESSAGE, and a
+    send that succeeds carrying content the caller did not choose is the exact
+    failure the existing refusal was written for.
+    """
+
+    def __call__(self, parser, namespace, value, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(
+                "%s given twice — that is refused rather than resolved to the "
+                "last one,\n  because the value dropped is the MESSAGE and a "
+                "send would succeed carrying\n  something you did not choose. "
+                "Pass one file." % option_string)
+        setattr(namespace, self.dest, value)
+
+
+class AccumulateNames(argparse.Action):
+    """Repeating `--to` ADDS names. argparse's default drops all but the last.
+
+    Reported by game_loop's owner against their own message: they wrote
+    `--to auditor --to owner` believing it accumulated, and "the one person
+    who filed the report was the one person not woken." Reproduced before
+    fixing:
+
+        parse_args([... '--to', 'auditor', '--to', 'owner']).to  ->  'owner'
+
+    `auditor` was accepted, discarded, and never mentioned again — and `say`
+    then reported `wakes owner`, which is a TRUE sentence about a narrower set
+    than the sender named. That is this week's whole defect family arriving in
+    the argument parser.
+
+    THE README ALREADY FORBIDS THIS, about a neighbouring case: "a mention
+    that silently no-ops is the worst failure available here: the sender
+    believes it delivered and waits for an answer that was never going to
+    come." That is written about naming somebody who is not in the room, and
+    it applies harder to a name the CLI took and threw away.
+
+    ACCUMULATE RATHER THAN REFUSE, which is the opposite of how `--file`
+    beside a positional message is handled, and the difference is worth
+    stating. There, two sources of ONE message leave a caller with a wrong
+    belief about which was sent, and no ordering of them is more correct.
+    Here the intent is unambiguous — `--to a --to b` can only mean both, and
+    it is what `--to a,b` already means — so refusing would reject a message
+    whose meaning is clear, and losing one is the failure being fixed.
+
+    Order is preserved and duplicates dropped, so `--to a,b --to b` is `a,b`
+    and nobody is woken twice by one message.
+    """
+
+    def __call__(self, parser, namespace, value, option_string=None):
+        seen = []
+        for chunk in ((getattr(namespace, self.dest, None) or ""), value):
+            for name in chunk.split(","):
+                name = name.strip()
+                if name and name not in seen:
+                    seen.append(name)
+        setattr(namespace, self.dest, ",".join(seen))
+
+
 def build_parser():
     """The argument surface, built separately from running it.
 
@@ -5720,15 +5795,16 @@ def build_parser():
                         "used to say `prefer --file` and prefer is not a check "
                         "— seven messages in #learnings are damaged that way"
                         % MAX_SHELL_TEXT)
-    p.add_argument("--file", dest="file",
+    p.add_argument("--file", dest="file", action=RefuseRepeat,
                    help="read the message from a file, or `-` for stdin, so "
                         "the payload never touches a command line. Giving both "
                         "this and a positional message is REFUSED, not silently "
                         "resolved")
-    p.add_argument("--to",
+    p.add_argument("--to", action=AccumulateNames,
                    help="wake only these members (comma-separated). Everyone "
                         "else still SEES it, when they are next working — they "
-                        "are simply not interrupted for it")
+                        "are simply not interrupted for it. Repeating the flag "
+                        "ADDS names rather than replacing them")
     p.add_argument("--to-all", action="store_true",
                    help="wake every member. The escape hatch in a broadcast "
                         "room, where the default is to wake nobody")
@@ -5852,7 +5928,8 @@ def build_parser():
                        help="set the house rules every joiner is shown")
     p.add_argument("channel")
     p.add_argument("text", nargs="?")
-    p.add_argument("--file", help="read the rules from a file, or - for stdin")
+    p.add_argument("--file", action=RefuseRepeat,
+                   help="read the rules from a file, or - for stdin")
     p.add_argument("--as", dest="identity")
 
     p = sub.add_parser("identify", help="set this session's identity, once")

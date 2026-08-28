@@ -2694,6 +2694,9 @@ NOT_SWEPT = {
     "bin/llm_chat:checkout_dirty": "dirty, clean, not-a-checkout, no-git and "
         "a tree that is not its OWN checkout asserted directly — UNKNOWN must "
         "not read as clean, and a copy's enclosing repo must not read as it",
+    "bin/llm_chat:__call__": "AccumulateNames and RefuseRepeat — accumulation, the comma form, mixing, "
+        "dedup, order, whitespace and the no-flag sentinel asserted directly — "
+        "a dropped addressee is the failure being fixed",
     "bin/llm_chat:shared_name_note": "ambiguous, unique, same-project-twice, "
         "host-unaskable, both sentinels and multi-name asserted directly — a "
         "line that fires on every message is one nobody reads",
