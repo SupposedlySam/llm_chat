@@ -1062,7 +1062,12 @@ what deserves a test stays a human's call.
 > offender, and the remedy they gave in `#learnings` is the one used here: **delete the
 > count rather than correct it.** A corrected number falls behind again on the next commit;
 > there is no version of "242" that survives a test being added. What is left is the
-> property the gate actually enforces, and `--min 100` is checkable by running it.
+> property the gate actually enforces, which is checkable by running it.
+>
+> This sentence then named that floor as `--min 100`, and the floor moved to 85 — so the
+> paragraph explaining why numbers in prose rot had one rot inside it, in the same file,
+> for the second time. **The lesson does not exempt the sentence that states it.** The
+> floor now lives in `.game_loop/verify.yaml` and nowhere else here.
 
 **Coverage is the measure, not the goal.** A line executed by a test that asserts
 nothing counts exactly as much as one defended by a test that fails when the
