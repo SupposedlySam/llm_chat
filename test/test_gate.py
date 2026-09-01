@@ -427,6 +427,39 @@ class VerdictTest(unittest.TestCase):
         """Waiting for a mutation that hangs measures nothing either."""
         self.assertEqual(self.verdict((None, 0, 0)), "hung")
 
+    def test_a_red_control_NAMES_what_was_already_failing(self):
+        """The refusal was correct and unactionable for five nights.
+
+        `REFUSING TO SWEEP: the suite is already red (1 failed, 0 errored)` ran
+        nightly with no name, on a macOS runner, while the ubuntu `tests`
+        workflow stayed green on the same commit. The name was in hand the
+        whole time — `run_suite` returns it as the fourth element, for exactly
+        this kind of question.
+        """
+        said = self.mutate.red_suite_refusal(
+            (False, 2, 0, ["test_wiring.ReloadTest.test_it_reloads",
+                           "test_cli.DoctorTest.test_host"]))
+        self.assertIn("REFUSING TO SWEEP", said)
+        self.assertIn("2 failed", said)
+        self.assertIn("test_wiring.ReloadTest.test_it_reloads", said)
+        self.assertIn("test_cli.DoctorTest.test_host", said)
+
+    def test_NO_NAMES_is_reported_as_its_own_state(self):
+        """A suite that failed without saying what is a different fact from
+        one that named its failures. Rendering an empty list as nothing puts
+        the reader back where the five nights left them."""
+        said = self.mutate.red_suite_refusal((False, 1, 0, []))
+        self.assertIn("did not report WHICH", said)
+        self.assertIn("its own defect", said)
+
+    def test_it_survives_a_three_element_baseline(self):
+        """Older callers and every test above build a 3-tuple. A refusal that
+        raised IndexError while explaining why it refuses would replace an
+        unactionable message with no message."""
+        said = self.mutate.red_suite_refusal((False, 1, 0))
+        self.assertIn("REFUSING TO SWEEP", said)
+        self.assertIn("did not report WHICH", said)
+
     def test_counts_are_a_DELTA_not_a_total(self):
         """The structural reason gameloop's failure cannot occur here. A
         control run that is already red does not let its own failures be

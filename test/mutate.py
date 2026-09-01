@@ -3551,6 +3551,44 @@ def probe(relative, old, new):
     return 0
 
 
+def red_suite_refusal(baseline):
+    """Why the sweep will not run, INCLUDING which tests were already failing.
+
+    The refusal itself is right: a sweep measured against a red suite cannot
+    attribute anything to a mutation. It was also unactionable, because it
+    printed the two counts and dropped `baseline[3]` — the list of tests that
+    failed, which `run_suite` already returns and whose docstring says it
+    exists so a later run can ask a smaller question.
+
+    The nightly ran red five nights with this exact message and no name, on a
+    macOS runner, while the ubuntu `tests` workflow stayed green on the same
+    commit. So the subject is a test that skips on ubuntu and runs there — and
+    nobody could tell which, because the one instrument that had the answer
+    printed a count instead.
+
+    Not reproducible from outside CI: green here, green cold-cloned, green with
+    an empty HOME, with no DART_SDK, with `claude` off PATH, and with all of
+    those at once. When a failure exists only on the runner, the runner's own
+    output is the only instrument there is.
+
+    NO NAMES IS ITS OWN REPORTED STATE rather than an empty list rendered as
+    nothing: a suite that failed without saying what is a different fact from
+    one that named its failures, and collapsing them is the shape this repo
+    keeps removing.
+    """
+    said = ["REFUSING TO SWEEP: the suite is already red (%d failed, %d "
+            "errored).\nNothing measured against it could be attributed to a "
+            "mutation." % (baseline[1], baseline[2])]
+    failed = baseline[3] if len(baseline) > 3 else None
+    if failed:
+        said.append("Already failing BEFORE any mutation was applied:")
+        said.extend("    %s" % test for test in failed)
+    else:
+        said.append("It did not report WHICH tests — so this run cannot say, "
+                    "and that is its own defect.")
+    return "\n".join(said)
+
+
 def sweep_exit_code(crashed, survivors, share):
     """The sweep's verdict, as a function, because as a branch it never ran.
 
@@ -3651,9 +3689,24 @@ def main():
     baseline = run_suite()
     ledger = read_killers()
     if not baseline[0]:
-        print("REFUSING TO SWEEP: the suite is already red (%d failed, %d "
-              "errored).\nNothing measured against it could be attributed to "
-              "a mutation." % (baseline[1], baseline[2]))
+        # NAME THEM. This printed the two counts and dropped `baseline[3]`,
+        # which is the list of tests that failed — a value `run_suite` already
+        # returns, and whose own docstring says it exists so a later run can
+        # ask a smaller question.
+        #
+        # The refusal is correct: a sweep measured against a red suite
+        # attributes nothing. It was also unactionable. The nightly ran red
+        # five nights running with this exact message and no name, on a macOS
+        # runner, while the ubuntu `tests` workflow stayed green on the same
+        # commit — so the subject is a test that skips on ubuntu and runs
+        # there, and nobody could tell which without a name.
+        #
+        # Not reproducible from outside CI either: green here, green
+        # cold-cloned, green with an empty HOME, with no DART_SDK, with
+        # `claude` off PATH, and with all of those at once. When a failure
+        # only exists on the runner, the runner's own output is the only
+        # instrument there is, and it was throwing the answer away.
+        print(red_suite_refusal(baseline))
         return 1
     survivors, crashed = [], []
     for name, relative, find, replace, consequence in mine:
