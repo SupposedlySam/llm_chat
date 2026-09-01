@@ -2916,6 +2916,12 @@ NOT_SWEPT = {
         "an empty answer — and the one thing that could go wrong silently, "
         "a failure read as a hash, is swept where it bites in "
         "divergent_checkouts",
+    "bin/llm_chat:do_whoami": "every state asserted directly in test_whoami — "
+        "per-room names, more-than-one, a default no room uses, no rooms, "
+        "nothing at all, the json mapping, a corrupt joined file, and that "
+        "READING NEVER WRITES, which is the whole point of the verb",
+    "bin/llm_chat:identity_for_report": "present, absent and unreadable "
+        "asserted through do_whoami, which is its only caller",
     "bin/llm_chat:human_wait": "seconds, minutes, zero, negative, an HTTP-date "
         "and an empty header asserted directly — None is the signal to say the "
         "window is UNKNOWN rather than invent a phrase for it",

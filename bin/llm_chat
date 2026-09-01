@@ -196,6 +196,85 @@ def resolve_identity(explicit, channel=None):
     )
 
 
+def identity_for_report(shared):
+    """The recorded name at one scope, or None. Never writes."""
+    try:
+        with open(identity_path(shared=shared)) as f:
+            return (json.load(f) or {}).get("identity")
+    except (OSError, ValueError):
+        return None
+
+
+def do_whoami(as_json=False):
+    """Answer "who am I?" — and answer the question `say` actually asks.
+
+    THE FIRST VERSION OF THIS REPORTED `identity.json` AND WAS WRONG on the
+    checkout that wrote it: it said "no identity recorded" for a project that
+    demonstrably posts as `owner` in three rooms. `identity_for` resolves
+    PER CHANNEL out of `joined.json`, and `identity.json` is only the default
+    a future `join` will use. Naming the default and calling it the answer is
+    the same narrower-question defect this verb exists to fix, committed
+    inside the fix.
+
+    So this reports what posts — the per-room names — and the default
+    separately, and says plainly when a room disagrees with it. A session
+    legitimately holds different names in different rooms; that is the design,
+    and it is also exactly how a shared checkout ends up split without anyone
+    being told.
+
+    A read verb that WRITES on a typo is the failure being replaced, so
+    nothing here touches a path the setter writes.
+    """
+    default = identity_for_report(shared=False) or identity_for_report(
+        shared=True)
+    scope = ("session" if identity_for_report(shared=False)
+             else "project" if identity_for_report(shared=True) else None)
+    # NO try/except AROUND THIS. One was written here and the coverage report
+    # showed its body never executed: `read_joined` already swallows OSError
+    # and ValueError and returns {}. A guard that cannot fire is
+    # indistinguishable from one that is fine, which is the shape this repo
+    # spends its time removing — so it is gone rather than tested.
+    joined = read_joined()
+    rooms = {}
+    for room, entry in sorted(joined.items()):
+        name = (entry or {}).get("identity")
+        if name:
+            rooms.setdefault(name, []).append(room)
+
+    if as_json:
+        print(json.dumps({"posts_as": sorted(rooms),
+                          "by_room": {r: (e or {}).get("identity")
+                                      for r, e in sorted(joined.items())},
+                          "default": default, "default_scope": scope,
+                          "session": session_id()}))
+        return 0 if rooms or default else 1
+
+    if not rooms and not default:
+        print("no identity anywhere: none recorded, and this project has "
+              "joined no rooms.\n  set one:  llm_chat identify <name>")
+        return 1
+    if not rooms:
+        print("posting as '%s' (%s identity) — but this project is in NO "
+              "ROOMS yet,\n  so nothing has been posted under it."
+              % (default, scope))
+        return 0
+    for name, where in sorted(rooms.items()):
+        print("posting as '%s' in %s" % (name, ", ".join("#" + r
+                                                         for r in where)))
+    if len(rooms) > 1:
+        print("  MORE THAN ONE NAME — that is legal and per-room, and it is "
+              "also how a\n  shared checkout ends up split. Each room uses the "
+              "name it was joined with.")
+    if default and default not in rooms:
+        print("  the recorded %s identity is '%s', which no joined room uses; "
+              "it is the\n  default a future `join` would take."
+              % (scope, default))
+    elif not default:
+        print("  nothing is recorded as a default, so a new `join` needs "
+              "`--as`.")
+    return 0
+
+
 def do_identify(server, identity, shared=False):
     """Record who this SESSION is, and pull in the rooms everyone is in."""
     if not valid(identity):
@@ -4572,11 +4651,41 @@ def report_sessions(project):
     if len(sessions) < 2:
         return
     mine = session_id()
+    holders = [name for name, has in sessions if has]
+    stubs = [name for name, has in sessions if not has]
     print("\nsessions: %d directories for this project" % len(sessions))
-    for name, has_identity in sessions:
+    # THE HOLDERS FIRST AND THE STUBS COLLAPSED. This printed one line per
+    # session, sorted by uuid, so a reporter with 119 of them read 111
+    # identical "NO IDENTITY — a stub, in no rooms" lines with the 8 that
+    # carry the diagnosis scattered among them. 69% of `doctor` was one
+    # sentence repeated, and the signal was the part that scrolled off.
+    #
+    # A stub is only interesting as a COUNT — and as one name, when it is
+    # this session, which is the case the section exists for.
+    for name in holders:
         here = "  (this session)" if mine and name == mine else ""
-        held = "holds rooms" if has_identity else "NO IDENTITY — a stub, in no rooms"
-        print("  %s%s  %s" % (name, here, held))
+        print("  %s%s  holds rooms" % (name, here))
+    if stubs:
+        yours = mine in stubs
+        print("  %d stub session(s) in no rooms%s"
+              % (len(stubs), " — INCLUDING THIS ONE" if yours else ""))
+        if yours:
+            print("    %s  (this session)" % mine)
+        elif len(stubs) <= 3:
+            for name in stubs:
+                print("    %s" % name)
+        else:
+            print("    --verbose to list them")
+    # AN IDENTITY SPLIT IS A NAMED CONDITION, said here rather than left to be
+    # inferred from the lines above. `bin/llm-chat-wake` already writes the
+    # exact phrase into `wake.exit` — "in no rooms — but session X holds rooms
+    # for this project (identity split)" — and no verb ever said it, so the
+    # reporter found it by accident while looking for something else.
+    if holders and stubs:
+        print("  IDENTITY SPLIT: %d session(s) hold this project's rooms and "
+              "%d hold none.\n    A waker armed under a stub is looking at "
+              "nothing while everything else\n    here reports healthy."
+              % (len(holders), len(stubs)))
     # THESE TWO CANCEL, AND THAT IS LOAD-BEARING — do not simplify either one
     # without the other. With no session id in the environment:
     #
@@ -4707,6 +4816,27 @@ def do_doctor(server):
     # is reportable, and a promise about a remedy has to be true.
     print(f"llm_chat doctor — {project}")
     print(f"  workspace           {ROOT}")
+    # WHO THIS SESSION POSTS AS, at the top, because it was nowhere at all.
+    # `doctor` printed 160 lines without naming the identity once — the only
+    # occurrence of the reporter's own name was inside a ROOM name, which is
+    # not a statement about them — so they learned it with `cat`.
+    #
+    # Per room rather than one name, because `identity_for` resolves per
+    # channel and a session legitimately holds different names in different
+    # rooms. One name printed here would be a confident answer to a narrower
+    # question, which is the defect being fixed.
+    posting = read_joined()          # already returns {} on a corrupt file
+    names = sorted({(e or {}).get("identity") for e in posting.values()
+                    if (e or {}).get("identity")})
+    if len(names) == 1:
+        print("  posting as         '%s'  (in %d room(s))"
+              % (names[0], len(posting)))
+    elif names:
+        print("  posting as          %s  — MORE THAN ONE, per room"
+              % ", ".join("'%s'" % n for n in names))
+    else:
+        print("  posting as          nothing — this project has joined no "
+              "rooms")
     print(f"  server              {server}")
     # THE URL IS NOT THE PROCESS. Everything above this line is a fact about
     # configuration; this is the only line that asks what is actually
@@ -5984,8 +6114,17 @@ def build_parser():
                    help="read the rules from a file, or - for stdin")
     p.add_argument("--as", dest="identity")
 
-    p = sub.add_parser("identify", help="set this session's identity, once")
-    p.add_argument("identity")
+    p = sub.add_parser("identify",
+                       help="set this session's identity, or report it when "
+                            "given no name")
+    # OPTIONAL, so asking is possible. It was required, which made `identify`
+    # set-only and made a briefing in the wild — "run llm_chat identify and
+    # confirm it names you" — an instruction that overwrites the thing it
+    # tells you to check.
+    p.add_argument("identity", nargs="?")
+    p.add_argument("--json", action="store_true",
+                   help="machine-readable report; only meaningful with no "
+                        "name, since setting one is not a query")
     p.add_argument("--project", action="store_true",
                    help="name the whole PROJECT rather than this session. "
                         "Every session in this checkout that has not named "
@@ -6024,6 +6163,10 @@ def main() -> int:
     server = args.server
 
     if args.cmd == "identify":
+        # NO NAME IS A QUESTION, not a usage error. Reading must never write,
+        # so the report returns before anything touches identity_path.
+        if args.identity is None:
+            return do_whoami(as_json=args.json)
         do_identify(server, args.identity, args.project)
         return 0
     if args.cmd == "setup":

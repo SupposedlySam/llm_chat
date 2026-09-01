@@ -1034,7 +1034,59 @@ class DoctorTest(unittest.TestCase):
             os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
         self.assertIn("THIS SESSION IS THE STUB", text)
         self.assertIn("5930ff25", text)
-        self.assertIn("NO IDENTITY", text)
+        # THE PROPERTY, NOT THE OLD WORDING. This asserted "NO IDENTITY",
+        # which was the per-session label printed once per stub — the line
+        # repeated 111 times in the report that produced issue #33, burying
+        # the eight that carried the diagnosis. Stubs collapse to a count now.
+        #
+        # What must survive is that THIS session is identified as the stub
+        # rather than folded into a number, because that is the case the
+        # section exists for. Asserting the deleted string would have made a
+        # correctness-preserving change look like a regression.
+        self.assertIn("INCLUDING THIS ONE", text)
+        self.assertIn("eaf6e8d1", text)
+        self.assertIn("IDENTITY SPLIT", text)
+
+    def test_MANY_stubs_collapse_to_a_count(self):
+        """Issue #33's third ask, with its numbers: 160 lines of `doctor`, of
+        which 111 were the identical stub record and 8 carried the diagnosis,
+        sorted by uuid so related facts were never adjacent.
+
+        A stub is only interesting as a count — and as one name, when it is
+        this session. Listing them was 69% of the report."""
+        self.joined()
+        self.session("aaaa0001", {"room": {"identity": "me"}})
+        for n in range(2, 8):
+            self.session("bbbb000%d" % n)
+        text = self.report()
+        self.assertIn("6 stub session(s) in no rooms", text)
+        self.assertIn("--verbose to list them", text)
+        self.assertNotIn("bbbb0003", text, "a stub was listed anyway")
+
+    def test_a_FEW_stubs_are_still_named(self):
+        """Paired. Collapsing is for the case that drowns the report; three
+        ids cost nothing and save a second command."""
+        self.joined()
+        self.session("aaaa0001", {"room": {"identity": "me"}})
+        self.session("bbbb0002")
+        text = self.report()
+        self.assertIn("bbbb0002", text)
+
+    def test_MORE_THAN_ONE_posting_name_is_said_at_the_top(self):
+        """Issue #33's second ask. Three names attach to one session and
+        nothing said which one posts; per-room names are the design, so the
+        header states the plurality rather than picking one."""
+        self.joined()
+        d = os.path.join(self.project, ".llm_chat")
+        with open(os.path.join(d, "joined.json"), "w") as f:
+            json.dump({"a": {"identity": "backcompat",
+                             "server": "http://127.0.0.1:1"},
+                       "b": {"identity": "drops-ed",
+                             "server": "http://127.0.0.1:1"}}, f)
+        text = self.report()
+        self.assertIn("MORE THAN ONE, per room", text)
+        self.assertIn("backcompat", text)
+        self.assertIn("drops-ed", text)
 
     def test_the_session_HOLDING_the_rooms_is_not_accused(self):
         """Paired. Being one of two sessions is not itself a problem — the
