@@ -1047,6 +1047,45 @@ class DoctorTest(unittest.TestCase):
         self.assertIn("eaf6e8d1", text)
         self.assertIn("IDENTITY SPLIT", text)
 
+    def test_the_room_list_is_LABELLED_and_says_whose(self):
+        """Issue #33's fifth ask. This was the last line of the report, with
+        no blank line before it and no heading — `rooms: a, b, c, …` for 67
+        entries and ~2,700 characters — and it never said whose rooms they
+        were: this session's, the project identity's, or every session's."""
+        self.joined()
+        text = self.report()
+        self.assertIn("rooms this session is in (1)", text)
+        self.assertIn("HAVE joined", text)
+
+    def test_the_room_list_WRAPS(self):
+        """2,700 characters on one line is not a list anybody reads. The wrap
+        is asserted on the rendered output rather than trusted, because a
+        wrapper that never fires looks exactly like a short list."""
+        self.joined()
+        d = os.path.join(self.project, ".llm_chat")
+        many = {("room-%03d" % n): {"identity": "me",
+                                    "server": "http://127.0.0.1:1"}
+                for n in range(40)}
+        with open(os.path.join(d, "joined.json"), "w") as f:
+            json.dump(many, f)
+        text = self.report()
+        tail = text.split("rooms this session is in")[1]
+        widest = max(len(line) for line in tail.splitlines())
+        self.assertLess(widest, 80, "the room list is still one long line")
+        self.assertIn("room-039", text, "wrapping dropped a room")
+
+    def test_NO_ROOMS_says_none_rather_than_printing_an_empty_label(self):
+        """A heading with nothing under it reads as a rendering bug."""
+        write_settings(self.project,
+                       PostToolUse=["/x/bin/llm-chat-deliver"],
+                       Stop=["/x/bin/llm-chat-wake"],
+                       SessionStart=["/x/bin/llm-chat-wake"])
+        d = os.path.join(self.project, ".llm_chat")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "joined.json"), "w") as f:
+            json.dump({}, f)
+        self.assertIn("rooms this session is in (0) — none", self.report())
+
     def test_MANY_stubs_collapse_to_a_count(self):
         """Issue #33's third ask, with its numbers: 160 lines of `doctor`, of
         which 111 were the identical stub record and 8 carried the diagnosis,

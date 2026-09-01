@@ -5321,7 +5321,24 @@ def do_doctor(server):
             print("  Anything said meanwhile is NOT lost — `llm_chat read "
                   "<channel>` still has it.")
 
-    print(f"\nrooms: {', '.join(joined) if joined else '(none joined)'}")
+    # LABELLED, WRAPPED, AND SAID WHOSE. This was the last line of the report,
+    # with no blank line before it and no heading: `rooms: a, b, c, …` for 67
+    # entries and ~2,700 characters in the checkout that reported it. Whose
+    # rooms was not stated — this session's, the project identity's, or every
+    # session in the checkout — and it is this SESSION's, falling back to the
+    # project's, which is a distinction the rest of this report now turns on.
+    print("\nrooms this session is in (%d)%s:"
+          % (len(joined), "" if joined else " — none"))
+    if joined:
+        line = "  "
+        for room in sorted(joined):
+            if len(line) + len(room) + 2 > 78:
+                print(line.rstrip())
+                line = "  "
+            line += room + ", "
+        print(line.rstrip().rstrip(","))
+        print("  (`channels` lists rooms you could join; this is what you "
+              "HAVE joined)")
 
 
 def do_channels(server, show_closed=False, as_json=False):
