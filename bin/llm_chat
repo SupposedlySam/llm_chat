@@ -4895,7 +4895,41 @@ def do_doctor(server):
     # THE ROOMS THAT CLAIM TO REACH A PERSON. Asked here so it can be found
     # without sending anything — wcs learned their bridge was down by their
     # human happening to mention a message he never got.
-    for room in sorted(r for r in (read_joined() or {}) if HUMAN_ROOM.search(r)):
+    # EVERY human room ON THE SERVER, not only the ones this session joined.
+    #
+    # This keyed on `read_joined()`, and lamp-owner demonstrated the cost by
+    # standing in it: their consumer had no escalation path to its own owner
+    # that its own diagnostics could see, because membership was what made
+    # `doctor` say anything at all about a human room. An agent about to
+    # escalate has usually NOT joined yet — that is what escalating is — so
+    # the report was hidden from exactly the caller who is about to make the
+    # mistake, and visible only to one who already knows the room exists.
+    #
+    # The server already knows which rooms there are, and `doctor` is already
+    # talking to it. A room nobody here has joined is marked, because "you are
+    # not in this room" is part of the answer rather than a reason to say
+    # nothing.
+    mine = read_joined() or {}
+    try:
+        everywhere = {c["name"] for c in rows(server, "channels")
+                      if not c.get("closed")}
+    except (Exception, SystemExit):
+        # SystemExit TOO, and not by preference: `rows` refuses through
+        # `SystemExit` subclasses — `Throttled`, `Unreachable` — which
+        # `except Exception` does not catch, because SystemExit descends from
+        # BaseException. A bare `except Exception` here took out 93 tests, all
+        # of them pointing a doctor at an unreachable server on purpose.
+        #
+        # Second time today I wrote a catch too narrow for the thing it was
+        # guarding; the first was a ValueError out of `makedirs` in the Slack
+        # heartbeat. Both were found by a test rather than by reading, which
+        # is the argument for the tests existing at all.
+        #
+        # The server being unreachable is already said by every line above.
+        # Fall back to what is local rather than losing the section.
+        everywhere = set()
+    for room in sorted({r for r in set(mine) | everywhere
+                        if HUMAN_ROOM.search(r)}):
         verdict = bridge_for(room)
         state, detail = verdict if verdict else (None, None)
         # BRANCHES, NOT A DICT OF FORMATTED STRINGS. Written as a dict first,
@@ -4922,7 +4956,12 @@ def do_doctor(server):
             says = "bridged, last checked in %s ago" % human_age(detail)
         else:
             continue
-        print("  #%-18s %s" % (room, says))
+        # "NOT JOINED" is part of the answer. `say` requires membership, so a
+        # room you are not in is one you cannot escalate through yet — and
+        # that, plus the bridge verdict, is the whole thing a caller needs
+        # before deciding where to put a question for a human.
+        print("  #%-18s %s%s" % (room, says,
+                                 "" if room in mine else "   [not joined]"))
 
     bind = server_bind(server)
     if bind == "wide":

@@ -2184,6 +2184,38 @@ class DoctorTest(unittest.TestCase):
         self.addCleanup(lambda: setattr(cli, "read_joined", real_joined))
         self.addCleanup(lambda: setattr(cli, "bridge_for", real_bridge))
 
+    def test_a_human_room_this_session_has_NOT_JOINED_is_still_reported(self):
+        """lamp-owner demonstrated the cost by standing in it: their consumer
+        had no escalation path to its own owner that its own diagnostics could
+        see, because membership was what made `doctor` say anything about a
+        human room at all.
+
+        An agent about to escalate has usually NOT joined yet — that is what
+        escalating is — so the report was hidden from exactly the caller about
+        to make the mistake, and shown only to one who already knew.
+        """
+        self.joined()
+        real_rows, real_bridge = cli.rows, cli.bridge_for
+        cli.rows = lambda server, table, *a, **kw: (
+            [{"name": "supposedlysam_human", "closed": 0}]
+            if table == "channels" else [])
+        cli.bridge_for = lambda name: ("other", "wcs_human")
+        self.addCleanup(lambda: setattr(cli, "rows", real_rows))
+        self.addCleanup(lambda: setattr(cli, "bridge_for", real_bridge))
+        text = self.report()
+        self.assertIn("#supposedlysam_human", text)
+        self.assertIn("not joined", text)
+
+    def test_an_UNREACHABLE_server_does_not_lose_the_section(self):
+        """`rows` refuses through SystemExit subclasses, which `except
+        Exception` does not catch — that took out 93 tests, all of them
+        pointing doctor at an unreachable server on purpose. The joined rooms
+        are local and must still be reported when the server cannot be
+        asked."""
+        self.human_room("wcs_human", ("none", None))
+        text = self.report()
+        self.assertIn("#wcs_human", text)
+
     def test_doctor_says_CANNOT_TELL_from_a_consumer_workspace(self):
         """A vendored consumer has no bridge config of its own, and the
         bridge is a process elsewhere serving a shared server. Reporting
