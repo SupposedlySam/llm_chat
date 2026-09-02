@@ -62,7 +62,33 @@ class BridgeVerdictTest(unittest.TestCase):
         self.assertIsNone(cli.bridge_for("learnings"))
         self.assertIsNone(cli.bridge_for("deploy-review"))
 
-    def test_NO_CONFIG_AT_ALL(self):
+    def test_NO_CONFIG_FILE_is_CANNOT_TELL_not_a_denial(self):
+        """A vendored consumer has no `.llm_chat/slack.json` of its own, and
+        `BRIDGE_CONFIG` is under this CLI's ROOT — so it answers about the
+        checkout the command ran from, not about the machine.
+
+        This returned ("none", None) — "NO SLACK BRIDGE IS CONFIGURED" — for
+        every consumer workspace, which is a confident answer about somebody
+        else's tree. The bridge is a process elsewhere, serving a room on a
+        server every workspace shares.
+
+        Reported by lamp-owner, who measured `doctor` naming no human room at
+        all from a consumer and could not tell whether the cause was
+        membership or a missing config. Both were true; this is the half that
+        was WRONG rather than merely quiet — the only checkout that could
+        answer was the one that already knew.
+        """
+        self.assertEqual(cli.bridge_for("wcs_human"), ("unknown", None))
+        note = cli.bridge_note("wcs_human")
+        self.assertIn("CANNOT TELL", note)
+        self.assertIn("not a no", note)
+
+    def test_a_config_that_EXISTS_but_names_nothing_is_a_real_none(self):
+        """The distinction the fix turns on. An empty `room` in a config that
+        IS there is authoritative — that checkout runs no bridge — while a
+        missing file says only that this workspace cannot see one."""
+        with open(cli.BRIDGE_CONFIG, "w") as f:
+            json.dump({"identity": "someone"}, f)
         self.assertEqual(cli.bridge_for("wcs_human"), ("none", None))
 
     def test_a_config_for_ANOTHER_ROOM_does_not_serve_this_one(self):
@@ -131,6 +157,12 @@ class BridgeNoteTest(BridgeVerdictTest):
         self.assertEqual(cli.bridge_note("learnings"), "")
 
     def test_the_unconfigured_case_SAYS_NOTHING_LEAVES(self):
+        """A config that EXISTS and names no room — the checkout runs no
+        bridge, and that is answerable. This used to be simulated with no
+        config file at all, which is a different fact: a workspace that cannot
+        see a bridge is not a workspace that knows there is none."""
+        with open(cli.BRIDGE_CONFIG, "w") as f:
+            json.dump({"identity": "someone"}, f)
         note = cli.bridge_note("wcs_human")
         self.assertIn("NO SLACK BRIDGE IS CONFIGURED", note)
         self.assertIn("leaves llm_chat", note)
@@ -239,9 +271,15 @@ class SayPrintsItTest(unittest.TestCase):
         permission, it is the fact."""
         self.assertIn("sent", self.say())
 
-    def test_and_it_SAYS_nothing_leaves_llm_chat(self):
+    def test_and_it_SAYS_the_bridge_serves_ANOTHER_room(self):
+        """The reported incident exactly: `#supposedlysam_human`'s topic
+        promises Slack forwarding, the docs point agents at it, and the config
+        names `wcs_human`. The room held 0 messages; the bridged one held 5."""
+        with open(cli.BRIDGE_CONFIG, "w") as f:
+            json.dump({"room": "supposedlysam_human"}, f)
         text = self.say()
-        self.assertIn("NO SLACK BRIDGE IS CONFIGURED", text)
+        self.assertIn("NOT THIS ROOM", text)
+        self.assertIn("#supposedlysam_human", text)
 
     def test_the_warning_sits_with_the_line_it_corrects(self):
         """'LEFT FOR <name>' is what read as queued-for-a-human. The
@@ -249,7 +287,13 @@ class SayPrintsItTest(unittest.TestCase):
         text = self.say().splitlines()
         reach = [i for i, line in enumerate(text) if "wcs_human" in line
                  or "LEFT FOR" in line or "wakes" in line]
-        warn = [i for i, line in enumerate(text) if "NO SLACK BRIDGE" in line]
+        # ANY of the warning shapes, because which one fires depends on what
+        # this workspace can see — and the adjacency is the property under
+        # test, not the wording. Pinning it to "NO SLACK BRIDGE" made a
+        # correctness fix to the wording look like the warning disappearing.
+        warn = [i for i, line in enumerate(text)
+                if "NO SLACK BRIDGE" in line or "CANNOT TELL" in line
+                or "NOT THIS ROOM" in line]
         self.assertTrue(warn, "no warning printed at all")
         self.assertLess(warn[0] - max(reach), 3,
                         "the correction drifted away from the claim")

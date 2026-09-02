@@ -2046,6 +2046,26 @@ def bridge_for(room):
     """
     if not HUMAN_ROOM.search(room or ""):
         return None
+    if not os.path.isfile(BRIDGE_CONFIG):
+        # CANNOT TELL, NOT "NO BRIDGE". `BRIDGE_CONFIG` is under this CLI's own
+        # ROOT, so it answers about the checkout the command ran from — and a
+        # vendored consumer's `.lamp/llm_chat/` has no `.llm_chat/slack.json`
+        # at all. The bridge is a PROCESS somewhere else on the machine,
+        # serving a room on a server every workspace shares; whether one is
+        # running is not a fact about the caller's filesystem.
+        #
+        # This returned ("none", None) — "NO SLACK BRIDGE IS CONFIGURED" — for
+        # every consumer, which is a confident answer about somebody else's
+        # tree. Reported by lamp-owner, who measured `doctor` naming no human
+        # room at all from a consumer workspace and could not tell whether the
+        # cause was membership or a missing config. It is both, and this is
+        # the half that was WRONG rather than merely quiet: the checkout that
+        # can answer is the one that already knows, and every checkout that
+        # cannot was told a definite no.
+        #
+        # An unknown reported as a definite negative is the collapse this
+        # whole function exists to prevent, committed inside it.
+        return ("unknown", None)
     try:
         with open(BRIDGE_CONFIG) as f:
             configured = (json.load(f) or {}).get("room")
@@ -2078,6 +2098,12 @@ def bridge_note(room):
     if verdict is None:
         return ""
     state, detail = verdict
+    if state == "unknown":
+        return ("  CANNOT TELL whether a bridge carries this room: no bridge "
+                "config in the\n  checkout this command ran from. The bridge "
+                "is a process elsewhere on the\n  machine, so this is not a "
+                "no — ask whoever runs it, or run `doctor` from\n  the "
+                "checkout that serves the bridge.")
     if state == "none":
         return ("  NO SLACK BRIDGE IS CONFIGURED, so nothing here leaves "
                 "llm_chat.\n  The room is named for a person; that naming is "
@@ -4879,7 +4905,10 @@ def do_doctor(server):
         # state (a room name, an age, or nothing), and a lookup table over
         # values that are not all valid is a crash waiting for whichever state
         # the machine happens to be in. This one is live here.
-        if state == "none":
+        if state == "unknown":
+            says = ("CANNOT TELL — no bridge config in this checkout; the "
+                    "bridge runs elsewhere")
+        elif state == "none":
             says = "NO BRIDGE CONFIGURED — nothing here leaves llm_chat"
         elif state == "other":
             says = "bridge is configured for #%s, NOT this room" % detail

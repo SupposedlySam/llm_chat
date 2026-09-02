@@ -2184,6 +2184,17 @@ class DoctorTest(unittest.TestCase):
         self.addCleanup(lambda: setattr(cli, "read_joined", real_joined))
         self.addCleanup(lambda: setattr(cli, "bridge_for", real_bridge))
 
+    def test_doctor_says_CANNOT_TELL_from_a_consumer_workspace(self):
+        """A vendored consumer has no bridge config of its own, and the
+        bridge is a process elsewhere serving a shared server. Reporting
+        "NO BRIDGE CONFIGURED" there was a confident answer about somebody
+        else's tree — measured by lamp-owner from a consumer on #42."""
+        self.human_room("wcs_human", ("unknown", None))
+        text = self.report()
+        self.assertIn("CANNOT TELL", text)
+        self.assertIn("runs elsewhere", text)
+        self.assertNotIn("NO BRIDGE CONFIGURED", text)
+
     def test_doctor_reports_an_UNBRIDGED_human_room(self):
         """Reachable without sending anything, which is the point. wcs found
         their bridge was down because their human happened to mention a
