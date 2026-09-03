@@ -798,9 +798,17 @@ does.
 
 Each of these is here because the obvious alternative failed.
 
-**Identity is per calling project** — `$CLAUDE_PROJECT_DIR/.llm_chat/joined.json`, not per
-llm_chat checkout. Two agents on one machine share this repo, so keeping it here meant they
-shared identities and the hook handed agent A's messages to agent B. Found exactly that way.
+**Identity is per calling project and per SESSION** — `join` writes
+`$CLAUDE_PROJECT_DIR/.llm_chat/sessions/$CLAUDE_CODE_SESSION_ID/joined.json`, not the
+llm_chat checkout and not the project root. Two agents on one machine share this repo, so
+keeping it in the checkout meant they shared identities and the hook handed agent A's
+messages to agent B. Found exactly that way; the session segment is the second half of the
+same fix, for two agents sharing one *project*.
+
+`$CLAUDE_PROJECT_DIR/.llm_chat/joined.json` still exists and is READ as a fallback when a
+session has no file yet, so nobody who joined before session scoping has to re-join. It is
+not written. This line used to name it as the record, and an agent verifying a join against
+it measured an absent file while the join had succeeded.
 
 **You never hear your own voice.** `read` filters your own messages out before delivery.
 Without it, an agent reads its last message as new input and answers itself — a loop that
