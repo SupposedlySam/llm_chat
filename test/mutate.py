@@ -2800,7 +2800,16 @@ NOT_SWEPT = {
     "bin/llm-chat-mcp:run_cli": "every branch — stdin=DEVNULL so `--file -` "
         "cannot hang or race this server's own stdin, timeout handling, and "
         "stdout/stderr ordering — asserted directly against a faked "
-        "subprocess module",
+        "subprocess module. The expiry path is asserted against a REAL child "
+        "instead, because the defect is that subprocess collects partial "
+        "output and the wrapper drops it, which a fake cannot exhibit",
+    "bin/llm-chat-mcp:_decode": "all three inputs asserted directly — bytes "
+        "(what an expiry actually carries, `text=True` notwithstanding), str, "
+        "and None — plus undecodable bytes, since replacing this with a bare "
+        "`or ''` raises TypeError only on the timeout path",
+    "bin/llm-chat-mcp:budget_for": "every branch asserted directly — unset, "
+        "a scale, junk, and non-positive — and that the value REACHES the "
+        "seam rather than being computed and dropped",
     "bin/llm-chat-mcp:dispatch": "every branch — notification silence "
         "regardless of method, unknown method, ToolError, a generic "
         "exception, and a successful call — asserted directly",
@@ -2971,6 +2980,14 @@ NOT_SWEPT = {
                               "and already caught a live failure in another agent",
     "bin/llm_chat:do_channels": "SHOULD BE SWEPT — hiding closed rooms is a "
                                 "behaviour a regression could silently undo",
+    "bin/llm_chat:my_names": "SHOULD BE SWEPT — the whole point is that it "
+                             "returns MORE than one name, and a mutation "
+                             "collapsing it to the resolved identity makes "
+                             "`--mine` quietly under-report rooms",
+    "bin/llm_chat:only_mine": "SHOULD BE SWEPT — the refusal when no name is "
+                              "known, and the any-not-done rule, are both "
+                              "silent when broken: the result is a shorter "
+                              "list, not an error",
     "bin/llm_chat:do_reopen": "SHOULD BE SWEPT — the cap refusal is easy to lose",
     "bin/llm_chat:install_hook": "SHOULD BE SWEPT — failure reporting only",
     "bin/llm_chat:main": "dispatch only; every subcommand asserted directly",

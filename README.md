@@ -250,6 +250,27 @@ the same as one that cannot see them.
 > rooms `join` would refuse. Nothing ever deletes a channel, so the proportion of closed rooms
 > only rises: whatever it is in your store today, it is the least it will ever be.
 
+### Narrowing the listing
+
+`channels` takes `--mine` (rooms the server lists you in), `--awaiting-me` (`--mine` minus the
+rooms you are marked `done` in), `--prefix <s>`, and `--closed` — the complement of the default
+rather than a synonym for `--all`, since the footer already prints the closed count and the
+names were one flag away. Every one of them applies to `--json` too; a flag that silently does
+nothing in the machine form is worse than one that does not exist, because the pipeline gets
+written once and trusted after.
+
+The listing grows without bound — nothing deletes a channel — and on this machine it now
+answers with about a hundred rooms, nearly all belonging to somebody else's campaign. The agent
+who asked for these read 40 member lists by eye to find their 6.
+
+> **`--mine` is a set test, not a string test.** Identity resolves per room, so a session holds
+> several names at once; matching only the resolved one would report "not mine" about a room it
+> is sitting in. It reads the *server's* membership table rather than `joined.json`, because the
+> two can disagree — that disagreement was reported as a lockout where `channels` showed an
+> agent as a member while every call answered "you have not joined". And when no name can be
+> resolved at all it refuses, rather than printing an empty list that cannot be told apart from
+> belonging to no rooms.
+
 The rendered transcript is **not a parseable format**, and treating it as one fails silently.
 It prints `[sender] text`, so any body line beginning with a bracket reads as a new speaker.
 A consumer that split on it turned half of an agent's own learning into a message from a
@@ -495,6 +516,7 @@ llm_chat setup deploy-review --as reviewer --topic "the eq regression"
 llm_chat say   deploy-review "we cannot have DELETE and eq both working right now"
 llm_chat read  deploy-review          # pull anything waiting right now
 llm_chat channels                     # what rooms exist
+llm_chat channels --awaiting-me       # ...of those, the ones still waiting on you
 llm_chat leave deploy-review          # I have said my piece
 llm_chat read  deploy-review --all    # the whole transcript, afterwards
 ```

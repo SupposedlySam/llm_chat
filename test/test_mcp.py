@@ -585,5 +585,199 @@ class CliCorrespondenceTest(McpTestCase):
                         "with or without it" % (tool["name"], name))
 
 
+class ExpiryReturnsWhatItHad(McpTestCase):
+    """A diagnostic that only completes when nothing is wrong.
+
+    Reported against `doctor`: it expired at the wrapper's 15s where the CLI
+    answered in 2.4s, and the caller got one sentence about a deadline in
+    place of the diagnosis that had already been printed. These tests drive
+    the REAL `run_cli` against a real child process, because the whole defect
+    lives in the two lines where `subprocess` hands back partial output and
+    the wrapper drops it — a faked `run_cli` cannot see it at all.
+    """
+
+    def child(self, code):
+        """Run real `run_cli` against a python child, via the CLI seam."""
+        self.mod.CLI = "-c"
+        # argv[0] becomes the -c program; `sys.executable -c <program>`.
+        return self.mod.run_cli([code], timeout=2)
+
+    def test_partial_output_SURVIVES_the_deadline(self):
+        code, text = self.child(
+            "import time\nfor i in range(3): print('finding %d' % i)\n"
+            "time.sleep(30)\n")
+        self.assertEqual(code, 1)
+        for i in range(3):
+            self.assertIn("finding %d" % i, text,
+                          "the child printed it before the deadline and the "
+                          "wrapper threw it away:\n%s" % text)
+
+    def test_the_partial_output_comes_BEFORE_the_excuse(self):
+        """A client that truncates must keep the answer, not the apology."""
+        _, text = self.child(
+            "import time\nprint('THE DIAGNOSIS')\ntime.sleep(30)\n")
+        self.assertLess(text.index("THE DIAGNOSIS"), text.index("timed out"),
+                        "the deadline notice was rendered first:\n%s" % text)
+
+    def test_it_is_MARKED_partial_and_not_passed_off_as_complete(self):
+        _, text = self.child(
+            "import time\nprint('half an answer')\ntime.sleep(30)\n")
+        self.assertIn("PARTIAL", text)
+
+    def test_producing_NOTHING_says_so_rather_than_reading_as_no_output(self):
+        _, text = self.child("import time\ntime.sleep(30)\n")
+        self.assertIn("timed out", text)
+        self.assertIn("no output at all", text)
+
+    def test_BYTES_from_the_expiry_do_not_raise(self):
+        """`text=True` is not honoured on the timeout path.
+
+        `subprocess.run` decodes on the normal return only; on expiry it
+        attaches the drained pipes RAW, so `expiry.stdout` is `bytes` even
+        with `text=True` set. The obvious one-line rescue concatenates that
+        with a str notice and raises TypeError — inside the handler for a
+        call that was already failing. Guarded here because the failure is
+        invisible until the day a tool actually expires.
+        """
+        self.assertEqual(self.mod._decode(b"bytes in"), "bytes in")
+        self.assertEqual(self.mod._decode("str in"), "str in")
+        self.assertEqual(self.mod._decode(None), "")
+        self.assertEqual(self.mod._decode(b"\xff bad utf8"), "� bad utf8")
+
+    def test_the_rescue_CAN_FIRE_because_the_child_is_unbuffered(self):
+        """The guard that could not fire.
+
+        Python block-buffers stdout when it is a pipe, and `capture_output`
+        makes it one — so without PYTHONUNBUFFERED a killed child has written
+        NOTHING to the pipe however much it printed, and every assertion
+        above would pass vacuously against an empty string. Measured both
+        ways when this was written:
+
+            inherited            TimeoutExpired.stdout is None
+            PYTHONUNBUFFERED=1   TimeoutExpired.stdout is b'line 0\\n...'
+
+        This asserts the cause rather than the symptom, so that deleting the
+        `env=` from run_cli fails HERE, naming the reason, instead of failing
+        four tests above with an empty diff.
+        """
+        seen = {}
+        real_run = real_subprocess.run
+
+        def spy(argv, **kw):
+            seen.update(kw.get("env") or {})
+            return real_run(argv, **kw)
+
+        self.mod.subprocess.run = spy
+        try:
+            self.child("import time\nprint('x')\ntime.sleep(30)\n")
+        finally:
+            self.mod.subprocess.run = real_run
+        self.assertEqual(seen.get("PYTHONUNBUFFERED"), "1",
+                         "the child inherits block-buffered stdout, so the "
+                         "partial-output rescue above can never fire")
+
+
+class BudgetIsConfigurable(McpTestCase):
+    """`raise OR make configurable` — both, for different hosts."""
+
+    def scaled(self, value, declared=20):
+        tool = {"timeout": declared}
+        old = os.environ.get(self.mod.BUDGET_SCALE_ENV)
+        if value is None:
+            os.environ.pop(self.mod.BUDGET_SCALE_ENV, None)
+        else:
+            os.environ[self.mod.BUDGET_SCALE_ENV] = value
+        try:
+            return self.mod.budget_for(tool)
+        finally:
+            os.environ.pop(self.mod.BUDGET_SCALE_ENV, None)
+            if old is not None:
+                os.environ[self.mod.BUDGET_SCALE_ENV] = old
+
+    def test_unset_is_the_declared_budget(self):
+        self.assertEqual(self.scaled(None), 20)
+
+    def test_a_scale_multiplies_it(self):
+        self.assertEqual(self.scaled("3"), 60)
+        self.assertEqual(self.scaled("1.5"), 30)
+
+    def test_JUNK_falls_back_instead_of_taking_the_server_down(self):
+        """This runs inside every tool call. A typo must not be fatal."""
+        for junk in ("", "abc", "1,5", "--", "nan-ish"):
+            with self.subTest(value=junk):
+                self.assertEqual(self.scaled(junk), 20)
+
+    def test_a_NON_POSITIVE_scale_is_ignored_not_obeyed(self):
+        """`0` would mean expire immediately, from a knob whose whole
+        purpose is asking for more time. Obeying it literally is never what
+        anybody meant."""
+        for value in ("0", "-2", "-0.5"):
+            with self.subTest(value=value):
+                self.assertEqual(self.scaled(value), 20)
+
+    def test_the_scale_REACHES_the_seam(self):
+        """A knob nothing reads is the defect this repo keeps finding."""
+        fake = RunCli((0, "ok"))
+        self.mod.run_cli = fake
+        os.environ[self.mod.BUDGET_SCALE_ENV] = "4"
+        try:
+            self.dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": "doctor", "arguments": {}}})
+        finally:
+            os.environ.pop(self.mod.BUDGET_SCALE_ENV, None)
+        declared = self.mod.TOOLS_BY_NAME["doctor"]["timeout"]
+        self.assertEqual(fake.calls[0][1], declared * 4)
+
+
+class DoctorOutlivesItsOwnSubprocess(McpTestCase):
+    """The one thing about the report that IS readable from the source.
+
+    The stall was not reproducible here (0.3s, 58 lines), so no cause is
+    claimed. But `server_bind` in bin/llm_chat gives `lsof` its own 10s
+    budget and `doctor` is the only verb that calls it — which is also why
+    every other MCP verb answered fine in the reporter's same window. A step
+    allowed 10s inside a caller allowed 15s means the caller cannot survive
+    that step timing out.
+    """
+
+    def inner_lsof_budget(self):
+        """Read the real number out of bin/llm_chat rather than restate it.
+
+        Restating it is how the two drift apart, and drifting apart is the
+        entire defect: this budget is only correct RELATIVE to that one.
+        """
+        import re
+        path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                            os.pardir, "bin", "llm_chat")
+        with open(path) as handle:
+            src = handle.read()
+        start = src.index("def server_bind")
+        body = src[start:src.index("\ndef ", start + 1)]
+        found = re.search(r'\["lsof".*?timeout=(\d+)\)', body, re.S)
+        self.assertIsNotNone(
+            found, "server_bind no longer shells out to lsof with a literal "
+                   "timeout — this test's premise is gone, not its subject")
+        return int(found.group(1))
+
+    def test_doctors_budget_EXCEEDS_the_subprocess_it_waits_on(self):
+        inner = self.inner_lsof_budget()
+        outer = self.mod.TOOLS_BY_NAME["doctor"]["timeout"]
+        self.assertGreater(
+            outer, inner,
+            "doctor is allowed %ds and the lsof it waits on is allowed %ds, "
+            "so a blocked lsof alone expires the tool and the caller gets a "
+            "deadline instead of a diagnosis" % (outer, inner))
+
+    def test_there_is_room_LEFT_OVER_for_the_actual_diagnosis(self):
+        """Merely exceeding it is not enough — 11s against 10s would pass
+        the test above and still leave one second to do the work in."""
+        inner = self.inner_lsof_budget()
+        outer = self.mod.TOOLS_BY_NAME["doctor"]["timeout"]
+        self.assertGreaterEqual(
+            outer - inner, 30,
+            "only %ds is left for the diagnosis once lsof has spent its "
+            "whole %ds budget" % (outer - inner, inner))
+
+
 if __name__ == "__main__":
     unittest.main()

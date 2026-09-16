@@ -77,13 +77,58 @@ def run_cli(argv, timeout):
     that into an immediate, harmless EOF (an empty message) instead of a
     server-wide hang or a corrupted JSON-RPC stream.
     """
+    # UNBUFFERED, so that the timeout path below has something to return.
+    # Python block-buffers stdout when it is a pipe, and `capture_output`
+    # makes it one — so a child killed at the deadline has typically written
+    # nothing to the pipe at all, however much it printed. MEASURED, both
+    # ways, because the first version of the partial-output rescue below was
+    # written without this and could never have fired:
+    #
+    #   inherited            TimeoutExpired.stdout is None
+    #   PYTHONUNBUFFERED=1   TimeoutExpired.stdout is b'line 0\nline 1\n...'
+    #
+    # A guard that cannot fire is indistinguishable from one that is fine,
+    # which is the defect this whole rescue exists to remove. The cost is one
+    # write syscall per line on verbs nobody is timing.
+    env = dict(os.environ, PYTHONUNBUFFERED="1")
     try:
         done = subprocess.run([sys.executable, CLI] + argv,
                               capture_output=True, text=True, timeout=timeout,
-                              stdin=subprocess.DEVNULL)
-    except subprocess.TimeoutExpired:
-        return 1, "timed out after %ds: llm_chat %s" % (timeout, " ".join(argv))
+                              stdin=subprocess.DEVNULL, env=env)
+    except subprocess.TimeoutExpired as expiry:
+        # RETURN WHAT IT HAD. Reported against the `doctor` tool: it expired
+        # at 15s where the CLI answered in 2.4s, and the caller got a single
+        # sentence about a deadline instead of the diagnosis that had already
+        # been computed. A diagnostic that only completes when nothing is
+        # wrong fails at exactly the moment it is wanted.
+        #
+        # `text=True` IS NOT HONOURED HERE. `subprocess.run` decodes on the
+        # normal return path only; on expiry it kills the child, drains the
+        # pipes and attaches them RAW. Measured: `type(expiry.stdout)` is
+        # `bytes` with `text=True` set. Concatenating that with the notice
+        # below raises TypeError — inside the handler for a call that was
+        # already failing, which is the worst place to learn it.
+        got = _decode(expiry.stdout) + _decode(expiry.stderr)
+        notice = ("timed out after %ds: llm_chat %s"
+                  % (timeout, " ".join(argv)))
+        if not got.strip():
+            # Say that the emptiness was measured rather than let it read as
+            # a verb that produces no output.
+            return 1, notice + ("\n(it had produced no output at all when the "
+                                "deadline passed)")
+        # The partial output goes FIRST: a client that truncates keeps the
+        # part with the answer in it, not the part with the excuse.
+        return 1, "%s\n\n--- the above is PARTIAL: %s ---" % (got, notice)
     return done.returncode, (done.stdout or "") + (done.stderr or "")
+
+
+def _decode(raw):
+    """Bytes-or-str-or-None from an expiry, as str. See run_cli."""
+    if raw is None:
+        return ""
+    if isinstance(raw, bytes):
+        return raw.decode("utf-8", "replace")
+    return raw
 
 
 def _require(arguments, key):
@@ -690,7 +735,25 @@ TOOLS = [
                         "they have ever fired, and whether the wiring is "
                         "stale.",
         "build": _build_doctor,
-        "timeout": 15,
+        # 45s, AND THE REASON IS A RATIO RATHER THAN A STOPWATCH. Reported
+        # timing out at 15s against a CLI that answered in 2.4s; I could not
+        # reproduce the stall here (0.3s, 58 lines) and so am NOT claiming
+        # their cause. What is readable in the source without reproducing
+        # anything: `server_bind` in bin/llm_chat gives `lsof` its OWN 10s
+        # budget, and doctor is the only verb that calls it — which is also
+        # why every other MCP verb answered fine in their same window.
+        #
+        # A step allowed 10s inside a caller allowed 15s means the caller
+        # CANNOT survive that step timing out: two-thirds of the budget is
+        # already committed to one subprocess before the diagnosis starts.
+        # `lsof` blocking is its documented failure on a host with a wedged
+        # mount, which a shared monorepo checkout is a fair candidate for.
+        #
+        # So the outer budget is set from the inner one — 10s of lsof plus
+        # room for the rest — rather than from any measurement of mine. If
+        # `server_bind`'s 10s changes, this is the line that has to move, and
+        # that dependency is why the number is written here as a sum.
+        "timeout": 10 + 35,
         "schema": {"type": "object", "properties": {"server": _SERVER},
                    "required": []},
     },
@@ -785,6 +848,42 @@ def handle_tools_list(params):
                        "inputSchema": t["schema"]} for t in TOOLS]}
 
 
+# Name of the escape hatch, and the reason it is a MULTIPLIER rather than a
+# table of seconds. The budgets above are relative to each other for reasons
+# recorded next to them — doctor's is tied to `server_bind`'s inner `lsof`
+# timeout — and a per-tool override lets a consumer set a number that quietly
+# contradicts one of those relationships. A scale factor moves them together
+# and keeps the ordering that the comments justify.
+BUDGET_SCALE_ENV = "LLM_CHAT_MCP_TIMEOUT_SCALE"
+
+
+def budget_for(tool):
+    """The tool's timeout, scaled by the environment if asked.
+
+    Asked for as "raise OR make configurable the wrapper's budget" — both,
+    because raising it fixes the host it was measured on and configuring it
+    fixes the host nobody has measured. An agent on a slow or loaded machine
+    otherwise has no recourse at all short of editing this file.
+
+    FAILS TO THE DECLARED BUDGET, never to an exception: this runs inside
+    every tool call, and a typo in an environment variable must not take the
+    server down. A junk value is ignored rather than guessed at, and a
+    non-positive one would mean "expire immediately", which is never what
+    anybody wants from a knob whose purpose is more time.
+    """
+    declared = tool["timeout"]
+    raw = os.environ.get(BUDGET_SCALE_ENV)
+    if not raw:
+        return declared
+    try:
+        scale = float(raw)
+    except ValueError:
+        return declared
+    if scale <= 0:
+        return declared
+    return max(1, int(declared * scale))
+
+
 # WHAT EACH EXIT CODE MEANS, in the words the CLI's own --help uses. Kept
 # beside the only place that renders them rather than imported, because this
 # process must keep answering even when the CLI it shells out to cannot run —
@@ -835,7 +934,7 @@ def handle_tools_call(params):
         raise ToolError("unknown tool: %r" % (name,))
     arguments = params.get("arguments") or {}
     argv = _server_argv(arguments) + tool["build"](arguments)
-    code, text = run_cli(argv, tool["timeout"])
+    code, text = run_cli(argv, budget_for(tool))
     return {"content": [{"type": "text",
                          "text": with_outcome(code, text)}],
             # UNCHANGED, and deliberately: `isError` is boolean by the

@@ -5409,7 +5409,74 @@ def do_doctor(server):
               "HAVE joined)")
 
 
-def do_channels(server, show_closed=False, as_json=False):
+def my_names():
+    """Every name this session could be listed under, and where each is from.
+
+    THERE IS NO SINGLE ANSWER, which is the whole reason `--mine` was not
+    already possible. Identity resolves PER CHANNEL out of joined.json — a
+    session legitimately posts as one name in one room and another name in
+    the next — so "rooms I am in" cannot be answered by comparing one string
+    against a member list. It is a set membership test against a set.
+
+    The project identity and the session default are included because a room
+    can be joined with either before joined.json has an entry for it, and
+    leaving them out would report "not mine" about a room this session is
+    demonstrably sitting in.
+    """
+    names = {}
+    for room, entry in (read_joined() or {}).items():
+        name = (entry or {}).get("identity")
+        if name:
+            names.setdefault(name, "joined as, in %s" % room)
+    for name, source in ((project_identity(), "project identity"),
+                         (default_identity(), "session default")):
+        if name:
+            names.setdefault(name, source)
+    return names
+
+
+def only_mine(chans, members, awaiting_me):
+    """Rooms the SERVER lists this session in, optionally minus the done ones.
+
+    THE SERVER IS THE MEMBERSHIP RECORD, not joined.json. They can disagree,
+    and showrunner reported the disagreement as a reproducible lockout:
+    `channels` showed them a member, every call answered "you have not
+    joined", and `join` reported success each time. A `--mine` keyed on the
+    local file would have agreed with the broken half and shown them a room
+    they could not use — so this filters the same table the listing renders,
+    and `my_names` supplies the identities to match it against.
+
+    REFUSES RATHER THAN RETURNS NOTHING when this session has no name at all.
+    An empty list is a definite answer to "which rooms am I in", and the
+    honest answer there is that the question could not be asked. Silence here
+    would be indistinguishable from belonging to no rooms, which is the
+    defect family this repo spends its time removing.
+    """
+    names = my_names()
+    if not names:
+        raise SystemExit(
+            "--mine needs to know who you are, and nothing here does: no "
+            "room in joined.json, no project identity, no session.\n"
+            "  llm_chat identify            # report what IS known\n"
+            "  llm_chat identify <name>     # set one for this project"
+        )
+    keep = []
+    for c in chans:
+        rooms_mine = [m for m in members
+                      if m["channel"] == c["name"] and m["identity"] in names]
+        if not rooms_mine:
+            continue
+        # `done` is per MEMBERSHIP, and a session can hold more than one name
+        # in a room. Still awaiting me if ANY of my names there is not done —
+        # marking one identity finished does not finish the other.
+        if awaiting_me and all(m.get("done") for m in rooms_mine):
+            continue
+        keep.append(c)
+    return keep
+
+
+def do_channels(server, show_closed=False, as_json=False, mine=False,
+                prefix=None, awaiting_me=False, closed_only=False):
     """The discovery surface — so it must show what can be JOINED.
 
     Closed rooms are hidden by default because `join` refuses them: listing
@@ -5417,9 +5484,32 @@ def do_channels(server, show_closed=False, as_json=False):
     forever since nothing deletes a channel. Nineteen rooms here, fifteen of
     them dead test scaffolding, burying the four real ones — noticed by an
     agent who charitably assumed it was mid-development mess. It was.
+
+    THE FILTERS EXIST BECAUSE THAT SAME FAILURE CAME BACK AT SCALE. The
+    report that asked for them had 40 open rooms and read 40 member lists by
+    eye to find the 6 that were theirs; this checkout now answers with about
+    a hundred, nearly all of them one-crawler rooms belonging to somebody
+    else's campaign. `--json` moves the eyeballing into `jq`, it does not
+    remove it — the filter has to be here, where the membership table already
+    is.
+
+    They ALL apply before `--json` renders, deliberately. A flag that
+    silently does nothing in the machine form is worse than one that does not
+    exist, because the caller writes the pipeline once and trusts it after.
     """
     chans = rows(server, "channels")
     members = rows(server, "memberships")
+    if prefix:
+        chans = [c for c in chans if c["name"].startswith(prefix)]
+    if mine or awaiting_me:
+        chans = only_mine(chans, members, awaiting_me)
+    if closed_only:
+        # The complement of the default, and NOT a synonym for `--all`. The
+        # footer already prints the closed COUNT, so the names were one flag
+        # away and an agent wanting them had to take every open room with
+        # them to get there.
+        chans = [c for c in chans if c.get("closed")]
+        show_closed = True
     if as_json:
         # The DISCOVERY surface as data. Asked for by an agent whose
         # room-discovery trigger was parsing the rendering below — which is a
@@ -5457,7 +5547,22 @@ def do_channels(server, show_closed=False, as_json=False):
         } for c in sorted(chans, key=lambda c: c.get("created_at") or 0)]))
         return
     if not chans:
-        print("no channels yet")
+        # NAME THE FILTER THAT EMPTIED IT. "no channels yet" is true only of
+        # a server nobody has used, and printing it after a filter matched
+        # nothing reports an empty SERVER where the fact is an empty RESULT —
+        # the caller then goes looking for a broken server, or concludes it
+        # belongs to no rooms. Same shape as every other "a true answer to a
+        # narrower question" in this file.
+        applied = [flag for flag, on in (("--mine", mine),
+                                         ("--awaiting-me", awaiting_me),
+                                         ("--closed", closed_only),
+                                         ("--prefix %s" % prefix, prefix))
+                   if on]
+        if applied:
+            print("no rooms matched %s (the server has rooms; this filter "
+                  "excluded them all)" % " ".join(applied))
+        else:
+            print("no channels yet")
         return
     hidden = 0
     if not show_closed:
@@ -5469,15 +5574,28 @@ def do_channels(server, show_closed=False, as_json=False):
                   % hidden)
             return
     for c in sorted(chans, key=lambda c: c.get("created_at") or 0):
-        mine = [m for m in members if m["channel"] == c["name"]]
-        who = ", ".join(sorted(m["identity"] for m in mine)) or "nobody"
-        done = sorted(m["identity"] for m in mine if m.get("done"))
+        # NOT `mine` — that is this function's parameter, and rebinding it
+        # here would make any later read of the flag report whatever the last
+        # room's membership happened to be.
+        here = [m for m in members if m["channel"] == c["name"]]
+        who = ", ".join(sorted(m["identity"] for m in here)) or "nobody"
+        done = sorted(m["identity"] for m in here if m.get("done"))
         flag = "  [closed]" if c.get("closed") else ""
         print(f"{c['name']}{flag}  —  {c.get('topic') or 'no topic'}")
         print(f"    members: {who}   messages: {c.get('message_count', 0)}"
               + (f"   done: {', '.join(done)}" if done else ""))
     if hidden:
-        print(f"\n({hidden} closed — `channels --all` to include them; a closed "
+        # ECHO THE FILTERS BACK INTO THE HINT. Bare `channels --all` was the
+        # right advice when there was nothing else to preserve; under
+        # `--mine` it silently drops the filter and answers a question the
+        # caller did not ask — with a hundred rooms, loudly. The hint has to
+        # be the command they should actually run.
+        keep = " ".join(f for f, on in (("--mine", mine),
+                                        ("--awaiting-me", awaiting_me),
+                                        ("--prefix %s" % prefix, prefix))
+                        if on)
+        rerun = ("channels %s --all" % keep) if keep else "channels --all"
+        print(f"\n({hidden} closed — `{rerun}` to include them; a closed "
               f"room refuses `join` until `reopen`)")
 
 
@@ -6191,6 +6309,20 @@ def build_parser():
                         "listing is a rendering, not a format")
     p.add_argument("--all", dest="show_closed", action="store_true",
                    help="include closed rooms, which `join` refuses")
+    p.add_argument("--closed", dest="closed_only", action="store_true",
+                   help="ONLY closed rooms — the complement of the default, "
+                        "not a synonym for --all. The footer already prints "
+                        "the count; this prints the names")
+    p.add_argument("--mine", action="store_true",
+                   help="only rooms the server lists you in, under any of "
+                        "the names this session holds (identity is per-room, "
+                        "so there is more than one)")
+    p.add_argument("--awaiting-me", dest="awaiting_me", action="store_true",
+                   help="--mine, minus the rooms you are marked done in — "
+                        "the question you actually have each time")
+    p.add_argument("--prefix",
+                   help="only rooms whose name starts with this, for the "
+                        "per-campaign naming convention rooms already follow")
     p = sub.add_parser("briefing",
                        help="set the house rules every joiner is shown")
     p.add_argument("channel")
@@ -6314,7 +6446,9 @@ def main() -> int:
     if args.cmd == "who":
         return do_who(args.as_json)
     if args.cmd == "channels":
-        do_channels(server, args.show_closed, args.as_json)
+        do_channels(server, args.show_closed, args.as_json, mine=args.mine,
+                    prefix=args.prefix, awaiting_me=args.awaiting_me,
+                    closed_only=args.closed_only)
         return 0
     if args.cmd == "invite":
         chan = get_channel(server, args.channel)

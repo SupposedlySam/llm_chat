@@ -754,6 +754,194 @@ class ChannelsAndInviteTest(unittest.TestCase):
         self.assertIn("no open channels", text)
         self.assertIn("--all", text)
 
+    # ── filtering the listing ───────────────────────────────────────────────
+    # 40 open rooms and 111 closed, and the reporter read 40 member lists by
+    # eye to find the 6 that were theirs. Reproduced here unintentionally
+    # while working the queue: a plain `channels` in this checkout returns
+    # about a hundred rooms, nearly all of them somebody else's per-crawler
+    # campaign rooms.
+
+    def filtered(self, **kw):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_channels("http://127.0.0.1:1", **kw)
+        return out.getvalue()
+
+    def arrange_mine(self):
+        """Two rooms mine under DIFFERENT names, one done, one not mine."""
+        for name in ("mine_open", "mine_done", "theirs"):
+            self.fake.channel(name)
+        self.fake.membership("mine_open", "me")
+        self.fake.membership("mine_done", "other-me", done=1)
+        self.fake.membership("theirs", "somebody-else")
+        cli.read_joined = lambda: {"mine_open": {"identity": "me"},
+                                   "mine_done": {"identity": "other-me"}}
+        cli.project_identity = lambda: None
+        cli.default_identity = lambda: None
+
+    def setUpNames(self):
+        self._saved = (cli.read_joined, cli.project_identity,
+                       cli.default_identity)
+
+    def restoreNames(self):
+        (cli.read_joined, cli.project_identity,
+         cli.default_identity) = self._saved
+
+    def test_mine_matches_EVERY_name_this_session_holds(self):
+        """Identity is per-room, so `--mine` is a set test, not a string test.
+
+        A session legitimately posts as one name in one room and another in
+        the next. Comparing a single resolved identity against member lists
+        would report "not mine" about a room it is demonstrably sitting in —
+        and it would do so silently, which is the whole failure being fixed.
+        """
+        self.setUpNames()
+        try:
+            self.arrange_mine()
+            text = self.filtered(mine=True)
+            self.assertIn("mine_open", text)
+            self.assertIn("mine_done", text, "the room joined under the "
+                          "session's OTHER name was dropped")
+            self.assertNotIn("theirs", text)
+        finally:
+            self.restoreNames()
+
+    def test_the_PROJECT_identity_counts_even_with_no_joined_record(self):
+        """A room can be joined under the project identity or the session
+        default before joined.json has an entry naming it.
+
+        Left out, `--mine` reports "not mine" about a room the session is
+        demonstrably sitting in — and reports it as a shorter list, not an
+        error. Written because the coverage report showed this branch had
+        never run: an unexercised line in a filter is indistinguishable from
+        one that works.
+        """
+        self.setUpNames()
+        try:
+            self.arrange_mine()
+            self.fake.channel("by_project")
+            self.fake.membership("by_project", "the-project")
+            cli.read_joined = lambda: {}
+            cli.project_identity = lambda: "the-project"
+            text = self.filtered(mine=True)
+            self.assertIn("by_project", text)
+            self.assertNotIn("theirs", text)
+        finally:
+            self.restoreNames()
+
+    def test_the_SESSION_default_counts_too(self):
+        """Same argument one rung down: a session that never chose a name
+        still joins under `<project>-<short-sid>`."""
+        self.setUpNames()
+        try:
+            self.arrange_mine()
+            self.fake.channel("by_default")
+            self.fake.membership("by_default", "llm-chat-abc123")
+            cli.read_joined = lambda: {}
+            cli.project_identity = lambda: None
+            cli.default_identity = lambda: "llm-chat-abc123"
+            self.assertIn("by_default", self.filtered(mine=True))
+        finally:
+            self.restoreNames()
+
+    def test_awaiting_me_drops_the_rooms_marked_done(self):
+        self.setUpNames()
+        try:
+            self.arrange_mine()
+            text = self.filtered(awaiting_me=True)
+            self.assertIn("mine_open", text)
+            self.assertNotIn("mine_done", text)
+        finally:
+            self.restoreNames()
+
+    def test_done_under_ONE_name_does_not_finish_the_other(self):
+        """`done` is per MEMBERSHIP and a session can hold two names in one
+        room. Marking one finished must not hide a room the other is still
+        owed a reply in."""
+        self.setUpNames()
+        try:
+            self.arrange_mine()
+            self.fake.membership("mine_done", "me")       # not done
+            self.assertIn("mine_done", self.filtered(awaiting_me=True))
+        finally:
+            self.restoreNames()
+
+    def test_mine_REFUSES_when_it_cannot_know_who_you_are(self):
+        """An empty list is a definite answer to "which rooms am I in".
+
+        With no name resolvable the honest report is that the question could
+        not be asked; printing nothing is indistinguishable from belonging to
+        no rooms, and the caller acts on the wrong one.
+        """
+        self.setUpNames()
+        try:
+            self.arrange_mine()
+            cli.read_joined = lambda: {}
+            with self.assertRaises(SystemExit) as caught:
+                self.filtered(mine=True)
+            self.assertIn("who you are", str(caught.exception))
+        finally:
+            self.restoreNames()
+
+    def test_prefix_selects_by_the_naming_convention(self):
+        self.fake.channel("drops_one")
+        self.fake.channel("drops_two")
+        self.fake.channel("other")
+        text = self.filtered(prefix="drops_")
+        self.assertIn("drops_one", text)
+        self.assertIn("drops_two", text)
+        self.assertNotIn("other", text)
+
+    def test_closed_is_the_COMPLEMENT_of_the_default_not_a_synonym_for_all(self):
+        self.fake.channel("live")
+        self.fake.channel("dead", closed=1)
+        text = self.filtered(closed_only=True)
+        self.assertIn("dead", text)
+        self.assertNotIn("live", text, "--closed listed open rooms too, which "
+                         "is what --all already does")
+
+    def test_a_filter_that_matches_NOTHING_does_not_claim_an_empty_server(self):
+        """"no channels yet" is true only of a server nobody has used.
+
+        Printing it after a filter excluded everything reports an empty
+        SERVER where the fact is an empty RESULT, and the caller goes looking
+        for a broken server instead of a narrow filter.
+        """
+        self.fake.channel("something")
+        text = self.filtered(prefix="nomatch_")
+        self.assertNotIn("no channels yet", text)
+        self.assertIn("--prefix nomatch_", text,
+                      "the filter that emptied the list was not named")
+
+    def test_the_closed_footer_KEEPS_the_filter_it_advises_rerunning_with(self):
+        """Bare `--all` silently drops `--mine` and answers a different
+        question — with a hundred rooms on this server, loudly."""
+        self.setUpNames()
+        try:
+            self.arrange_mine()
+            self.fake.channel("mine_shut", closed=1)
+            self.fake.membership("mine_shut", "me")
+            text = self.filtered(mine=True)
+            self.assertIn("1 closed", text)
+            self.assertIn("--mine --all", text)
+        finally:
+            self.restoreNames()
+
+    def test_every_filter_applies_to_JSON_as_well_as_the_rendering(self):
+        """A flag that silently does nothing in the machine form is worse
+        than one that does not exist: the caller writes the pipeline once,
+        sees plausible output, and trusts it afterwards."""
+        self.setUpNames()
+        try:
+            self.arrange_mine()
+            out = io.StringIO()
+            with redirect_stdout(out):
+                cli.do_channels("http://127.0.0.1:1", as_json=True, mine=True)
+            names = [c["name"] for c in parsed(out.getvalue())]
+            self.assertEqual(sorted(names), ["mine_done", "mine_open"])
+        finally:
+            self.restoreNames()
+
     def test_the_invite_is_written_as_instructions_to_an_agent(self):
         """Because that is literally what happens to it: a human pastes it into
         another session and says 'do that'."""
