@@ -782,8 +782,11 @@ class SweepOrchestratorTest(unittest.TestCase):
         import mutate
         self.mutate = mutate
         self.tmp = tempfile.TemporaryDirectory()
+        # `worker_count` TOO — `run_it` pins it, and a patch left behind here
+        # would hand a later test a shard count from a lambda closed over
+        # somebody else's list.
         self.real = {name: getattr(mutate, name)
-                     for name in ("subprocess", "ROOT")}
+                     for name in ("subprocess", "ROOT", "worker_count")}
         mutate.ROOT = self.tmp.name
         self.spawned = []
         self.children = []
@@ -832,13 +835,47 @@ class SweepOrchestratorTest(unittest.TestCase):
             setattr(self.mutate, name, value)
         self.tmp.cleanup()
 
-    def run_it(self, child_codes):
+    def run_it(self, child_codes, expect_shards=True):
+        """Run the sweep with EXACTLY as many shards as codes supplied.
+
+        `expect_shards=False` for the one scenario where spawning nothing is
+        the correct outcome — a failed copy, where the codes are supplied only
+        to prove they go unused.
+
+        The shard count used to come from the host's CPU count, and every
+        test here silently inherited it. This one machine spawns eight, so
+        `[0, 0, 1, 0, 0, 0, 0, 0]` put a red shard at index 2 and passed; the
+        CI runner spawns two, index 2 was never reached, all shards returned
+        green and the assertion failed there and only there — for four of
+        five nights, with the sweep refusing to run at all as a result.
+
+        Pinning it to `len(child_codes)` makes each test's scenario mean the
+        same thing everywhere, and makes the number a property of the test
+        rather than of the laptop it was written on.
+        """
         import contextlib
         import io
         self.child_codes = child_codes
+        self.mutate.worker_count = lambda: len(child_codes)
+        # PER CALL, not per test. These accumulated across calls, so a test
+        # running two scenarios saw the second one's shards added to the
+        # first's — which the check below caught immediately, on its way in.
+        self.spawned = []
+        self.children = []
         buffer = io.StringIO()
         with contextlib.redirect_stdout(buffer):
             code = self.mutate.sweep_in_a_copy()
+        # THE SCENARIO ACTUALLY HAPPENED. Without this, a future change to
+        # the sharding quietly returns these tests to passing on a count that
+        # cannot express what they describe — which is the exact failure being
+        # fixed, and it was invisible precisely because everything was green.
+        if expect_shards:
+            self.assertEqual(
+                len(self.spawned), len(child_codes),
+                "asked for %d shards and %d ran, so the exit codes past index "
+                "%d were never used and this test measured something narrower "
+                "than it claims" % (len(child_codes), len(self.spawned),
+                                    len(self.spawned) - 1))
         return code, buffer.getvalue()
 
     def test_EVERY_SHARD_IS_WAITED_ON_BEFORE_A_VERDICT_IS_RETURNED(self):
@@ -861,6 +898,24 @@ class SweepOrchestratorTest(unittest.TestCase):
         """Paired, so the test above cannot be satisfied by always failing."""
         code, _ = self.run_it([0] * 8)
         self.assertEqual(code, 0)
+
+    def test_a_TWO_SHARD_HOST_still_reports_a_red_shard(self):
+        """The machine CI actually is, which nothing here ever ran.
+
+        Every scenario in this class was written with eight codes because
+        this laptop has fourteen CPUs and spawns eight shards. The runner
+        spawns two. That was not a smaller version of the same test — it was
+        a different one, and it had no coverage at all until the nightly
+        failed on it four nights running.
+        """
+        self.assertEqual(self.run_it([0, 1])[0], 1)
+        self.assertEqual(self.run_it([0, 0])[0], 0)
+
+    def test_a_SINGLE_SHARD_HOST_still_reports_a_red_shard(self):
+        """`worker_count` floors at 1, so a one-CPU host is reachable and the
+        aggregation has to survive having nothing to aggregate."""
+        self.assertEqual(self.run_it([1])[0], 1)
+        self.assertEqual(self.run_it([0])[0], 0)
 
     def test_each_shard_is_told_WHICH_shard_it_is(self):
         """The share drives `my_share`, and it is also the variable the crash
@@ -898,7 +953,7 @@ class SweepOrchestratorTest(unittest.TestCase):
         """Both copiers failing means there is no tree to measure. Carrying on
         would sweep whatever happened to land, and report a number about it."""
         self.copy_code = 3
-        code, said = self.run_it([0] * 8)
+        code, said = self.run_it([0] * 8, expect_shards=False)
         self.assertEqual(code, 1)
         self.assertIn("could not copy", said)
         self.assertEqual(self.spawned, [], "shards ran on a failed copy")

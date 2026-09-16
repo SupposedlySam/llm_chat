@@ -110,21 +110,63 @@ jobs:
             exit 0
           fi
 
+          # WHICH FAILURE THIS WAS, before saying anything about it. The job
+          # failing has at least three causes that want different readers, and
+          # the report used to assert one of them unconditionally: it titled
+          # every failure "a behaviour is covered but not defended" and pasted
+          # a grep for SURVIVED/CRASHED underneath.
+          #
+          # That is not a wrong grep, it is a true answer to a narrower
+          # question. Issue #32 stood for weeks reading "a behaviour is covered
+          # but not defended" with "(no verdict lines — see the run)" under it,
+          # while the actual log said REFUSING TO SWEEP: the suite is already
+          # red — nothing had been measured at all, and the one test at fault
+          # was named in the log the report did not grep. A reader went looking
+          # for an undefended behaviour that did not exist.
+          log=$(cat logs/*/sweep.log 2>/dev/null || true)
+
+          if printf '%s' "$log" | grep -q 'REFUSING TO SWEEP'; then
+            title="mutation sweep: it refused to run — the suite was already red"
+            lead="The sweep MEASURED NOTHING. It refuses to attribute anything to a mutation when the suite is red before any mutation is applied, so this is a broken test, not a coverage finding."
+            # DEDUPE IN PLACE, NOT `sort -u`. The refusal is printed once per
+            # shard, so it needs deduping — but sorting it puts the failing
+            # test name above the sentence explaining what it is, and the
+            # three lines only mean anything in the order the sweep wrote
+            # them. Order is the content here.
+            verdicts=$(printf '%s' "$log" \
+              | grep -E 'REFUSING TO SWEEP|Already failing BEFORE|^ {4}test_' \
+              | awk '!seen[$0]++' | head -40)
+          elif printf '%s' "$log" | grep -qE 'SURVIVED|CRASHED'; then
+            title="mutation sweep: a behaviour is covered but not defended"
+            lead="A mutation that SURVIVES is the finding: the lines are covered, the suite is green, and the behaviour is not defended. A CRASHED mutation is not a pass either — it means the mutant killed its test by raising rather than by being measured, and that number may only go down."
+            verdicts=$(printf '%s' "$log" \
+              | grep -hE 'SURVIVED|CRASHED|mutation\(s\)|ceiling' \
+              | sort -u | head -40)
+          else
+            # NAMED AS UNKNOWN rather than folded into whichever branch reads
+            # best. A timeout, a runner failure or a crash before the first
+            # verdict all land here, and none of them is a statement about
+            # coverage.
+            title="mutation sweep: the job failed before reaching a verdict"
+            lead="The sweep produced no verdict line of any kind, so WHY it failed is not established here — a timeout, a runner failure, or a crash before the first mutation all look like this. Read the run before assuming a coverage finding."
+            verdicts=$(printf '%s' "$log" | tail -40)
+          fi
+
           {
             echo "The nightly mutation sweep did not come back clean."
             echo
             echo "Run: $RUN_URL"
             echo
-            echo "A mutation that SURVIVES is the finding: the lines are covered, the suite is"
-            echo "green, and the behaviour is not defended. A CRASHED mutation is not a pass"
-            echo "either — it means the mutant killed its test by raising rather than by being"
-            echo "measured, and that number may only go down."
+            echo "$lead"
             echo
             echo "What the sweep said:"
             echo
             echo '```'
-            grep -hE 'SURVIVED|CRASHED|mutation\(s\)|ceiling' logs/*/sweep.log 2>/dev/null \
-              | sort -u | head -40 || echo "(no verdict lines — see the run)"
+            if [ -n "$verdicts" ]; then
+              printf '%s\n' "$verdicts"
+            else
+              echo "(the log was empty or missing — see the run)"
+            fi
             echo '```'
             echo
             echo "Opened by \`.github/workflows/mutation-sweep.yml\`. While this stays open no"
@@ -132,6 +174,6 @@ jobs:
           } > body.md
 
           gh issue create --repo "$GITHUB_REPOSITORY" \
-            --title "mutation sweep: a behaviour is covered but not defended" \
+            --title "$title" \
             --label mutation-sweep \
             --body-file body.md

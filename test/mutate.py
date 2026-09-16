@@ -109,6 +109,30 @@ def my_share(mutations):
     return list(mutations)[index::total]
 
 
+def worker_count():
+    """How many shards to split the sweep across.
+
+    A NAMED SEAM RATHER THAN AN INLINE EXPRESSION, because this number is the
+    one thing about the sweep that differs between the machine a test is
+    written on and the machine it runs on — and it did, silently, for four of
+    five nights.
+
+    `test_ONE_FAILING_SHARD_FAILS_THE_WHOLE_SWEEP` fed eight exit codes with
+    the failure at index 2. This host reports enough CPUs to spawn eight
+    shards, so it passed here every time; the CI runner spawns two, index 2
+    was never reached, every shard came back green and the assertion failed on
+    a machine nobody was watching. The sweep then refused to run at all —
+    correctly, since it will not measure mutations against an already-red
+    suite — so ONE host-dependent test disabled mutation coverage for the
+    whole repo, and the only symptom was a nightly that went red in a minute
+    instead of green in thirty-three.
+
+    Callers that need a fixed shard count patch THIS, so a test states the
+    number it is assuming instead of inheriting whatever the host has.
+    """
+    return max(1, min(8, (os.cpu_count() or 2) - 1))
+
+
 def sweep_in_a_copy():
     """Run the whole sweep against a COPY of this repo, and return its code.
 
@@ -138,7 +162,7 @@ def sweep_in_a_copy():
     # have: a check that does not really run. Splitting the list across
     # independent copies is the only lever, since each mutation genuinely
     # needs the whole suite.
-    workers = max(1, min(8, (os.cpu_count() or 2) - 1))
+    workers = worker_count()
     parent = tempfile.mkdtemp(prefix="llm_chat-sweep-")
     try:
         copies = []
