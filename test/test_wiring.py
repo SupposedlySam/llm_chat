@@ -1110,6 +1110,83 @@ class ContinuousIntegrationTest(unittest.TestCase):
         self.assertIn("does NOT run the mutation sweep", text)
 
 
+class TheSweepWorkflowTest(unittest.TestCase):
+    """The OTHER workflow, which nothing here asserted anything about.
+
+    The class above exists because "verify reported the file UNCHECKED — it
+    matched no rule, so nothing looked at it at all", and it then covered
+    tests.yml and stopped. mutation-sweep.yml sat beside it with the same
+    status and no assertions, and that is where the cost landed: its report
+    titled EVERY failure "a behaviour is covered but not defended" and pasted
+    a grep for SURVIVED/CRASHED, so issue #32 stood for weeks asserting a
+    finding that had not happened while the log said REFUSING TO SWEEP: the
+    suite is already red and named the test at fault on the next line.
+
+    These assert the SHAPE that made that possible, not the wording: a report
+    that names one outcome unconditionally, and a grep that cannot match the
+    log it is reading. Neither is catchable by a YAML parse — the file was
+    always valid.
+    """
+
+    def setUp(self):
+        self.path = os.path.join(mutate.ROOT, ".github", "workflows",
+                                 "mutation-sweep.yml")
+        with open(self.path) as f:
+            self.text = f.read()
+
+    def test_the_workflow_exists(self):
+        self.assertTrue(os.path.isfile(self.path))
+
+    def test_it_is_still_SCHEDULED(self):
+        """Losing the schedule is the silent failure here: a nightly that no
+        longer runs looks exactly like a nightly with nothing to report."""
+        self.assertIn("schedule:", self.text)
+        self.assertIn("cron:", self.text)
+
+    def test_it_actually_runs_the_sweep(self):
+        self.assertIn("test/mutate.py", self.text,
+                      "the nightly does not invoke the sweep")
+
+    def test_the_report_can_SEE_a_refusal(self):
+        """The sweep's loudest outcome is one the report used to be blind to.
+
+        `REFUSING TO SWEEP` is what it prints when the suite is red before any
+        mutation is applied — nothing was measured, so nothing can be
+        attributed — and the old grep looked only for SURVIVED and CRASHED.
+        The one line that identified the broken test was in the log and not in
+        the issue.
+        """
+        self.assertIn("REFUSING TO SWEEP", self.text,
+                      "the report cannot match the sweep's own refusal, so a "
+                      "red suite is reported as a coverage finding")
+
+    def test_the_report_does_not_assert_ONE_finding_for_EVERY_failure(self):
+        """A single hardcoded title is the defect, in one line.
+
+        The job fails for at least three unrelated reasons — refused-because-
+        red, a real survivor, and dying before any verdict — and a title
+        fixed at authoring time is a claim about which one, made before the
+        evidence exists. So the title has to be a variable.
+        """
+        self.assertIn('--title "$title"', self.text,
+                      "the issue title is fixed at authoring time, so every "
+                      "failure is reported as whichever one was written down")
+
+    def test_an_UNKNOWN_failure_is_named_as_unknown(self):
+        """A timeout or a runner fault is not a statement about coverage, and
+        folding it into whichever branch reads best is how an unknown gets
+        published as a definite answer."""
+        self.assertIn("before reaching a verdict", self.text)
+
+    def test_it_still_files_only_ONE_issue_at_a_time(self):
+        """A nightly that opens an issue every night is a nightly nobody
+        reads. This is why four further red nights filed nothing — worth
+        asserting, because it also means the FIRST issue's wording is the
+        only wording anybody sees."""
+        self.assertIn("--state open", self.text)
+        self.assertIn("not filing another", self.text)
+
+
 # WHERE EACH SHIPPED TRIGGER IS SUPPOSED TO BE WIRED, and it is a decision
 # record rather than a list somebody maintains: the test below fails when a
 # file in triggers/ has no entry here, so it cannot age quietly. That is the
