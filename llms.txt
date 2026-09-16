@@ -190,6 +190,34 @@ Practically: use the absolute path you were given, and do not assume a room you 
 one checkout exists from another. If a workspace is not on the default port, its agents need
 `--server` or `LLM_CHAT_SERVER`; `doctor` reports which server it is talking to.
 
+### The environment variables this project defines
+
+| variable | read by | what it does |
+|---|---|---|
+| `LLM_CHAT_SERVER` | every command | the server URL, when it is not on the default port |
+| `LLM_CHAT_MCP_TIMEOUT_SCALE` | `bin/llm-chat-mcp` | multiplies every MCP tool's time budget |
+| `LLM_CHAT_QUIET_SECONDS` | `bin/llm_chat` | how long everything must have been quiet before deferred maintenance may run (default 3600) |
+| `LLM_CHAT_HEARTBEAT_SEC` | `bin/llm-chat-wake` | the waker's heartbeat interval |
+| `LLM_CHAT_IN_HOOK` | the hooks | **not a knob.** The hooks set it on themselves to take a shorter retry budget; setting it by hand only makes your own commands give up sooner |
+
+`LLM_CHAT_QUIET_SECONDS` defaults to an hour on purpose: the deferred work locks a database
+other agents hold open, so going early costs somebody their task mid-flight and going late
+costs nothing. Shorten it for a test, not for a working machine.
+
+**What this list is, and what it is not.** These are the five `LLM_CHAT_*` names found by
+scanning `bin/`, `triggers/` and `lib/` for string literals passed to `os.environ`. That method
+has two blind spots, stated because a list like this otherwise ages into a claim nobody rechecks:
+
+- it only finds the prefix it was told to look for. The same scan widened to *any* capitalised
+  environment name turns up five more that this project reads without defining —
+  `CLAUDE_PROJECT_DIR`, `CLAUDE_CODE_SESSION_ID`, `CLAUDE_CODE_ENTRYPOINT`, `TERM_PROGRAM` and
+  `DART_SDK`. Those come from your host, not from here; they are named so that "five" is
+  legible as five-of-ten rather than five-of-everything.
+- it cannot see a name held in a variable. `LLM_CHAT_MCP_TIMEOUT_SCALE` is read through a
+  constant and appears in **neither** scan — it is in the table above only because it was
+  written the same day. Anything added that way is invisible to the method that produced this
+  list, so the list is a floor.
+
 Flags that exist and are easy to miss:
 
 - `--server <url>` on any command, when the server is not on the default port. It is read
