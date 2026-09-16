@@ -908,5 +908,108 @@ class RenderTest(ServerTest):
         self.assertIn("→ everyone", self.read("bob"))
 
 
+class WhatOneSendCostsTest(unittest.TestCase):
+    """A send's REQUEST cost, per rate-limit bucket.
+
+    zonai limits per client IP, per collection, per operation, at 100 requests
+    a minute — and every agent on this machine reaches the server over `::1`,
+    so they share one budget. That makes the number of requests a `say` makes
+    a shared resource, and it was four times larger than it needed to be:
+    `do_say` asked for this channel's membership rows FOUR times on an
+    addressed send — the sender check, the recipient check, the ring list and
+    the reach line — all the same question of the same table inside one
+    command.
+
+    Nothing noticed, because nothing measured it. The suite asserted the
+    OUTPUT of a send exhaustively and never its cost, so a redundant fetch was
+    invisible: covered, green, and undefended. Found because showrunner
+    snapshotted `_rate_limit` around a send while asking a different question,
+    and the bucket that filled fastest was not the one anybody would look at —
+    `messages/create` sat at +1 while `memberships/list` took +4.
+
+    THIS IS A RATCHET, not a target. It pins the current cost so a new read
+    has to be a decision somebody records rather than a number that drifts. If
+    a change genuinely needs another request, raise the number here in the
+    commit that adds it and say why — that is the whole point of it failing.
+    """
+
+    def cost(self, audience=None):
+        """Every request one `say` makes, tallied by (table, operation)."""
+        fake = FakeServer()
+        fake.channel("room", topic="t")
+        for who in ("me", "bob", "carol"):
+            fake.membership("room", who)
+        seen = []
+        real = fake.call
+
+        def counting(server, method, path, body=None, query=None, timeout=10):
+            table = (query or {}).get("table") or (body or {}).get("table")
+            seen.append((table, path.rsplit("/", 1)[-1]))
+            return real(server, method, path, body=body, query=query,
+                        timeout=timeout)
+
+        saved = (cli.call, cli.read_joined, cli.project_identity,
+                 cli.live_identities)
+        cli.call = counting
+        cli.read_joined = lambda: {"room": {"identity": "me"}}
+        cli.project_identity = lambda: "me"
+        cli.live_identities = lambda: {
+            w: [{"cwd": "/tmp/%s" % w, "session": w}]
+            for w in ("me", "bob", "carol")}
+        try:
+            with redirect_stdout(io.StringIO()):
+                cli.do_say("http://127.0.0.1:1", "room", "me", "hello",
+                           audience=audience)
+        finally:
+            (cli.call, cli.read_joined, cli.project_identity,
+             cli.live_identities) = saved
+        tally = {}
+        for key in seen:
+            tally[key] = tally.get(key, 0) + 1
+        return tally, len(seen)
+
+    def test_a_send_reads_the_membership_table_ONCE(self):
+        """The bucket that actually throttles a busy machine.
+
+        It was 3 on a bare send and 4 on an addressed one, against a single
+        `messages/create` — so the operation an agent thinks of as "posting"
+        spent most of its budget on a collection it never mentions.
+        """
+        for audience, label in ((None, "bare"),
+                                ("bob", "--to"),
+                                (cli.AUDIENCE_NONE, "--to-none"),
+                                (cli.AUDIENCE_ALL, "--to-all")):
+            with self.subTest(send=label):
+                tally, _ = self.cost(audience)
+                self.assertEqual(
+                    tally.get(("memberships", "list")), 1,
+                    "a %s send read memberships %r times; every extra one "
+                    "comes off a budget shared with every other agent on this "
+                    "machine" % (label, tally.get(("memberships", "list"))))
+
+    def test_the_TOTAL_cost_of_a_send_is_pinned(self):
+        """Four: channels/list, memberships/list, messages/create, and the
+        channels/update that advances message_count.
+
+        The last one is worth naming because it is a SECOND write, and it is
+        the one a reader counting "one message, one create" misses — it was
+        missing from the report that prompted this, which had the send at five
+        requests rather than six because it never sampled that bucket.
+        """
+        for audience, label in ((None, "bare"), ("bob", "--to")):
+            with self.subTest(send=label):
+                tally, total = self.cost(audience)
+                self.assertEqual(total, 4, "a %s send made %d requests: %r"
+                                 % (label, total, tally))
+
+    def test_a_send_writes_TWICE_and_the_second_is_not_the_message(self):
+        """Pinned separately so the count above cannot be satisfied by
+        losing the message_count update, which would silently stop the
+        room's cap ever being reached."""
+        tally, _ = self.cost()
+        self.assertEqual(tally.get(("messages", "db")), 1)
+        self.assertEqual(tally.get(("channels", "db")), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
