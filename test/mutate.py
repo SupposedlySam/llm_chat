@@ -1405,9 +1405,10 @@ MUTATIONS = [
      "only prose to tell them apart — which is why #18 blocked on a 429 that "
      "cleared twenty seconds later. And it is now the ONLY raiser: `rows` "
      "kept the distinction while `create`, `update` and `remove` lost it, "
-     "which is exactly backwards, because the limiter appears WRITE-scoped "
-     "and the throttled operations were the ones handing back an "
-     "indistinguishable error"),
+     "which is exactly backwards, because zonai buckets per collection AND "
+     "operation — so a write is throttled on its own counter and cannot be "
+     "spared by reads being quiet, and the operations that actually get "
+     "refused were the ones handing back an indistinguishable error"),
 
     ("a 429 is retried instead of handed to the caller", "bin/llm_chat",
      "            if e.code == 429 and wait is not None:",

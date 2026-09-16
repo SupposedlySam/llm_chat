@@ -610,12 +610,35 @@ def and_(*conditions):
 # default. Worth knowing before tuning anything below, because the numbers are
 # not ours to change from this side.
 #
-# SCOPE, reported rather than measured here, and flagged as such: a consumer
-# saw 40 consecutive `GET /db/list` return 200 while writes were being
-# refused, which suggests the limiter is WRITE-scoped. One observation from
-# one machine — enough to know reads and writes are not alike, not enough to
-# state a rule. They deliberately did not hammer writes to find the
-# threshold, since that means junk rooms and messages.
+# SCOPE. Read from zonai's own docs rather than inferred here, after two
+# rounds of inferring it wrongly.
+#
+#   docs/rate-limiting.md: rate-limited "per client IP, per collection, and
+#   per operation", tracked in `_rate_limit` "keyed by client IP, collection
+#   name, and operation", default 100 requests per minute.
+#
+# So EVERY (collection, operation) PAIR HAS ITS OWN COUNTER. `messages/list`
+# and `messages/create` are separate budgets that do not draw each other down.
+#
+# THIS REPLACES A WRONG INFERENCE, and the shape of the error is worth more
+# than the correction. This note used to say a consumer's observation — 40
+# consecutive `GET /db/list` returning 200 while writes were refused —
+# "suggests the limiter is WRITE-scoped", flagged as one observation and not a
+# rule. The flag was the wrong repair: the problem is not that the sample was
+# small, it is that the observation is EXACTLY what per-operation bucketing
+# predicts and therefore is not evidence for write-scoping at all. A reader
+# who discounted it for being one machine would still have been left with a
+# hypothesis the documented key rules out. Reported by showrunner, who had
+# repeated "it is write-scoped" to a human as established fact after reading
+# this — the flag travelled less far than the claim did, which is the argument
+# for not shipping the claim.
+#
+# WHAT IS STILL NOT KNOWN: which bucket refused any given request. The counter
+# table holds one row per bucket and each window overwrites the last, so after
+# a 429 there is no way to ask what tripped — and every agent on this machine
+# shares `::1`, so a throttle is not attributable to whoever caused it.
+# zonai v0.9.1 puts the collection and operation into the 429 body, which
+# answers it; this repo pins 0.8.5 and does not have that yet.
 #
 # The same report measured the WINDOW: from a first 429 on a direct `say` to a
 # successful send took >=40s across three attempts spaced 20s apart, with two
@@ -941,12 +964,18 @@ def refuse(res):
     all raised a bare `SystemExit` — so the distinction #15 exists for was
     preserved on READS and lost on WRITES.
 
-    That is exactly backwards from where it is needed. The limiter appears to
-    be write-scoped (40 consecutive reads returned 200 while writes were
-    refused, per #27's reporter), so the operations that actually get
-    throttled were the ones handing back an indistinguishable error. #27 was a
-    429 on `open` — two writes — and the caller could only tell wait from stop
-    because the channel LOOKUP happened first and went through `rows`.
+    That is exactly backwards from where it is needed. Writes have their OWN
+    counter — zonai buckets per collection AND operation — so a write is
+    throttled on its own budget and cannot be spared by reads being quiet.
+    The operations that actually get refused were the ones handing back an
+    indistinguishable error. #27 was a 429 on `open` — two writes — and the
+    caller could only tell wait from stop because the channel LOOKUP happened
+    first and went through `rows`.
+
+    (This used to argue from "the limiter appears to be write-scoped", which
+    the documented bucketing does not support — see the SCOPE note by
+    RETRY_WAITS. The conclusion is unchanged and the reason is now the real
+    one: a separate bucket is exactly why a write gets throttled alone.)
 
     The advice `call` attached is appended here rather than at each call site,
     so a caller cannot get the error without getting the remedy.

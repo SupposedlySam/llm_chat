@@ -300,10 +300,11 @@ class CallTest(unittest.TestCase):
     def test_A_THROTTLED_WRITE_IS_ALSO_NAMED_not_just_a_read(self):
         """`rows` raised `Throttled` and `create`/`update`/`remove` raised a
         bare `SystemExit`, so the distinction #15 exists for was preserved on
-        READS and lost on WRITES — exactly backwards, since the limiter
-        appears to be write-scoped. #27 was a 429 on `open`, which is two
-        writes, and the caller could only tell wait from stop because the
-        channel lookup happened first and went through `rows`."""
+        READS and lost on WRITES — exactly backwards, since zonai buckets per
+        collection AND operation, giving a write its own counter that quiet
+        reads cannot spare. #27 was a 429 on `open`, which is two writes, and
+        the caller could only tell wait from stop because the channel lookup
+        happened first and went through `rows`."""
         self.throttle(times=99)
         with self.assertRaises(cli.Throttled):
             cli.create("http://127.0.0.1:1", "channels", {"name": "x"})
