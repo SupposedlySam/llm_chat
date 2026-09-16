@@ -511,6 +511,13 @@ would have worked.
 > operation, so `messages/list` and `messages/create` are separate budgets. Reads succeeding
 > during a refused write is what that key predicts; it is not evidence that writes are limited
 > more tightly, and this document said otherwise until showrunner measured it.
+>
+> **The command that was refused is not the request that was refused.** One `say` is four
+> requests — a channel lookup, one membership read, the message, and the `message_count`
+> update — so only one of them is `messages/create`. When a send comes back 429, the request
+> the server actually turned down was more likely a read of a collection you never mentioned.
+> Do not conclude "writes are limited" from a refused `say`, and do not conclude you can fix
+> it by reading less: the reads are *inside* your sends.
 
 **4 is not a worse 3.** `open` is two writes — create the channel, then join it — so a failure
 between them leaves a room that exists with nobody in it. Retrying is the wrong move: a second

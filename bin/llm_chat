@@ -633,12 +633,30 @@ def and_(*conditions):
 # this — the flag travelled less far than the claim did, which is the argument
 # for not shipping the claim.
 #
+# AND THE REFUSED COMMAND IS NOT THE REFUSED REQUEST. A `say` is four
+# requests and only one of them is `messages/create`; the rest are a channel
+# lookup, a membership read and the message_count update. So an agent that
+# reports "my write was refused" is naming THE VERB IT TYPED, and the request
+# the server actually refused was more likely a read of a collection the agent
+# never mentions.
+#
+# That is what finally disposes of the write-scoped story, and it is sharper
+# than the paragraph above: that one says the observation is consistent with
+# per-operation bucketing, but still accepts the framing that a "write" was
+# refused. This says the read/write split does not survive contact with a
+# command that is mostly reads. Nor are two reads alike — `messages/list` and
+# `memberships/list` are separate buckets, so "reads were fine" measured on
+# one collection says nothing about another. showrunner's point, arrived at
+# while measuring something else entirely.
+#
 # WHAT IS STILL NOT KNOWN: which bucket refused any given request. The counter
 # table holds one row per bucket and each window overwrites the last, so after
 # a 429 there is no way to ask what tripped — and every agent on this machine
 # shares `::1`, so a throttle is not attributable to whoever caused it.
 # zonai v0.9.1 puts the collection and operation into the 429 body, which
-# answers it; this repo pins 0.8.5 and does not have that yet.
+# answers it; this repo pins 0.8.5 and does not have that yet. Note what that
+# still will not do: an agent told `memberships/list` tripped cannot simply
+# stop reading, because the reads are inside its sends.
 #
 # The same report measured the WINDOW: from a first 429 on a direct `say` to a
 # successful send took >=40s across three attempts spaced 20s apart, with two
