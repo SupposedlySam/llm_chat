@@ -3327,11 +3327,32 @@ def run_suite():
     #
     # Only populated when there is no verdict to parse. On an ordinary red run
     # the failing ids are the better answer and this stays None.
+    #
+    # A PASSING RUN PRINTS NEITHER. `VERDICT` matches `failures=` / `errors=`,
+    # which unittest emits only when something failed — so `saw_verdict` is
+    # False for every green suite, and the first version of this reported a
+    # suite that passed as one that "did not finish". CI proved it: 2067 tests,
+    # `OK`, and run.py exited 1 afterwards on its own damage check. So a green
+    # verdict counts as a verdict.
+    ran = re.search(r"^Ran \d+ tests? in ", text, re.M)
+    passed = re.search(r"^OK(?:\s|$)", text, re.M)
     why = None
     if done.returncode != 0 and not saw_verdict:
         tail = "\n".join(text.strip().splitlines()[-25:])
-        why = ("exited %d without printing a verdict, so it did not finish. "
-               "Its last output:\n%s" % (done.returncode, tail or "(nothing)"))
+        if ran and passed:
+            # THE TESTS ARE NOT THE PROBLEM, and saying they are sends the
+            # reader to the wrong file. run.py does more than run tests — a
+            # coverage floor, a damage check — and any of those can fail a
+            # green suite.
+            why = ("PASSED (%s) and then run.py exited %d on a check of its "
+                   "OWN, after the tests. Nothing here is a failing test. Its "
+                   "last output:\n%s"
+                   % (ran.group(0).strip(), done.returncode,
+                      tail or "(nothing)"))
+        else:
+            why = ("exited %d without printing a verdict, so it did not "
+                   "finish. Its last output:\n%s"
+                   % (done.returncode, tail or "(nothing)"))
     return (done.returncode == 0, counts["failures"], counts["errors"],
             failing_ids(text), why)
 
@@ -3668,6 +3689,10 @@ def red_suite_refusal(baseline):
     # six nights, which reads as a contradiction and sent every reader looking
     # for a failing test that did not exist. What had actually happened was
     # that run.py exited before reporting.
+    if why and why.startswith("PASSED"):
+        return ("REFUSING TO SWEEP: the suite PASSED but the run still "
+                "failed, so there is no usable\ncontrol. This is not a red "
+                "suite and not a broken test. The run %s" % why)
     if why:
         return ("REFUSING TO SWEEP: the suite DID NOT FINISH, so there is "
                 "nothing to measure against.\nThis is not a red suite — a red "

@@ -479,6 +479,26 @@ class VerdictTest(unittest.TestCase):
                       "the child's own last output is the only place the "
                       "reason exists, and it was being discarded")
 
+    def test_a_suite_that_PASSED_is_not_called_unfinished(self):
+        """The CI run that proved the branch above also disproved its wording.
+
+        `VERDICT` matches `failures=`/`errors=`, which unittest prints only
+        when something failed — so a GREEN suite has no verdict to find, and
+        the first version reported "did not finish" for a run that printed
+        `Ran 2067 tests` and `OK` before run.py failed its own damage check
+        afterwards. Sending the reader to look for a failing test that passed
+        is the same wrong-subject defect one rung along.
+        """
+        said = self.mutate.red_suite_refusal(
+            (False, 0, 0, [],
+             "PASSED (Ran 2067 tests in 41.493s) and then run.py exited 1 on "
+             "a check of its OWN, after the tests. Nothing here is a failing "
+             "test. Its last output:\nTHE SUITE MODIFIED THE REPO IT TESTS"))
+        self.assertIn("PASSED", said)
+        self.assertNotIn("DID NOT FINISH", said)
+        self.assertNotIn("already red", said)
+        self.assertIn("MODIFIED THE REPO", said)
+
     def test_a_GENUINELY_red_suite_still_reads_as_red(self):
         """Paired, so the branch above cannot be satisfied by never saying
         red at all."""
