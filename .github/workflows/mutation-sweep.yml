@@ -125,7 +125,12 @@ jobs:
           # for an undefended behaviour that did not exist.
           log=$(cat logs/*/sweep.log 2>/dev/null || true)
 
-          if printf '%s' "$log" | grep -q 'REFUSING TO SWEEP'; then
+          if printf '%s' "$log" | grep -q 'DID NOT FINISH'; then
+            title="mutation sweep: the suite did not finish, so nothing was measured"
+            lead="The suite exited before printing a verdict — it did not run to completion. This is NOT a red suite: a red suite names something. Read the last output below; the reason the run stopped is in it."
+            verdicts=$(printf '%s' "$log" \
+              | grep -A 25 'DID NOT FINISH' | awk '!seen[$0]++' | head -40)
+          elif printf '%s' "$log" | grep -q 'REFUSING TO SWEEP'; then
             title="mutation sweep: it refused to run — the suite was already red"
             lead="The sweep MEASURED NOTHING. It refuses to attribute anything to a mutation when the suite is red before any mutation is applied, so this is a broken test, not a coverage finding."
             # DEDUPE IN PLACE, NOT `sort -u`. The refusal is printed once per
@@ -133,8 +138,14 @@ jobs:
             # test name above the sentence explaining what it is, and the
             # three lines only mean anything in the order the sweep wrote
             # them. Order is the content here.
+            # `did not report WHICH tests` IS IN THIS SET, and leaving it out
+            # is how issue #34 came to read as a contradiction: the body said
+            # "0 failed, 0 errored" with nothing under it, while the log
+            # carried the sentence explaining the emptiness. A filter that
+            # drops the only line accounting for an absence turns a diagnosis
+            # back into a puzzle.
             verdicts=$(printf '%s' "$log" \
-              | grep -E 'REFUSING TO SWEEP|Already failing BEFORE|^ {4}test_' \
+              | grep -E 'REFUSING TO SWEEP|Already failing BEFORE|did not report WHICH|^ {4}test_' \
               | awk '!seen[$0]++' | head -40)
           elif printf '%s' "$log" | grep -qE 'SURVIVED|CRASHED'; then
             title="mutation sweep: a behaviour is covered but not defended"

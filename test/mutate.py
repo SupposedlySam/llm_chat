@@ -3309,13 +3309,31 @@ def run_suite():
                               cwd=ROOT, capture_output=True, text=True,
                               timeout=SUITE_DEADLINE)
     except subprocess.TimeoutExpired:
-        return None, 0, 0, []
+        return None, 0, 0, [], "timed out after %ds" % SUITE_DEADLINE
     text = (done.stdout or "") + (done.stderr or "")
     counts = {"failures": 0, "errors": 0}
+    saw_verdict = False
     for kind, n in VERDICT.findall(text):
         counts[kind] = int(n)
+        saw_verdict = True
+    # THE FIFTH ELEMENT IS WHY, and it exists because the nightly spent six
+    # nights unable to say. A suite that exits non-zero without ever printing
+    # `failures=` or `errors=` did not run to completion — it died before the
+    # verdict — and every caller here was scraping two numbers out of the
+    # output and dropping the rest. So the reason was always present and
+    # always discarded, and the refusal rendered it as "the suite is already
+    # red (0 failed, 0 errored)": a sentence that contradicts itself, because
+    # a red suite has something red in it.
+    #
+    # Only populated when there is no verdict to parse. On an ordinary red run
+    # the failing ids are the better answer and this stays None.
+    why = None
+    if done.returncode != 0 and not saw_verdict:
+        tail = "\n".join(text.strip().splitlines()[-25:])
+        why = ("exited %d without printing a verdict, so it did not finish. "
+               "Its last output:\n%s" % (done.returncode, tail or "(nothing)"))
     return (done.returncode == 0, counts["failures"], counts["errors"],
-            failing_ids(text))
+            failing_ids(text), why)
 
 
 # The one-line marker `run.py` prints its failing test ids on. Defined HERE
@@ -3638,10 +3656,25 @@ def red_suite_refusal(baseline):
     one that named its failures, and collapsing them is the shape this repo
     keeps removing.
     """
+    failed = baseline[3] if len(baseline) > 3 else None
+    why = baseline[4] if len(baseline) > 4 else None
+    # DID NOT FINISH IS NOT RED, and saying so was this message's own version
+    # of the defect it exists to report. `run_suite` returns None for green on
+    # a TIMEOUT — a deliberate third state — and the caller's `if not
+    # baseline[0]` collapsed it into "already red". A suite that never
+    # produced a verdict has nothing red in it; it has nothing in it at all.
+    #
+    # The nightly printed "the suite is already red (0 failed, 0 errored)" for
+    # six nights, which reads as a contradiction and sent every reader looking
+    # for a failing test that did not exist. What had actually happened was
+    # that run.py exited before reporting.
+    if why:
+        return ("REFUSING TO SWEEP: the suite DID NOT FINISH, so there is "
+                "nothing to measure against.\nThis is not a red suite — a red "
+                "suite names something. The run %s" % why)
     said = ["REFUSING TO SWEEP: the suite is already red (%d failed, %d "
             "errored).\nNothing measured against it could be attributed to a "
             "mutation." % (baseline[1], baseline[2])]
-    failed = baseline[3] if len(baseline) > 3 else None
     if failed:
         said.append("Already failing BEFORE any mutation was applied:")
         said.extend("    %s" % test for test in failed)

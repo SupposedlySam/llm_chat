@@ -460,6 +460,33 @@ class VerdictTest(unittest.TestCase):
         self.assertIn("REFUSING TO SWEEP", said)
         self.assertIn("did not report WHICH", said)
 
+    def test_a_suite_that_DID_NOT_FINISH_is_not_called_red(self):
+        """Issue #34, and the message's own version of the defect it reports.
+
+        The nightly printed "the suite is already red (0 failed, 0 errored)"
+        — a sentence that contradicts itself, because a red suite has
+        something red in it. What had happened was that run.py exited before
+        printing a verdict at all, in 45 seconds of a 600-second budget.
+        `run_suite` even returns None for green on a timeout, a deliberate
+        third state, and `if not baseline[0]` collapsed it into "red".
+        """
+        said = self.mutate.red_suite_refusal(
+            (False, 0, 0, [], "exited 1 without printing a verdict, so it "
+                              "did not finish. Its last output:\nboom"))
+        self.assertIn("DID NOT FINISH", said)
+        self.assertNotIn("already red", said)
+        self.assertIn("boom", said,
+                      "the child's own last output is the only place the "
+                      "reason exists, and it was being discarded")
+
+    def test_a_GENUINELY_red_suite_still_reads_as_red(self):
+        """Paired, so the branch above cannot be satisfied by never saying
+        red at all."""
+        said = self.mutate.red_suite_refusal((False, 2, 0, ["test_a.B.c"], None))
+        self.assertIn("already red", said)
+        self.assertNotIn("DID NOT FINISH", said)
+        self.assertIn("test_a.B.c", said)
+
     def test_counts_are_a_DELTA_not_a_total(self):
         """The structural reason gameloop's failure cannot occur here. A
         control run that is already red does not let its own failures be
