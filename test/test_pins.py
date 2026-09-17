@@ -20,6 +20,7 @@ carries its own `ZONAI_VERSION=` in its shell header, so the check is cheap.
 import os
 import re
 import sys
+import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -86,6 +87,9 @@ class HostDartPinTest(unittest.TestCase):
         sys.path.insert(0, os.path.join(ROOT, "test"))
         from support import load
         self.cli = load("llm_chat")
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.tmp = holder.name
 
     def test_HOST_DART_matches_the_vendored_binary(self):
         found = self.cli.host_dart_version()
@@ -100,6 +104,92 @@ class HostDartPinTest(unittest.TestCase):
             "bin/llm_chat pins Dart %s and the vendored zonai host embeds %s; "
             "the workers would be built for a runtime that cannot load them"
             % (self.cli.HOST_DART, found))
+
+    def test_it_reads_the_slice_for_the_PINNED_version(self):
+        """Not the most recently used one, which is a different question.
+
+        `~/.cache/zonai/fat` is machine-wide and shared by every project on
+        it, and this used to take `max(slices, key=getmtime)`. Trialling zonai
+        0.9.1 in a throwaway directory put its slice there, and this then
+        reported 3.13.2 — the 0.9.1 runtime — as the embedded Dart of a tree
+        pinned to 0.8.5. The pin test failed against a binary the repo has
+        never used.
+
+        The failure direction that matters is the other one: a cache whose
+        newest slice happens to MATCH would have made a real drift invisible.
+        """
+        cache = os.path.join(self.tmp, "fat")
+        os.makedirs(cache)
+        # Two slices. The pinned one is older, and carries a different
+        # version string from the newer intruder.
+        pinned = os.path.join(cache, "zonai-0.8.5-Darwin-arm64")
+        with open(pinned, "wb") as handle:
+            handle.write(b"...3.12.0 (stable)...")
+        os.utime(pinned, (1, 1))
+        other = os.path.join(cache, "zonai-0.9.1-Darwin-arm64")
+        with open(other, "wb") as handle:
+            handle.write(b"...3.13.2 (stable)...")
+
+        real_expand = os.path.expanduser
+        self.cli.os.path.expanduser = (
+            lambda p: cache if p.endswith("/.cache/zonai/fat") else
+            real_expand(p))
+        self.cli.pinned_zonai_version = lambda: "0.8.5"
+        try:
+            self.assertEqual(self.cli.host_dart_version(), "3.12.0")
+            self.cli.pinned_zonai_version = lambda: "0.9.1"
+            self.assertEqual(self.cli.host_dart_version(), "3.13.2")
+        finally:
+            self.cli.os.path.expanduser = real_expand
+
+    def test_an_unextracted_slice_is_CANNOT_CHECK_not_a_wrong_number(self):
+        """A tree whose own slice has never been extracted must answer None,
+        so the caller skips. Falling back to somebody else's slice is how the
+        wrong number got reported in the first place."""
+        cache = os.path.join(self.tmp, "empty")
+        os.makedirs(cache)
+        real_expand = os.path.expanduser
+        self.cli.os.path.expanduser = (
+            lambda p: cache if p.endswith("/.cache/zonai/fat") else
+            real_expand(p))
+        self.cli.pinned_zonai_version = lambda: "0.8.5"
+        try:
+            self.assertIsNone(self.cli.host_dart_version())
+        finally:
+            self.cli.os.path.expanduser = real_expand
+
+    def test_the_pinned_version_comes_from_zonai_yaml(self):
+        """Read from the same file the rest of this module checks, so the
+        selector and the pin cannot disagree about what is pinned."""
+        self.assertEqual(self.cli.pinned_zonai_version(), yaml_version())
+
+    def test_a_tree_with_NO_zonai_yaml_says_cannot_tell(self):
+        """Reachable, so tested rather than deleted.
+
+        A checkout without zonai.yaml — or with it unreadable — must not
+        crash the CLI on a path that runs during ordinary startup. It returns
+        None, which `host_dart_version` then treats as "no pin to select by"
+        rather than as a version.
+        """
+        real_root = self.cli.ROOT
+        self.cli.ROOT = self.tmp          # empty; no zonai.yaml in it
+        try:
+            self.assertIsNone(self.cli.pinned_zonai_version())
+        finally:
+            self.cli.ROOT = real_root
+
+    def test_a_zonai_yaml_with_no_version_line_says_cannot_tell(self):
+        """Distinct from the file being absent, and it takes the other
+        branch: the file opens and the regex finds nothing."""
+        real_root = self.cli.ROOT
+        self.cli.ROOT = self.tmp
+        with open(os.path.join(self.tmp, "zonai.yaml"), "w") as handle:
+            handle.write("migrationsPath: .zonai/migrations\n")
+        try:
+            self.assertIsNone(self.cli.pinned_zonai_version())
+        finally:
+            self.cli.ROOT = real_root
+            os.remove(os.path.join(self.tmp, "zonai.yaml"))
 
 
 if __name__ == "__main__":

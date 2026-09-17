@@ -3014,6 +3014,11 @@ NOT_SWEPT = {
                               "and already caught a live failure in another agent",
     "bin/llm_chat:do_channels": "SHOULD BE SWEPT — hiding closed rooms is a "
                                 "behaviour a regression could silently undo",
+    "bin/llm_chat:pinned_zonai_version": "asserted directly against the real "
+        "zonai.yaml and against a fabricated cache — and its FAILURE mode is "
+        "covered too: returning None must give 'cannot check' rather than a "
+        "fallback to somebody else's slice, which is how the wrong Dart "
+        "version got reported in the first place",
     "bin/llm_chat:my_names": "SHOULD BE SWEPT — the whole point is that it "
                              "returns MORE than one name, and a mutation "
                              "collapsing it to the resolved identity makes "

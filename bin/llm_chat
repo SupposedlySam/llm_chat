@@ -5894,6 +5894,21 @@ def missing_workers():
 HOST_DART = "3.12.0"
 
 
+def pinned_zonai_version():
+    """The zonai version this tree pins, from zonai.yaml, or None.
+
+    Parsed with a regex rather than a YAML library on purpose: this file is
+    read on a path that must work in a clone with nothing installed, and the
+    one line it needs is `version: X.Y.Z` at the top level.
+    """
+    try:
+        with open(os.path.join(ROOT, "zonai.yaml")) as handle:
+            found = re.search(r"^version:\s*(\S+)", handle.read(), re.M)
+    except OSError:
+        return None
+    return found.group(1) if found else None
+
+
 def host_dart_version():
     """The Dart the vendored `zonai` host embeds, or None if unreadable.
 
@@ -5903,11 +5918,27 @@ def host_dart_version():
     the binary runs, which means a fresh clone legitimately cannot answer this
     yet — hence None rather than a raise, and a caller that treats None as
     "cannot check" rather than as "mismatch".
+
+    THE SLICE FOR THE PINNED VERSION, NOT THE NEWEST ONE. This took
+    `max(..., key=getmtime)`, which answers "what did this machine most
+    recently run" — a different question, and the two diverge the moment
+    anybody tries another version. Trialling zonai 0.9.1 in a throwaway
+    directory left its slice in the shared cache, and this then reported
+    3.13.2 as the embedded runtime of a tree pinned to 0.8.5, failing the pin
+    test against a binary that was never involved.
+
+    The cache is machine-wide and shared between every project on it, so
+    "newest" was never a property of THIS repo. Selecting by the version
+    zonai.yaml pins makes the answer about the vendored host again, and a
+    tree whose slice has not been extracted yet gets None — cannot check —
+    rather than somebody else's number.
     """
     import glob
     import re
     cache = os.path.expanduser("~/.cache/zonai/fat")
-    slices = glob.glob(os.path.join(cache, "zonai-*"))
+    pinned = pinned_zonai_version()
+    slices = glob.glob(os.path.join(
+        cache, "zonai-%s-*" % pinned if pinned else "zonai-*"))
     if not slices:
         return None
     newest = max(slices, key=os.path.getmtime)
