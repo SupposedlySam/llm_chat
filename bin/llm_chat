@@ -6016,8 +6016,18 @@ def start_server(server) -> None:
             "  Building the workers with anything newer makes the server abort "
             "on its\n  first /db request rather than fail in a way anything "
             "can catch.\n"
-            "  Install it (`dvm install %s`) or point DART_SDK at one."
-            % (HOST_DART, HOST_DART))
+            "  Looked in: $DART_SDK, ~/.dvm/darts/%s, and every "
+            "~/fvm/versions/*/bin/cache/dart-sdk.\n"
+            "  Any of these fixes it:\n"
+            "    DART_SDK=/path/to/dart-sdk   an SDK you already have, "
+            "anywhere\n"
+            "    dvm install %s               if you use dvm\n"
+            "    fvm install <flutter>        whichever Flutter bundles Dart "
+            "%s\n"
+            "  NAMING ALL THREE because the search and the advice used to "
+            "disagree: this\n  scans fvm and recommended only dvm, on a "
+            "machine that had fvm and not dvm."
+            % (HOST_DART, HOST_DART, HOST_DART, HOST_DART))
     env = dict(os.environ, DART_SDK=sdk)
     print(f"  DART_SDK={sdk}", flush=True)
 
