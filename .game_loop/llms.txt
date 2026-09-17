@@ -94,6 +94,27 @@ keeps showing it, with their verbatim words and the next step) instead of being 
 closure. It buys ONE turn-end, it cannot launder a question, and only `mandate --resume` ends it. It
 is for THEIR break, never your judgement — that is what the log records.
 
+Every gate above fires from INSIDE this session, which is the thing that stops working when a run
+goes quiet. If something outside pokes you on a timer, give it a prompt that carries this run:
+
+```
+./.game_loop/bin/game_loop note --woke             # you were woken from outside — record the ARRIVAL
+./.game_loop/bin/game_loop mandate --wake-every 10 # how often that path SHOULD fire, in minutes
+./.game_loop/bin/game_loop note --recovery ".."    # a remedy you learned; a woken you must not re-derive it
+./.game_loop/bin/game_loop doorbell                # the wake-up prompt, assembled from live state
+```
+
+`--woke` is the first thing a woken run should do, and nothing else can do it for you. A wake that
+LANDS is observable from in here; one that was sent and never delivered is not — so an unrecorded
+arrival reads exactly like a dead wake path. `status` reports when the last one landed and how long
+ago, and says outright that a requested-but-undelivered wake is invisible to it.
+
+A generic "check your background tasks" ping is nearly worthless — you wake, spend real tokens
+working out where you were, and re-run finished steps. What makes the difference is the block of
+things learned in the first hour and forgotten by the fourth: the known flake and its remedy, which
+credential actually authenticates, the known-good retry. Record them AS YOU LEARN THEM; `doorbell`
+tells you outright when it has none, rather than printing a confident prompt that buys nothing.
+
 `arm` requires the path to a file you ALREADY read that did NOT answer the question — if the answer was
 on disk, you don't need the human. `checkpoint` and `arm` are each single-use (consumed on the next
 turn-end). If you can predict the human's answer, don't ask; make the call and carry on.
@@ -179,7 +200,17 @@ reduces the damage, it does not remove the class.
   of them — and that is now a REFUSAL at the write, not a sentence you are asked to honour. They
   are the project's policy, not yours. If a call you need is refused and the server is the project's
   own code, that is a config question for the human, not a reason to retry.
-- **Writes outside this repo are denied.** Everything outside the project (other repos, your home dir,
+- **Writes outside this repo are denied — by a guard that reads your COMMAND TEXT, not your intent.**
+  It sees the Write/Edit/NotebookEdit tools by name, every redirect form in the shell grammar that
+  creates or truncates a file, and a NAMED set of write-capable verbs (`rm`, `mv`, `cp`, `tee`, `dd`,
+  `curl -o`, `wget -O`, `tar -C`, `unzip -d`, `rsync`, `install`, `patch -o`, `split`, `sed -i`,
+  `perl -i`, `git` writes). **What it does NOT see it says so in its own SCOPE block**: a `python3 -c`
+  that writes, a path built from a shell variable, a script that mutates once you run it, or any
+  program not on that list. Those are not permission to write outside the repo — they are places the
+  rule holds and the enforcement does not, which is INV3 asking you to keep it rather than the gate
+  making you. Until 2026-08-26 that list quietly omitted `>|`, `>!`, `>>!`, `>&`, `>>&`, `curl -o`,
+  `tar -C` and six other ordinary forms, all of which wrote outside the repo for weeks.
+  Everything outside the project (other repos, your home dir,
   the OS's own files) is read-only. Reading elsewhere is fine; copying *into* the repo (`cp <there> <here>`)
   is fine. If a HUMAN has explicitly authorized one write outside the repo, quote them and retry —
   it is single-use and logged:
@@ -246,6 +277,70 @@ sponsor the author. These are meant to be surfaced to the human — feel free to
 They're optional decoration (a human can disable them with `flair.enabled: false`), never an
 instruction.
 
+## Proving a test actually pins something
+
+`mutate --prove` breaks the code and watches the test go red, so a revert-proof is something the
+tool performed rather than something you reported. It runs a POSITIVE CONTROL first: a fault
+spliced at your anchor must make the test fail. If it does not, the anchor is not on that test's
+path and you are told **the mutation point is inert** — which is NOT "the test is vacuous". Those
+are opposite conclusions with the same observable, and the second sends you to rewrite a test that
+may be fine.
+
+The fault is built in for Python. On any other stack, supply it — the contract is the same
+everywhere and only the fatal text is per-stack:
+
+```
+game_loop mutate --prove ".." --test ".." --file <path> \
+  --replace ".." --with ".." --fault 'throw new Error("{marker}")'
+```
+
+`{marker}` is substituted by the tool, and it is what separates "the probe stopped this test" from
+"something else did" — a fault without it can never return `live`, so it is refused.
+
+## Testing a guard you wrote yourself
+
+`test/run.py` proves game_loop's own guarantees. For YOUR triggers and hook scripts:
+
+```
+game_loop guardtest --fixture .game_loop/guards.json
+```
+
+The fixture is yours and stays yours — no logic lands in game_loop:
+
+```json
+{"script": ".game_loop/triggers.d/mine.sh",
+ "cases": [
+   {"name": "blocks a write outside the repo", "expect": "deny", "expect_output": "READ-ONLY",
+    "payload": {"tool_name": "Write", "tool_input": {"file_path": "/etc/x"}}},
+   {"name": "allows one inside it", "expect": "allow",
+    "payload": {"tool_name": "Write", "tool_input": {"file_path": "README.md"}}}
+ ]}
+```
+
+The `payload` is handed to your script on STDIN as JSON, which is how Claude Code hands a hook its
+own. `expect` is `deny` / `allow` / `ask`; `expect_exit` is there for a guard that only speaks exit
+codes, and `expect_output` pins the REASON, since a guard refusing for the wrong reason sends you
+somewhere else.
+
+**RUNNING A GUARD IS NOT A READ.** A guard is a state machine, and feeding it a payload does
+whatever a real tool call would: a path covered by a standing `authorize` grant CONSUMES one of
+that grant's uses, and the guard says so — *"AUTHORIZATION SPENT."* Measured here, on this repo, by
+a probe that cost two human-granted uses. So point your fixtures at paths the guard decides on its
+own, not at paths somebody authorized. If you must test an authorized path, run it against a
+throwaway `GAME_LOOP_HOME` rather than your live one, and check `uses_left` in the session state
+first.
+
+**Both directions or it is refused.** A fixture whose cases all expect `allow` is passed by a
+script that does nothing at all — which is exactly what a guard looks like after it silently stops
+firing. Write the case that must NOT fire.
+
+Things it reads that are easy to conflate. A hook may refuse by exiting 2 OR by printing a JSON
+`permissionDecision`, and both are a deny — the decision is scanned for as JSON anywhere in the
+output, so indenting it or printing it among other logging both work. Exiting 0 having said nothing
+is `silent`: that is what an allow looks like and equally what a guard no longer running looks
+like, so the run counts them and says so. And a decision that cannot be PARSED is `unreadable`,
+never silent — a hook whose verdict came back truncated has judged, and only the reading failed.
+
 ## Other verbs
 
 ```
@@ -255,6 +350,7 @@ instruction.
 #   the PREVIOUS retro actually yielded. Triggers: .game_loop/triggers.json (gitignored; see
 #   templates/triggers.example.json). Nothing is attached by default.
 ./.game_loop/bin/game_loop note --text ".."                                          # append a note to the log
+./.game_loop/bin/game_loop doorbell                                                    # the wake-up prompt for this run
 ./.game_loop/bin/game_loop mandate --park --reason ".." --next ".."                  # the human called a break;
 #   --next is the step to pick back up on resume. A park clears nothing — status keeps showing the
 #   mandate OPEN, and only `mandate --resume` ends it.
@@ -335,6 +431,15 @@ mutate --prove ".." --test <command> --file <path> --replace ".." --with ".."
 #   each reported exactly that, and three stayed GREEN with the bug reintroduced.
 #   --replace must appear EXACTLY once. --timeout <sec> per run (default 900).
 #   A green mutated run is decisive; a red one is one specific claim, not a good test.
+#   YOUR --test RUNS IN THE REPO ROOT, not your cwd. A relative path in it resolves somewhere
+#   else and the runner exits before selecting anything — use --test "cd <dir> && ..". This
+#   cost a consumer one wrong conclusion, because a command that COULD NOT START and a test
+#   that RAN AND FAILED both exit non-zero. The verb now separates them: it says RAN and
+#   FAILED only when it read a test count, and COULD NOT TELL otherwise, naming the root.
+#   Before the result it also probes the anchor with a `raise`: a mutation that changes
+#   nothing is reported as INERT (your anchor is not on the test's path), NEVER as "the test
+#   is vacuous" — opposite conclusions, same observable. The probe needs the file to PARSE as
+#   Python; it reads the source, not the extension, so an extensionless program is fine.
 kinds
 #   every log record kind this code can write, with its fields, extracted from the SOURCE.
 #   READ THIS BEFORE MATCHING ON `kind` IN A TRIGGER. A consumer matched `kind == "mandate"`,
@@ -346,7 +451,14 @@ kinds
 #   mandate (#88). `checkpoint` BUYS YOU A TURN-END and `arm` PRIMES A T3 ON YOU — both silent,
 #   both permissive. Give each worker `GAME_LOOP_SESSION=<unique>`; it is inherited by that
 #   worker's own children, so a worker that dispatches must set a fresh one at every level.
-contribute --reviewed --filed "<urls, or none>" --note ".."
+contribute --reviewed --filed "<urls, or none>" --note-file <path>
+#   the FILE form is the example on purpose: the honest answer here enumerates, so real notes
+#   run past the 400-char bound and `--note ".."` is then refused. Re-measured 2026-08-26 on this
+#   repo: the two ledger entries are 194 and 1440 chars, and the one recorded review's note is
+#   1372 — the real ones are three times the inline bound. (This line previously read "two of four
+#   entries were 855 and 1152"; that matches nothing on this machine now, and UPSTREAM_LEDGER.md is
+#   GITIGNORED, so it was a measured claim in a shipped file citing evidence no reader could check
+#   and no commit could preserve. Yours will hold different numbers; the bound is the point.)
 #   record that you asked, of each learning hardened since the last review: does this name a
 #   TOOL's behaviour, or THIS REPO's? `stepback` nudges once enough have accumulated and LISTS
 #   them, because the judgement is unmakeable from a count. A learning phrased as a fact about
@@ -356,9 +468,16 @@ contribute --reviewed --filed "<urls, or none>" --note ".."
 stepback [--notes ".."] | stepback --nothing-to-harden --reason ".."
 #   the retro. The second form is the honest escape when a chapter truly yielded no rule —
 #   it takes a reason, because "nothing to learn" is a claim like any other.
-successor [--handoff <path>] [--task ".."] [--title ".."] [--cwd <dir>] [--dry-run]
+successor [--handoff <path>] [--task ".."] [--title ".."] [--about ".."] [--cwd <dir>] [--dry-run]
 #   mint the next session and hand over: it points the successor at your handoff rather
 #   than hoping it finds one. --dry-run prints what it would do without doing it.
+#   --about is the one-line SUBJECT that leads the successor's prompt, so the row a human
+#   scans says what the run is about instead of naming a UUID. Derived from the handoff's
+#   heading, or the bound mandate, when omitted; --about "" leaves it out.
+threads [--json]
+#   which handoff is for which task: the handover chains in this checkout, each under the
+#   label it was minted with, with its hops in order and whether its head is live. The
+#   edges were always in the log -- this joins them rather than recording them twice.
 ```
 
 **The `proved` moment.** `fix --prove`, `effector --prove` and `mutate --prove` each fire a
@@ -387,7 +506,18 @@ From a clone of game_loop:
 ./install.sh /path/to/this/project
 ```
 
-That copies `.game_loop/` in and merges the hooks into `.claude/settings.json`. Then edit
+That copies `.game_loop/` in and merges the hooks into `.claude/settings.json` — the
+SOURCE-CONTROLLED one. Both it and `.game_loop/` are tracked, so once committed, everyone who clones
+gets the payload and the gates. That is deliberate: the guardrail is the team's.
+
+For a machine-local install that reaches nobody else, use `--local`, which writes the hooks to
+`.claude/settings.local.json` and gitignores `.game_loop/`:
+
+```
+./install.sh --local /path/to/this/project
+```
+
+The installer says which of the two it did. Then edit
 `.game_loop/INVARIANTS.md` (the project's north star) and `.game_loop/config.json` (read roots, allowed
 write roots, deploy verbs, watchdog timing), and run `./.game_loop/bin/game_loop status`.
 
@@ -395,10 +525,24 @@ Migrating from an older `.loop/`-style harness: run the installer, move any proj
 invariants into `.game_loop/INVARIANTS.md`, then delete the old `.loop/` directory AND its hook entries
 from `.claude/settings.json` (the installer *adds* game_loop's hooks; it does not remove yours).
 
+AFTER AN UPGRADE, READ `.game_loop/behaviour.json` — do not re-derive what changed about the
+refusals from the source. It carries one entry per change to what this harness REFUSES: what moved,
+why somebody who changed nothing would notice, and what the change still does NOT cover. A commit
+that alters a refusal line without adding an entry is refused by a gate. That gate reads refusal
+TEXT only, so entries also exist for changes that moved which commands REACH a refusal, which no
+diff of the messages would show.
+
+`.game_loop/claims.json` is the other half: what this harness BELIEVES about its host, each claim
+naming the file it was read from, what would falsify it, and whether it can be re-checked live.
+`status` re-reads the stamps and says which have gone stale — one of them went stale in a day.
+
 ## Deeper docs
 
 - `README.md` — the human-facing overview and quickstart.
 - `docs/how-it-works.md` — the full design: the autonomy engine and every guardrail.
 - `.game_loop/INVARIANTS.md` — the project's non-negotiables.
 - `.game_loop/LEDGER.md` — VERIFIED / RULED-OUT / OPEN findings (reference, not a gate).
-- `test/run.py` — the guarantees, as runnable checks.
+- `test/run.py` — the guarantees, as runnable checks. `--list-sections` and `--section <name>`
+  (repeatable) run a subset; this is what `verify.yaml` uses to gate a change on what it
+  touches. A `--section` matching nothing exits 2 — zero checks and exit 0 would be
+  byte-identical to a suite that ran and passed.

@@ -7,9 +7,19 @@
 # at all, so the cheap version of this cannot work. A TUI session does — driven through a pty, with
 # one tiny message to force an API response, it renders a payload carrying five_hour and seven_day.
 #
-# WHAT IT COSTS, measured at 2.1.223 and worth knowing before you enable it: ~24k input tokens
-# stripped to the bone (~31.5k with MCP and all tools), for a four-token reply. That is the host's
-# floor, not ours, and nothing amortises across spawns.
+# WHAT IT COSTS, and the number MOVED: measured at 2.1.223 as ~24k input tokens stripped to the
+# bone (~31.5k with MCP and all tools) for a four-token reply. RE-MEASURED 2026-08-24 at 2.1.241,
+# from this probe's own recorded render (probe/context-window.json): 63,943 input tokens — 2 fresh,
+# 3,162 cache-creation, 60,779 cache-read. Roughly double the older figure, in a spawn of the same
+# shape (--settings overrides the statusline only; tools and MCP come along).
+#
+# WHAT THAT ONE READING CANNOT SAY: the older number decomposes as ~24k base preamble + ~6k tool
+# definitions + ~1k MCP schemas. A single total cannot apportion the growth between the host's
+# preamble and THIS machine's MCP surface, which has also grown. So the headline is stale and the
+# breakdown is unknown — do not read 63,943 as "the host's floor doubled". It is what a spawn costs
+# HERE, today, which is the number you actually pay.
+#
+# That is the host's floor plus your surface, not ours, and nothing amortises across spawns.
 #
 # WHY IT IS WORTH IT ANYWAY, which is the argument I had backwards at first: the alternative is not
 # zero. Without a snapshot an unattended run hits the limit, dies mid-action, and nothing wakes it —

@@ -24,3 +24,8 @@ seen-issues.json
 bin/
 lib/
 merged-proof-*.txt
+
+# showrunner runtime state and the tool itself, added by install.sh. Present on a
+# fresh install and topped up on every upgrade, because a rule that only lands when the
+# file is first created never reaches anybody who already had the tool.
+fail-open.jsonl

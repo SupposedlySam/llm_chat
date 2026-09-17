@@ -13,8 +13,24 @@
 # misses whatever nobody remembered to list; an allowlist defaults to PROTECTED.
 #
 # SCOPE — what this DOES and does NOT catch (a guard that overstates its reach buys false confidence):
-#   DOES: Write/Edit/NotebookEdit whose target resolves outside the allow roots.
-#   DOES: Bash mutators (rm/mv/cp/mkdir/chmod/... , shell redirects, git writes, sed -i) whose
+#   DOES: Write/Edit/NotebookEdit whose target resolves outside the allow roots. It keys on the
+#         TOOL NAME and examines exactly those three: a host that gains another file-writing tool
+#         gets no check on it until the name is added here, and the guard has no way to notice.
+#         Verified against this host's tool list rather than assumed — those three are all of them
+#         today, so this is a latent gap, not a live one. Deliberately NOT widened by guessing at
+#         plausible names (MultiEdit, ApplyPatch, ...): a list of spellings is what cost this guard
+#         five redirect forms and nine verbs, and a guessed name that never arrives is a test
+#         asserting a belief about someone else's roadmap.
+#   DOES: Bash mutators whose resolved target is outside the allow roots. NAMED, not elided: rm,
+#         rmdir, touch, mkdir, chmod, chown, ln, dd, truncate, tee, cp, mv; sed -i and perl -i;
+#         curl -o, wget -O, tar -C, unzip -d, patch -o (destination read off the FLAG); install,
+#         rsync, split (destination is the last path, as with cp); the git writes, also NAMED —
+#         clone, commit, push, reset, rebase, checkout, clean, apply, restore, mv; and
+#         every redirect form in the shell grammar that creates or truncates a file. The list was
+#         written as "rm/mv/cp/mkdir/chmod/..." until 2026-08-26, and the ellipsis is what hid the
+#         gap: curl, wget, tar, unzip, rsync, install, patch, split and perl -i all wrote outside
+#         the repo unchecked while a reader took the "..." for "and the other obvious ones".
+#   DOES: (continued) whose
 #         resolved target is outside the allow roots. Paths resolved by realpath, `cd` tracked across
 #         segments, every offending path collected (not just the first).
 #   DOES: Bash invoking a configured deploy/publish verb, anywhere (config.json -> deploy_verbs).
@@ -194,16 +210,41 @@ CONFIG_F="$GAMELOOP_DIR/config.json"
 # TRUST-LIST keys UNION across all three sources instead of replacing: a machine-wide grant
 # (~/.game_loop/config.json -> mcp_trusted_servers, say) must never be silently erased by a project
 # that happens to set its OWN, different list for the same key, and a project's own grant must never
-# be shadowed by the machine-wide file either. Everything else keeps normal later-wins replace, so a
-# project can still override a machine-wide scalar default (e.g. mcp_writes).
+# be shadowed by the machine-wide file either.
+#
+# NESTED BLOCKS MERGE KEY BY KEY, for the same reason one layer down: a machine-wide
+# "limits": {"context": {...}} used to be replaced WHOLE by any project that named "limits" for an
+# unrelated reason, so a cap set once in a home directory disappeared in every repo that happened to
+# configure a handoff file. Scalars still keep later-wins replace, so a project can override a
+# machine-wide default (e.g. mcp_writes) by naming it.
 CONFIG_MERGED='{}'   # set BEFORE the computation: the line below exports the whole env
                      # into its own subshell, and under `set -u` that read itself.
 CONFIG_MERGED=$(CONFIG_F="$CONFIG_F" python3 -c '
 import io, json, os
 UNION_KEYS = {"read_roots", "allow_write_roots", "deploy_verbs", "generated_globs",
               "mcp_read_only_tools", "mcp_standing_writes", "mcp_trusted_servers"}
-cfg, union = {}, {}
-paths = [os.path.join(os.path.expanduser("~"), ".game_loop", "config.json"),
+
+
+def merge(base, over):
+    # DEEP, and it must stay the twin of _config_merge() in bin/_gl_impl.py. A shallow merge here
+    # replaced a nested block whole, so a machine-wide "limits" setting vanished the moment a
+    # project named "limits" for any unrelated reason -- which for a rail means falling back to a
+    # default nobody re-chose, silently.
+    out = dict(base)
+    for k, v in over.items():
+        cur = out.get(k)
+        if k in UNION_KEYS and isinstance(v, list) and isinstance(cur, list):
+            out[k] = cur + [x for x in v if x not in cur]
+        elif isinstance(v, dict) and isinstance(cur, dict):
+            out[k] = merge(cur, v)
+        else:
+            out[k] = v
+    return out
+
+
+cfg = {}
+gl = os.environ.get("GAME_LOOP_GLOBAL_CONFIG") or os.path.join("~", ".game_loop", "config.json")
+paths = [os.path.abspath(os.path.expanduser(gl)),
          os.environ["CONFIG_F"],
          os.path.join(os.path.dirname(os.environ["CONFIG_F"]), "config.local.json")]
 for p in paths:
@@ -214,15 +255,7 @@ for p in paths:
         continue
     if not isinstance(d, dict):
         continue
-    for k, v in d.items():
-        if k in UNION_KEYS and isinstance(v, list):
-            bucket = union.setdefault(k, [])
-            for item in v:
-                if item not in bucket:
-                    bucket.append(item)
-        else:
-            cfg[k] = v
-cfg.update(union)
+    cfg = merge(cfg, d)
 print(json.dumps(cfg))
 ' 2>/dev/null)
 [ -n "$CONFIG_MERGED" ] || CONFIG_MERGED='{}'
@@ -231,28 +264,82 @@ print(json.dumps(cfg))
 # answers from. They were the same directory until pinning split them, and the commit gate needs
 # them apart — the whole point of a pin is that the code is not the half-edited copy in the tree
 # being committed, while the record must be exactly that tree's (#28).
-#   not pinned → runs "$home/bin/verify", byte-for-byte the invocation this always made.
-#   pinned     → runs the PINNED binary, told which home to answer from.
-# $1 is the .game_loop/ whose verify.yaml and verified.json describe the tree in question.
+#   $1 (`home`) is the .game_loop/ whose verify.yaml and verified.json describe the tree in question.
+#   not pinned → runs "$home/bin/verify".
+#   pinned     → runs the PINNED binary.
+#
+# THE HOME IS NAMED IN BOTH BRANCHES, and the unpinned one is why. Picking the right binary is not
+# the same as pointing it at the right tree: `verify`'s resolve_home() reads GAME_LOOP_HOME BEFORE
+# its own location, and this guard is invoked as
+# `GAME_LOOP_HOME="$CLAUDE_PROJECT_DIR/.game_loop" exec .../guard-writes.sh` — the host exports the
+# PROJECT's home on every single tool call. So the worktree's own binary, left to inherit that,
+# gated a worktree commit on the MAIN tree's record and refused it naming files the commit never
+# carried. That is #28 arriving through the environment instead of through the path, and leaving
+# this branch bare is what let it back in.
 run_verify() {
   local home="$1"; shift
+  local code="$CODE_DIR"
   if [ "$CODE_DIR" = "$GAMELOOP_DIR" ]; then
-    "$home/bin/verify" "$@"
-  else
-    GAME_LOOP_HOME="$home" "$CODE_DIR/bin/verify" "$@"
+    code="$home"
   fi
+  GAME_LOOP_HOME="$home" "$code/bin/verify" "$@"
 }
 
-REPO_REAL=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$REPO" 2>/dev/null)
-SLUG=$(python3 -c 'import re,sys; print(re.sub(r"[^a-zA-Z0-9]", "-", sys.argv[1]))' "$REPO_REAL" 2>/dev/null)
-
+# ONE INTERPRETER FOR EVERY SCALAR THIS GUARD DERIVES. These five values used to cost five separate
+# python3 starts — realpath, the slug, the session id, the tool name, and the tool's own argument —
+# and all five run on EVERY tool call, above every early exit. Measured on an allowed `Bash: ls`:
+# eleven interpreter starts, ~48ms each, against a total hook cost of 643ms. Four of them were this.
+#
+# The payload is parsed ONCE and the answers come back NUL-separated, because a `command` may contain
+# newlines and a line-delimited read would truncate it at the first one. `.rstrip("\n")` reproduces
+# what `$(...)` did to each of these values before, so nothing downstream sees a different string.
+#
+# STILL PYTHON RATHER THAN BASH, deliberately. `${REPO_REAL//[^a-zA-Z0-9]/-}` is one expansion and no
+# fork, but bash bracket ranges are locale-sensitive and this slug names the directory a session's
+# state lives in: under a locale that collates differently, the same repo would silently resolve to a
+# different state file. One interpreter is worth more than the fork it saves here.
+#
 # State is per-session: an authorization is granted IN a session and spendable only THERE. The hook
 # payload's session_id is authoritative; env is the fallback; neither → the repo-global legacy file
 # (human terminal, old harness). Mirrors set_session() in bin/game_loop and bin/watchdog.
-SID=$(printf '%s' "$payload" | python3 -c '
+#
+# `set -u` is on and a failed derivation must not abort a guard (INV5), so every name is bound first:
+# if python cannot run at all, each stays empty, which is exactly what the old `2>/dev/null` produced.
+REPO_REAL=""; SLUG=""; SID=""; tool=""; fp=""; cmd=""
+{
+  IFS= read -r -d '' REPO_REAL
+  IFS= read -r -d '' SLUG
+  IFS= read -r -d '' SID
+  IFS= read -r -d '' tool
+  IFS= read -r -d '' fp
+  IFS= read -r -d '' cmd
+} < <(python3 - "$REPO" "$payload" <<'PY' 2>/dev/null
 import json, os, re, sys
-sid = json.load(sys.stdin).get("session_id") or os.environ.get("GAME_LOOP_SESSION") or os.environ.get("CLAUDE_CODE_SESSION_ID") or ""
-print(re.sub(r"[^A-Za-z0-9._-]", "-", sid.strip())[:64])' 2>/dev/null)
+
+repo = sys.argv[1] if len(sys.argv) > 1 else ""
+try:
+    real = os.path.realpath(repo)
+except Exception:
+    real = repo
+slug = re.sub(r"[^a-zA-Z0-9]", "-", real)
+
+try:
+    d = json.loads(sys.argv[2]) if len(sys.argv) > 2 else {}
+except Exception:
+    d = {}
+if not isinstance(d, dict):
+    d = {}
+sid = (d.get("session_id") or os.environ.get("GAME_LOOP_SESSION")
+       or os.environ.get("CLAUDE_CODE_SESSION_ID") or "")
+sid = re.sub(r"[^A-Za-z0-9._-]", "-", str(sid).strip())[:64]
+ti = d.get("tool_input")
+if not isinstance(ti, dict):
+    ti = {}
+vals = [real, slug, sid, str(d.get("tool_name") or ""),
+        str(ti.get("file_path") or ""), str(ti.get("command") or "")]
+sys.stdout.write("\0".join(v.rstrip("\n") for v in vals) + "\0")
+PY
+)
 if [ -n "$SID" ]; then
   STATE_F="$GAMELOOP_DIR/sessions/$SID/state.json"
 else
@@ -384,6 +471,31 @@ PY
 # the spend logged — one authorization buys one mutation, whichever tool performs it. Shared by the
 # Write/Edit and Bash branches so the escape hatch behaves identically on both paths. No env
 # override: it cannot be set without writing a permanent log entry carrying the human's own words.
+# WHAT A SPENT GRANT SAYS OUT LOUD (game_loop#103). The hatch's whole value is that the log means
+# something later, and that survives only if the act and the reason describe each other. A grant
+# armed for one purpose is indistinguishable from one armed for the purpose that eventually spends
+# it -- single-use bounds HOW MANY, never WHAT FOR -- so the moment of spending is the only place
+# the mismatch is visible to anyone who could still stop it.
+#
+# It also stops a working guard from looking broken. A probe of this rail while a grant happens to
+# be armed comes back allowed, which reads exactly like a bypass; that is how #103 was found, and
+# reading the log afterwards is luck rather than a process.
+consumed_note() {
+  printf 'AUTHORIZATION SPENT -- this call consumed a standing `authorize` grant, and was allowed
+because of it rather than because the guard permits it.
+
+  path        : %s
+  granted for : %s
+  uses left   : %s
+
+IF THAT REASON DOES NOT DESCRIBE WHAT YOU ARE DOING, you have just spent a grant that was
+made for something else. It is in log.jsonl permanently, attributed to those words. Say so rather than
+letting the record stand: the entry cannot be un-written, but it can be corrected next to.
+
+AND IF YOU WERE TESTING THIS GUARD: it did not fail. The grant is why the call went through.
+' "$1" "$2" "$3"
+}
+
 consume_authorization() {
   OFFENDER="$1" GAMELOOP_DIR="$GAMELOOP_DIR" STATE_F="$STATE_F" SID="$SID" python3 <<'PY'
 import json, os, sys, datetime
@@ -414,16 +526,21 @@ for a in st.get("authorized", []):
                 f.write(json.dumps(rec) + "\n")
         except OSError:
             sys.exit(0)
+        # LINE 1 IS THE VERDICT, LINE 2 IS WHAT WAS SPENT. The callers announce the second one:
+        # a grant consumed in silence is game_loop#103 -- a standing authorization for one purpose
+        # gets spent by the next unrelated write to that path, and the permanent record then reads
+        # as human-sanctioned under a reason that never described the act.
         print("yes")
+        print((a.get("reason") or "").replace("\n", " ").strip())
+        print(a.get("uses_left", 0))
         break
 PY
 }
 
-tool=$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tool_name",""))' 2>/dev/null)
+# $tool, $fp and $cmd were derived from the payload above, in the same single parse.
 
 case "$tool" in
   Write|Edit|NotebookEdit)
-    fp=$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tool_input",{}).get("file_path",""))' 2>/dev/null)
     [ -z "$fp" ] && exit 0
     # THE PROJECT'S POLICY IS NOT THE SESSION'S TO EDIT (#65). Checked BEFORE the allow-roots
     # verdict, because these files are INSIDE the repo and every allow root would wave them through
@@ -446,20 +563,32 @@ for n in ("config.json", "INVARIANTS.md", "verify.yaml"):
         print(n)
         break
 else:
-    # THE LOCAL OVERRIDE: denied whether or not it exists. Its keys MERGE WITH UNION semantics, so
-    # anything written here is strictly additive and cannot be narrowed by the project's own config
-    # — which is correct for a machine-wide file a human maintains and exactly wrong for a file the
-    # session can author. Nothing in game_loop writes it, so there is no provisioning arm to keep.
+    # THE LOCAL OVERRIDE: denied whether or not it exists. THE TRUST LISTS THIS GUARD READS merge
+    # with UNION semantics — the seven in UNION_KEYS above, read_roots / allow_write_roots /
+    # deploy_verbs / generated_globs / the three mcp_* — so a grant written here is strictly
+    # additive and cannot be narrowed by the project's own config. Correct for a machine-wide file
+    # a human maintains, exactly wrong for a file the session can author. Nothing in game_loop
+    # writes it, so there is no provisioning arm to keep.
+    #
+    # "ITS KEYS" MEANS THOSE SEVEN, NOT EVERY KEY, and the unqualified version of this sentence
+    # cost a reviewer real time: #101 measured that a local `limits` block REPLACES the tracked one
+    # whole (config() layers with a shallow top-level update -- "nested keys are replaced whole
+    # rather than merged", its own words), and that reads as a flat contradiction of a comment
+    # claiming union. Two readers, two rules: this guard unions its trust lists, config() replaces
+    # everything else. Both make writing here dangerous, which is why the conclusion never moved.
     if real == os.path.join(d, "config" + ".local.json"):
         print("config" + ".local.json")
 PY
 )
     if [ -n "$policy_hit" ]; then
       pol_real=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$fp" 2>/dev/null)
-      consumed=$(consume_authorization "$pol_real")
+      consumed_raw=$(consume_authorization "$pol_real")
+      consumed=$(printf '%s\n' "$consumed_raw" | sed -n '1p')
       if [ "$consumed" = "yes" ]; then
         record_edit "$fp"
-        exit 0
+        note "$(consumed_note "$pol_real" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '2p')" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '3p')")"
       fi
       deny "BLOCKED: .game_loop/$policy_hit is the PROJECT'S POLICY, not this session's.
 
@@ -481,6 +610,77 @@ same act as editing one.
 
 THE GUARD ONLY SEES THIS SESSION'S TOOL CALLS. A human editing the file, or a layer above writing it
 into this tree from its own process, does not pass through here and is unaffected."
+    fi
+
+    # THE WAITING PROBE'S SCRIPT IS THE WATCHDOG'S OFF SWITCH (#120). config.local.json holds the
+    # POINTER and is already refused above, so a session cannot repoint the probe — but the script
+    # it names was not covered, and rewriting that to `exit 0` buys the same silence by the other
+    # end. Resolved FROM THE CONFIG VALUE rather than by a hard-coded name, so it follows the
+    # pointer instead of assuming today's path.
+    #
+    # THE ISSUE THAT ASKED FOR THIS WAS WRONG ABOUT THE SHAPE, and the correction is why this is
+    # eight lines instead of a policy-file expansion: it proposed locking config.local.json because
+    # idle_sec and ring_cap sit beside waiting_probe and silence the watchdog just as well. Driving
+    # the guard rather than reading its source showed that file was ALREADY refused, both by tool
+    # write and by shell redirect. Only the script was open.
+    #
+    # WHAT THIS DOES NOT CLOSE, said here because a gate that overstates its reach is the defect
+    # this one is about: idle_sec and settle_sec honour WATCHDOG_IDLE_SEC / WATCHDOG_SETTLE_SEC,
+    # and a hook's environment comes from .claude/settings.json, which this guard does not cover.
+    # ring_cap has no env override. The file doors are shut; the environment door is not.
+    probe_hit=$(GAMELOOP_DIR="$GAMELOOP_DIR" FP="$fp" python3 <<'PY' 2>/dev/null
+import json, os, shlex
+d = os.path.realpath(os.environ["GAMELOOP_DIR"])
+real = os.path.realpath(os.environ["FP"])
+for cand in ("config.local.json", "config.json"):
+    try:
+        with open(os.path.join(d, cand)) as f:
+            cmd = str(((json.load(f).get("watchdog") or {}).get("waiting_probe") or "")).strip()
+    except (OSError, ValueError):
+        continue
+    if not cmd:
+        continue
+    try:
+        toks = shlex.split(cmd)
+    except ValueError:
+        toks = cmd.split()
+    for t in toks:
+        t = t.replace("${GAME_LOOP_ROOT}", d).replace("$GAME_LOOP_ROOT", d)
+        if "/" not in t:
+            continue
+        if os.path.realpath(t) == real:
+            print(os.path.relpath(real, os.path.dirname(d)))
+            raise SystemExit(0)
+PY
+)
+    if [ -n "$probe_hit" ]; then
+      probe_real=$(python3 -c 'import os,sys; print(os.path.realpath(sys.argv[1]))' "$fp" 2>/dev/null)
+      consumed_raw=$(consume_authorization "$probe_real")
+      if [ "$(printf '%s\n' "$consumed_raw" | sed -n '1p')" = "yes" ]; then
+        record_edit "$fp"
+        note "$(consumed_note "$probe_real" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '2p')" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '3p')")"
+      fi
+      deny "BLOCKED: $probe_hit is the WATCHDOG'S OFF SWITCH, and this session is what it watches.
+
+watchdog.waiting_probe names this script. When it exits 0 the watchdog treats the run as WAITING and
+holds off ringing — so a session that edits it decides for itself when its own idle alarm stops. The
+config that points here is already refused for the same reason; this is the other end of the pointer.
+
+MEASURED, NOT HYPOTHETICAL: this repo's own agent extended its probe mid-run to treat a long
+measurement as a wait. Objective, bounded, failing toward ringing, done carefully — and the care is
+not the point. A careless version would have been easier to see.
+
+IF THE PROBE IS GENUINELY WRONG, that is a question for the human, not an edit to make while the
+alarm it governs is pointed at you. Say what it misjudged and what you would change.
+
+If the human has authorized this specific edit, record their words and try again:
+  $GAMELOOP_DIR/bin/game_loop authorize --path $probe_real --reason \"<their exact words>\"
+
+WHAT THIS DOES NOT COVER, so you do not read it as more than it is: idle_sec and settle_sec also
+honour WATCHDOG_IDLE_SEC / WATCHDOG_SETTLE_SEC, and a hook's environment is set in
+.claude/settings.json, which this guard does not gate."
     fi
     # Prints "yes" when the target is inside an allow root, else the resolved realpath — which is
     # what an authorization is matched against (authorize records real prefixes, not raw tool input).
@@ -615,8 +815,12 @@ PYMEM
       exit 0
     fi
     if [ -n "$verdict" ]; then
-      consumed=$(consume_authorization "$verdict")
-      [ "$consumed" = "yes" ] && exit 0
+      consumed_raw=$(consume_authorization "$verdict")
+      if [ "$(printf '%s\n' "$consumed_raw" | sed -n '1p')" = "yes" ]; then
+        note "$(consumed_note "$verdict" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '2p')" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '3p')")"
+      fi
     fi
     deny "BLOCKED: write outside this repo → $fp
 
@@ -627,7 +831,6 @@ explicitly authorized this path:
     ;;
 
   Bash)
-    cmd=$(printf '%s' "$payload" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tool_input",{}).get("command",""))' 2>/dev/null)
     [ -z "$cmd" ] && exit 0
 
     # A heredoc/quoted DATA body (e.g. a commit message piped through a here-doc into cat) is DATA, not
@@ -646,7 +849,22 @@ explicitly authorized this path:
     scan_cmd=$(CMD="$cmd" python3 <<'PY'
 import os, re, sys
 cmd = os.environ["CMD"]
-DATA_SINKS = {"cat", "tee"}
+DATA_SINKS = {"cat", "tee", "llm_chat", "gh", "jq"}
+# A MESSAGE IS PROSE, AND PROSE THAT QUOTES A COMMAND IS NOT THAT COMMAND. Reported by a consumer as
+# "the guard refuses `--file -`", which was close but not the trigger: what is refused is the message
+# CONTENT. A heredoc fed to a consumer not on this list is scanned as CODE, so writing
+#   llm_chat say room --file - <<EOF ... the bug was: echo x > /Users/…/outside … EOF
+# is refused for a redirect that exists only inside a sentence describing it. The identical text
+# through `cat` was always allowed, and that asymmetry is the tell.
+#
+# Live here, not hypothetical: this session sends findings about redirects and paths through that
+# exact command all day, and any message quoting an absolute out-of-repo path with a `>` would have
+# been blocked from being SENT.
+#
+# The default stays "unknown consumer = code", which is the safe direction: a heredoc piped into an
+# interpreter nobody listed must still be read. That makes this a list of spellings with a
+# fail-CLOSED default, which is the guard-mcp shape rather than the MUTATORS shape — a missing entry
+# here costs a false refusal somebody notices, never a silent write.
 HD = chr(60) + chr(60)                       # the here-doc operator, with no literal one in this file
 opener = re.compile(re.escape(HD) + r"-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
 lines = cmd.split("\n")
@@ -661,7 +879,18 @@ while i < len(lines):
         # (in a line like: cat with a redirect, then the operator, the consumer is cat).
         pre = re.sub(r">>?\s*[^\s;&|<>]*", " ", line.split(HD, 1)[0])
         words = re.findall(r"[A-Za-z0-9_./]+", pre)
-        is_data = (os.path.basename(words[-1]) if words else "") in DATA_SINKS
+        # THE CONSUMER IS THE COMMAND, NOT THE LAST WORD BEFORE THE OPERATOR. This took words[-1],
+        # which is `cat` for `cat HD X` and the FILENAME for `tee f HD X` — and for
+        # `llm_chat say room --file - HD X` it is "file", so a chat send was never recognised as a
+        # data sink no matter what this set contained. Take the first word of the LAST command in
+        # the line instead: that is what actually reads the body, and it survives a pipeline, where
+        # scanning every word would let `bash -c cat HD ...` masquerade as data.
+        tail_cmd = re.split(r"\|\||&&|[|;]", pre)[-1].strip()
+        head = re.findall(r"[A-Za-z0-9_./]+", tail_cmd)
+        # The head ALONE, never "any word": keeping the old last-word test as a fallback bought
+        # nothing (`tee f HD X` is already caught by its head) and cost the masquerade —
+        # `bash -c cat HD X` ends in "cat" and would have been waved through as data.
+        is_data = (os.path.basename(head[0]) if head else "") in DATA_SINKS
         delims = [d for _q, d in found]
         i += 1
         di = 0
@@ -823,7 +1052,13 @@ prompt surface is not knowable from inside a hook."
     #    Only a tree STRICTLY INSIDE the project moves the answer; the project itself, a project that
     #    lives inside a larger checkout, and a target git can name no tree for all keep this script's
     #    own .game_loop — so a repo without worktrees behaves exactly as it always did.
-    commit_scan=$(REPO_REAL="$REPO_REAL" GAMELOOP_DIR="$GAMELOOP_DIR" SCAN_CMD="$scan_cmd" python3 - "$payload" <<'PY'
+    # PER SESSION, not merely per project. VERIFY_OUT below is per-project because it is written
+    # and read inside one guard invocation; this file outlives the python that writes it and is
+    # read by a verify started afterwards, and this repo routinely has twenty sessions committing
+    # into one checkout. Two of them sharing a scope file would gate each other's commits.
+    SCOPE_OUT="/tmp/.game_loop_scope.${SLUG:-default}.${SID:-nosid}"
+    rm -f "$SCOPE_OUT" "$SCOPE_OUT.inband" "$SCOPE_OUT.writes"
+    commit_scan=$(REPO_REAL="$REPO_REAL" GAMELOOP_DIR="$GAMELOOP_DIR" SCAN_CMD="$scan_cmd" SCOPE_OUT="$SCOPE_OUT" python3 - "$payload" <<'PY'
 import io, json, os, re, shlex, subprocess, sys
 payload = json.loads(sys.argv[1])
 cmd = os.environ.get("SCAN_CMD", "")
@@ -833,8 +1068,46 @@ home = os.path.expanduser("~")
 found = False
 target = None
 others = []
+commit_args = None         # the argv of the FIRST repo-targeting commit, for reading its SCOPE
+commit_count = 0           # more than one, and "what does the commit carry" has no single answer
 cwd_dynamic = False        # a `cd` into a variable — every later commit lands somewhere unnameable
 unresolved = ""            # the raw fragment that made a COMMIT's target unreadable, if any
+inband_seg = ""            # the FIRST such segment, so the note can name it
+index_touched = False      # an in-band segment that RESTAGES — see _INDEX_VERBS below
+writes_in_band = False    # an in-band segment not PROVABLY read-only — see reads_only
+
+# The git verbs that can change WHAT IS STAGED. Only these invalidate an index read; `git status &&
+# git commit` is left narrow, because over-gating a clean bundle is the cost #28 was written to
+# remove. `pathspec` mode is absent from the check below for the same reason -- it asks git for the
+# status of paths a human named, which an in-band add does not widen.
+_INDEX_VERBS = {"add", "rm", "mv", "reset", "restore", "checkout", "switch", "stash",
+                "apply", "am", "cherry-pick", "revert", "merge"}
+
+# THE OTHER HALF OF THE SAME MOMENT, AND WHY THIS ONE IS ONLY A NOTE. An in-band EDIT is worse
+# than an in-band add and LESS fixable: measured on a green tree, `printf 'two' >> b.txt &&
+# git commit -am x` was allowed and the commit that landed CARRIED b.txt with its checks unrun.
+# Widening the scope does not help — at PreToolUse that file is not dirty, so it owes nothing under
+# the tree scope either. A gate cannot examine a change that has not happened. What it can do is
+# refuse to report silence as an answer, which is what the note built from this flag does.
+#
+# AN ALLOW-LIST, NOT A LIST OF WRITERS. MUTATORS further down carries that lesson in its own
+# header: curl -o, wget -O, tar -C, unzip -d, rsync, install, patch -o, split and perl -i all wrote
+# past a verb list advertising "and the other obvious ones". Any program can write. The handful of
+# segments people actually chain read-only CAN be enumerated; everything else is assumed to write.
+_READ_ONLY = {"echo", "pwd", "ls", "true", "date", "which", "wc", "head", "tail", "cat", "grep",
+              "sort", "uniq", "printf"}       # printf and cat write the moment they are redirected
+_READ_ONLY_GIT = {"status", "diff", "log", "show", "rev-parse", "branch", "remote", "describe",
+                  "ls-files", "config", "tag", "blame", "shortlog"}
+
+
+def reads_only(seg, argv, verb):
+    """True only for a segment this can PROVE does not write. Unrecognised is False, always."""
+    if ">" in seg or "<" in seg:
+        return False                 # a redirection turns any of these into a writer
+    if verb == "git":
+        rest = [a for a in argv[1:] if not a.startswith("-")]
+        return bool(rest) and rest[0] in _READ_ONLY_GIT
+    return verb in _READ_ONLY
 
 # A path we cannot resolve without EXECUTING it, which this guard must never do. $HOME is substituted
 # before this runs, so an ordinary ~ or $HOME path stays resolvable and is not caught here.
@@ -855,7 +1128,121 @@ def tree_of(path):
     return os.path.realpath(out) if r.returncode == 0 and out else ""
 
 
-for seg in re.split(r"&&|\|\||;|\||\n", cmd):
+def shell_segments(cmd):
+    """Split CMD on shell separators (&&, ||, ;, |, newline), QUOTE-AWARE.
+
+    A plain re.split is quote-BLIND, and that one fact broke this guard in BOTH directions
+    (#110). A jq filter like '[.[] | select(.a > "x")]' is one argument, but splitting on the
+    `|` inside it left the opening quote in the previous segment, so the `>` in the next one
+    looked UNQUOTED and the string after it looked like a redirect target: a refusal aimed at a
+    command that writes nothing. The same cut also handed out a BYPASS -- in
+    `echo 'a | b' > <path outside the repo>` the tail segment begins mid-quote, so a REAL
+    redirect was read as quoted data and allowed. That direction was found by testing this fix,
+    not by the report.
+    So quote-awareness here is what makes redirect_targets' own quote-awareness mean anything:
+    that function is careful, and was being handed segments whose quoting had already been
+    destroyed.
+
+    Unbalanced quotes fall back to the naive split. The command cannot be parsed, and between a
+    reading that keeps checking and one that stops, the guard takes the one that keeps checking.
+    """
+    segs, buf, i, n, q = [], [], 0, len(cmd), None
+    while i < n:
+        c = cmd[i]
+        if q is not None:
+            if c == chr(92) and q == chr(34) and i + 1 < n:
+                buf.append(c)
+                buf.append(cmd[i + 1])
+                i += 2
+                continue
+            buf.append(c)
+            if c == q:
+                q = None
+            i += 1
+            continue
+        if c == chr(92) and i + 1 < n:
+            buf.append(c)
+            buf.append(cmd[i + 1])
+            i += 2
+            continue
+        if c == "'" or c == chr(34):
+            q = c
+            buf.append(c)
+            i += 1
+            continue
+        if c == ";" or c == chr(10):
+            segs.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        if c == "&" and i + 1 < n and cmd[i + 1] == "&":
+            segs.append("".join(buf))
+            buf = []
+            i += 2
+            continue
+        if c == "|":
+            # `>|` IS A REDIRECT, NOT A PIPE. Splitting here cut `echo x >|` from its target, so
+            # the redirect had no target to check and the write went unseen -- the clobber
+            # override defeated the guard at the SPLITTER even after redirect_targets learned to
+            # skip it. Both halves were needed: one to stop cutting the operator in two, one to
+            # read past it.
+            if buf and "".join(buf[-2:]).rstrip().endswith(">"):
+                buf.append(c)
+                i += 1
+                continue
+            segs.append("".join(buf))
+            buf = []
+            i += 2 if (i + 1 < n and cmd[i + 1] == "|") else 1
+            continue
+        buf.append(c)
+        i += 1
+    segs.append("".join(buf))
+    if q is not None:
+        return re.split(r"&&|\|\||;|\||\n", cmd)
+    return segs
+
+
+_AMP = "&" + ">"          # assembled: the literal sequence is a bash-3.2 construct this
+_APPEND = ">" + ">"       # repo scans shipped scripts for, and it cannot tell a regex
+_REDIR = re.compile(r"^(?:\d*[<>]&?\d*|" + _AMP + r"{1,2}|\d*" + _APPEND
+                    + r")$|^\d*[<>]{1,2}\S+$|^" + _AMP + r"{1,2}\S+$")
+
+
+def strip_redirections(args):
+    """argv with shell redirection tokens removed -- they are the SHELL's, never git's.
+
+    `git commit -m x 2>&1` arrives here as [..., "2>&1"], which does not start with "-" and was
+    therefore read as a PATHSPEC. A pathspec matching nothing resolves to an EMPTY scope, the gate
+    hands verify that empty scope, verify correctly reports nothing owed, and a STALE COMMIT IS
+    ALLOWED. Measured: `git commit -m p 2>&1` and `git commit -m p -- no/such/file` both slip
+    through, while the bare form and a REAL pathspec both refuse.
+
+    A regression from PR #113 (bisected to 7814c3d), where this gate began asking what the commit
+    CARRIES; before it the whole tree was checked and a stray token changed nothing.
+
+    DEFINED ABOVE THE SEGMENT LOOP ON PURPOSE. The first draft put it beside `_GIVE_UP`, forty
+    lines BELOW its only call site -- this block runs top to bottom, so it would have raised
+    NameError on every commit. Fifth time in one session a name was used above its binding here.
+
+    Conservative by construction: a bare `>` or `2>` takes its target as the NEXT token, so that is
+    dropped too, and anything unrecognised is left exactly where it was -- a real pathspec is never
+    eaten.
+    """
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a in (">", _APPEND, "<", "2>", _AMP, _AMP + ">"):
+            skip = True
+            continue
+        if _REDIR.match(a):
+            continue
+        out.append(a)
+    return out
+
+
+for seg in shell_segments(cmd):
     seg = seg.strip()
     if not seg:
         continue
@@ -873,6 +1260,19 @@ for seg in re.split(r"&&|\|\||;|\||\n", cmd):
         nxt = os.path.expanduser(args[0].replace("$HOME", home))
         cwd = nxt if os.path.isabs(nxt) else os.path.join(cwd, nxt)
         continue   # a bare cd is navigation, not lost work — track it, don't report it
+    if verb == "git" and not _INDEX_VERBS.isdisjoint(args):
+        # STAGING BUNDLED WITH THE COMMIT, which is the one thing that makes reading the index a
+        # lie. Measured, not reasoned: `git add -- note.txt && git commit -m x` in ONE call was
+        # ALLOWED against a tree whose checks were stale, because at PreToolUse the add had not run
+        # and `git diff --cached` was empty -- the gate narrowed the scope to nothing and passed
+        # anything. Two calls refused the same commit correctly. lamp-owner spent an evening
+        # concluding its guard was broken on exactly this shape, five consistent readings of the
+        # wrong moment; the reading was mine to fix.
+        #
+        # NOT a refusal, and deliberately: bundling is a normal way to work. This only DECLINES TO
+        # NARROW, so the gate falls back to the whole tree -- the same fallback every other
+        # unreadable command already takes, costing speed and never the gate.
+        index_touched = True
     if verb == "git" and "commit" in args and "--no-verify" not in args:
         # #40: FAIL CLOSED when the target cannot be READ, not merely when it is elsewhere.
         # A variable resolves to nothing this scan can match against the repo, so the commit used to
@@ -901,10 +1301,144 @@ for seg in re.split(r"&&|\|\||;|\||\n", cmd):
         if os.path.realpath(tgt).startswith(os.path.realpath(repo).rstrip(os.sep) + os.sep) \
                 or os.path.realpath(tgt) == os.path.realpath(repo):
             found = True
+            commit_count += 1
             if target is None:
                 target = tgt          # the tree whose record this commit is answerable to (#28)
+                commit_args = strip_redirections(args)
             continue
+    # THIS segment, not the flag: index_touched persists across segments, so testing it here
+    # would silently exempt every later git segment once any earlier one had staged.
+    if not reads_only(seg, argv, verb) and not (verb == "git" and not _INDEX_VERBS.isdisjoint(args)):
+        writes_in_band = True
+        if not inband_seg:
+            inband_seg = seg if len(seg) <= 70 else seg[:67] + "..."
     others.append(seg if len(seg) <= 70 else seg[:67] + "...")
+
+# WHAT THIS COMMIT CARRIES, read off the COMMAND — and the reason it is read here rather than in
+# `verify`. The gate used to check the whole dirty working tree, so a commit carrying one README was
+# refused for an unrelated file and charged that file's whole suite. The narrower question is "what
+# lands in HEAD", and only the command answers it: a plain commit carries the INDEX, `-a` carries the
+# index plus every tracked modification, and a pathspec commit carries those paths and IGNORES the
+# index for everything else (verified against real git: index [a.txt], `commit b.txt`, HEAD carried
+# b.txt alone and a.txt stayed staged).
+#
+# WHY `verify` CANNOT DO THIS ITSELF, which is the trap this whole block exists to avoid: the hook is
+# PreToolUse, so it runs BEFORE the command body. At that instant `git commit -am` has staged NOTHING
+# -- `git diff --cached` is EMPTY while the working tree shows the modification -- and a gate that
+# read the index would consult zero rules and pass anything. Observed on real git before this was
+# written, not reasoned about afterwards. So the index is the right answer for ONE commit form and a
+# silent bypass for the others, and only the parsed argv tells them apart.
+#
+# EVERY UNCERTAINTY FALLS BACK TO THE TREE. An option this cannot classify might take a value, and
+# misreading that value as a pathspec would narrow the scope to a file nobody named. `-p` and
+# `--interactive` pick their content from a human at a prompt this cannot see. `--pathspec-from-file`
+# keeps the list somewhere this does not read. Two commits chained have no single answer. In every
+# one of those the mode is "tree" and the gate behaves exactly as it did before this existed --
+# over-gating, which costs time, rather than under-gating, which costs the gate.
+#
+# NOT special-cased, and deliberately: `--amend`. It re-commits HEAD's own files, which were gated
+# when they were first committed, so the scope of an amend is the same as the scope of the commit
+# form it is spelled with.
+_VAL_LONG = {"--message", "--file", "--author", "--date", "--reuse-message", "--reedit-message",
+             "--fixup", "--squash", "--template", "--cleanup", "--trailer"}
+_BOOL_LONG = {"--all", "--amend", "--edit", "--no-edit", "--signoff", "--no-signoff", "--verbose",
+              "--quiet", "--dry-run", "--short", "--branch", "--porcelain", "--long", "--null",
+              "--allow-empty", "--allow-empty-message", "--no-verify", "--verify", "--status",
+              "--no-status", "--reset-author", "--no-post-rewrite", "--only", "--include",
+              "--gpg-sign", "--no-gpg-sign", "--untracked-files", "--pathspec-file-nul"}
+_VAL_SHORT = "mFCct"        # consume the NEXT token when one of these ends a cluster
+_BOOL_SHORT = "avqnesoizSu"  # -S and -u take an optional value ATTACHED, never a separate token
+_GIVE_UP = {"--interactive", "--patch", "--pathspec-from-file"}
+
+
+def read_scope_mode(args):
+    """(mode, paths) for a commit's argv. mode 'tree' means: not readable narrowly, gate on it all."""
+    i = args.index("commit") + 1
+    paths, want_all, want_include, after_sep = [], False, False, False
+    while i < len(args):
+        a = args[i]
+        if after_sep:
+            paths.append(a); i += 1; continue
+        if a == "--":
+            after_sep = True; i += 1; continue
+        if a.startswith("--"):
+            name = a.split("=", 1)[0]
+            if name in _GIVE_UP:
+                return "tree", []
+            want_all = want_all or name == "--all"
+            want_include = want_include or name == "--include"
+            if "=" in a or name in _BOOL_LONG:
+                i += 1; continue
+            if name in _VAL_LONG:
+                i += 2; continue
+            return "tree", []                    # unclassifiable: it may eat the next token
+        if a.startswith("-") and len(a) > 1:
+            cluster, j = a[1:], 0
+            while j < len(cluster):
+                c = cluster[j]
+                if c == "p":
+                    return "tree", []
+                want_all = want_all or c == "a"
+                want_include = want_include or c == "i"
+                if c in _VAL_SHORT:
+                    if j == len(cluster) - 1:
+                        i += 1                   # the value is the next token
+                    break                        # ...otherwise the cluster remainder IS the value
+                if c not in _BOOL_SHORT:
+                    return "tree", []
+                j += 1
+            i += 1; continue
+        paths.append(a); i += 1
+    if want_all and paths:
+        return "tree", []                        # git refuses this combination; do not out-guess it
+    if want_all:
+        return "all", []
+    if paths:
+        return ("include" if want_include else "pathspec"), paths
+    return "index", []
+
+
+def _names(argv, tree):
+    r = subprocess.run(argv, cwd=tree, capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    return [ln.strip() for ln in r.stdout.splitlines() if ln.strip()]
+
+
+def _status_names(paths, tree):
+    r = subprocess.run(["git", "status", "--porcelain", "-uall", "--"] + paths,
+                       cwd=tree, capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    out = []
+    for ln in r.stdout.splitlines():
+        f = ln[3:].strip()
+        if " -> " in f:
+            f = f.split(" -> ")[1]
+        if f:
+            out.append(f)
+    return out
+
+
+def resolve_scope(mode, paths, tree):
+    """The file list, or None when git could not answer -- which is treated as 'tree' upstream."""
+    idx = None
+    if mode in ("index", "all", "include"):
+        idx = _names(["git", "diff", "--cached", "--name-only"], tree)
+        if idx is None:
+            return None
+    if mode == "index":
+        return sorted(set(idx))
+    if mode == "all":
+        mod = _names(["git", "diff", "--name-only"], tree)
+        return None if mod is None else sorted(set(idx) | set(mod))
+    if mode in ("pathspec", "include"):
+        got = _status_names(paths, tree)
+        if got is None:
+            return None
+        return sorted(set(got) | set(idx)) if mode == "include" else sorted(set(got))
+    return None
+
 
 answerable = ""
 if unresolved:
@@ -921,15 +1455,45 @@ elif found:
                       else "undetermined:" + top)
     else:
         answerable = own
+scope_mode = ""
+if commit_args is not None and commit_count == 1 and answerable.startswith("root:"):
+    _mode, _paths = read_scope_mode(commit_args)
+    if index_touched and _mode in ("index", "all", "include"):
+        _mode = "tree"
+        try:
+            open(os.environ["SCOPE_OUT"] + ".inband", "w").close()
+        except OSError:
+            pass                 # cannot mark it -> the blast-radius note stays silent, as before
+    if _mode != "tree":
+        _tree = os.path.dirname(answerable[len("root:"):])
+        _files = resolve_scope(_mode, _paths, _tree)
+        if _files is not None:
+            try:
+                with open(os.environ["SCOPE_OUT"], "w") as _f:
+                    _f.write("\n".join(_files) + ("\n" if _files else ""))
+                scope_mode = _mode
+            except OSError:
+                scope_mode = ""      # cannot write it -> cannot narrow -> the tree, as before
+
+if writes_in_band and commit_count:
+    try:
+        with open(os.environ["SCOPE_OUT"] + ".writes", "w") as _f:
+            _f.write(inband_seg + "\n")
+    except OSError:
+        pass                     # cannot mark it -> no note, which is the behaviour before this
 print("yes" if found else "")
 print(answerable)
+print(scope_mode)
 for o in others:
     print(o)
 PY
 )
     commit_here=$(printf '%s\n' "$commit_scan" | head -1)
     commit_root=$(printf '%s\n' "$commit_scan" | sed -n '2p')
-    chained_segs=$(printf '%s\n' "$commit_scan" | tail -n +3 | grep -v '^$' || true)
+    # LINE 3 IS THE SCOPE, and empty means "could not be read narrowly -> the whole tree", which is
+    # what this gate did for its whole life before the line existed. Chained segments start at 4.
+    commit_scope=$(printf '%s\n' "$commit_scan" | sed -n '3p')
+    chained_segs=$(printf '%s\n' "$commit_scan" | tail -n +4 | grep -v '^$' || true)
     if [ "$commit_here" = "yes" ]; then
       case "$commit_root" in
         unresolvable:*)
@@ -1013,7 +1577,17 @@ refusal is recorded in the PARENT's log either way, so how often it fires is ans
       # Per-repo, not a fixed name: the previous /tmp/.game_loop_verify was shared by every project
       # on the machine, so two of them committing at once would read each other's refusal.
       VERIFY_OUT="/tmp/.game_loop_verify.${SLUG:-default}"
-      if ! run_verify "$GAMELOOP_TARGET" --check >"$VERIFY_OUT" 2>&1; then
+      # GATE ON WHAT THE COMMIT CARRIES, not on whatever else the tree happens to hold. With no
+      # readable scope this is the empty string and the invocation is byte-for-byte the one this
+      # always made -- the fallback is the old behaviour, so an unparseable command loses speed and
+      # never loses the gate.
+      SCOPE_ARGS=()
+      [ -n "$commit_scope" ] && SCOPE_ARGS=(--scope-from "$SCOPE_OUT")
+      # ${a[@]+"${a[@]}"} rather than a bare "${a[@]}": bash 3.2 ships on macOS, and there
+      # `set -u` makes expanding an EMPTY array a fatal unbound-variable error. That kills the
+      # guard mid-run, the shim fails OPEN, and every refusal below silently stops happening —
+      # the loudest possible way to lose a gate while its tests still name it.
+      if ! run_verify "$GAMELOOP_TARGET" --check ${SCOPE_ARGS[@]+"${SCOPE_ARGS[@]}"} >"$VERIFY_OUT" 2>&1; then
         # ORDERING NOTE: this hook runs at PreToolUse, BEFORE the command body executes. Bundling
         # `verify` and `git commit` in ONE call can never pass — the check runs before your verify
         # line does. Run them as two separate calls.
@@ -1068,8 +1642,11 @@ Or commit with --no-verify to skip it on the record.$tree_hint$chained_hint"
       # Silent by design wherever it cannot reason: no recorded edits, no readable index, no git.
       # A commit's PROVENANCE is the third thing this needs to know and could not be told (issue
       # #29). See the attribution block inside the Python below.
+      INBAND_STAGING=""
+      [ -f "$SCOPE_OUT.inband" ] && INBAND_STAGING=1
       blast_note=$(REPO_REAL="$REPO_REAL" EDITED_F="$EDITED_F" CONFIG_F="$CONFIG_F" CONFIG_MERGED="$CONFIG_MERGED" \
                    GAMELOOP_DIR="$GAMELOOP_DIR" TARGET_TREE="$TARGET_TREE" SID="$SID" \
+                   INBAND_STAGING="$INBAND_STAGING" \
                    STATE_F="$STATE_F" python3 <<'PY'
 import datetime, io, json, os, subprocess, sys
 from fnmatch import fnmatch
@@ -1127,6 +1704,24 @@ staged = git("diff", "--cached", "--name-only")
 if top is None or staged is None:
     sys.exit(0)          # not an index this can read — degrade to silence, never to noise
 top = os.path.realpath(top.strip())
+
+# COULD NOT TELL, which must never share bytes with NOTHING TO REPORT. This note reads the index,
+# and the hook is PreToolUse: when the staging is bundled into the commit's own call the add has
+# not run, the index is empty, and the check that exists to name a sweeping commit accused nobody
+# in ZERO BYTES. Measured on `git add -A && git commit -m x` with an untouched file in the tree —
+# it named the file when the staging came in a prior call and said nothing when it did not.
+# Deliberately NOT a guess at what the add would stage: this says what it cannot see rather than
+# inventing a list, and the gate three blocks up already widened its own scope to the whole tree
+# for the same command, so the commit is not passing unexamined.
+if os.environ.get("INBAND_STAGING"):
+    sys.stdout.write(
+        "THIS COMMAND STAGES IN THE SAME CALL, so this check could not read what the commit "
+        "carries.\n"
+        "The hook runs at PreToolUse: your staging has not executed yet and the index is still "
+        "empty.\n"
+        "This is NOT 'nothing was swept in' — it is 'nobody looked'. Stage in a separate call and\n"
+        "this note can name the files this session never wrote.\n")
+    sys.exit(0)
 
 # CONSUME, here and not a line earlier: a declaration is spent by the next commit this check
 # actually EXAMINES. Above this point the check said nothing at all (no recorded edits, no readable
@@ -1259,7 +1854,17 @@ PY
       # STATED, NEVER BLOCKED, and for the same reason the manifest ships empty: on a fresh install
       # every path is unchecked, and refusing there would block the first commit with the fix —
       # writing the rules — sitting behind the gate (INV5).
-      cov_json=$(run_verify "$GAMELOOP_DIR" --coverage --staged --porcelain 2>/dev/null || true)
+      # THE NOTICE READS THE SAME SCOPE AS THE GATE. It used to read the INDEX unconditionally,
+      # which is right for a plain commit and EMPTY for `git commit -am` -- so the loudest thing
+      # here went silent on the commit form that carries the most, and said so in its own footer.
+      # Sharing the gate's scope makes the two halves answer one question. The --staged fallback is
+      # kept for the case the scope could not be read, where it is exactly what it always was.
+      # ...and against the TARGET tree, which is the one being committed. It read $GAMELOOP_DIR --
+      # this script's own tree -- while the gate three lines up read the target, so on a worktree
+      # commit the notice was reporting some other tree's index. Same defect as #28, one call over.
+      cov_scope=(--staged)
+      [ -n "$commit_scope" ] && cov_scope=(--scope-from "$SCOPE_OUT")
+      cov_json=$(run_verify "$GAMELOOP_TARGET" --coverage ${cov_scope[@]+"${cov_scope[@]}"} --porcelain 2>/dev/null || true)
       cov_note=$(COV="$cov_json" python3 <<'PY'
 import io, json, os
 try:
@@ -1273,9 +1878,9 @@ n = len(unchecked)
 if not cov.get("rules"):
     lines = ["NOTHING IN THIS COMMIT IS CHECKED — .game_loop/verify.yaml has no rules, so the owed-"
              "checks",
-             "gate passed by having nothing to say about %d staged file%s." % (n, "" if n == 1 else "s")]
+             "gate passed by having nothing to say about %d file%s in it." % (n, "" if n == 1 else "s")]
 else:
-    lines = ["THIS COMMIT CARRIES %d STAGED FILE%s NO RULE CHECKS"
+    lines = ["THIS COMMIT CARRIES %d FILE%s NO RULE CHECKS"
              % (n, "" if n == 1 else "S")]
     lines += ["    " + p for p in unchecked[:10]]
     if n > 10:
@@ -1291,9 +1896,11 @@ lines += [
     '      - "<glob>"',
     "",
     "STATED, NEVER BLOCKED — the manifest ships empty, so refusing here would block a fresh install's",
-    "first commit. It reads the INDEX, so `git commit -a`, a pathspec commit and --no-verify pass it",
-    "unexamined, and it says nothing about paths that did not change. Silence here is not evidence",
-    "that a commit was checked.",
+    "first commit. It reads the same set the owed-checks gate does: the index for a plain commit, the",
+    "index plus every tracked modification for `git commit -a`, the named paths for a pathspec one —",
+    "and the WHOLE dirty tree wherever that command could not be read, which over-reports rather than",
+    "going quiet. --no-verify skips all of it, and nothing here says anything about a path that did",
+    "not change. Silence is not evidence that a commit was checked.",
 ]
 print("\n".join(lines))
 PY
@@ -1342,11 +1949,130 @@ hatch, by design. (Configured in .game_loop/config.json -> deploy_verbs.)
 
 WRITING ABOUT THE VERB RATHER THAN RUNNING IT? A commit message, an issue body, a doc quoting a
 command — then your PROSE tripped this, not a deploy. Put the text in a file and pass the path:
-  git commit -F <file>   ·   gh issue comment --body-file <file>   ·   <verb> --<option>-file <file>
+  git commit -F <file>   ·   <verb> --<option>-file <file>   ·   <verb> --<option> "$(cat <file>)"
 The whole word in prose is matched deliberately: narrowing to command position would miss a real
 deploy nested in an interpreter argument, and missing a real publish is the expensive direction.
 That trade is worth stating here rather than only in the source, because this message is where
 somebody meets it."
+    fi
+
+    # 1b. OUTWARD `gh` AT COMMAND POSITION (#118). The MCP door refuses an issue comment and
+    #     demands a logged hatch; this door let the identical action through, silently, exit 0 --
+    #     and the deploy refusal above used to recommend it BY NAME as the way to pass prose. Two
+    #     doors to one irreversible outward act, one gated and one not, is the guard's own argument
+    #     for gating MCP read backwards: "just as irreversible as one through Bash, and the write
+    #     guard never sees it."
+    #
+    #     COMMAND POSITION, NOT PROSE, and that is the whole difference from deploy_verbs above.
+    #     That matcher is deliberately substring-in-prose because missing a nested real publish is
+    #     the expensive direction. Here the calculus inverts: `gh issue comment` is a phrase this
+    #     project WRITES about constantly -- it blocked a grep of this very file, and it sits in the
+    #     body of the issue that asked for this check -- so a prose matcher would refuse the repo's
+    #     own documentation of the rule. A verb nested in an interpreter argument is the gap that
+    #     buys, and it is stated here rather than discovered.
+    gh_hit=$(CMD="$scan_cmd" python3 <<'PY'
+import os, re, shlex
+# noun -> verbs that are OUTWARD and irreversible: other people see them, under the account
+# owner's name. Reads (list, view, status, diff, checks) are deliberately absent.
+OUTWARD = {
+    "issue":   {"comment", "create", "close", "reopen", "edit", "delete", "transfer", "pin", "lock"},
+    "pr":      {"comment", "create", "close", "reopen", "edit", "merge", "review", "ready"},
+    "release": {"create", "delete", "edit", "upload"},
+    "repo":    {"create", "delete", "edit", "archive", "rename"},
+    "gist":    {"create", "delete", "edit"},
+}
+cmd = os.environ.get("CMD", "")
+# Split on shell operators only; each piece's FIRST token is a command position.
+for piece in re.split(r"(?:\|\||&&|[;|&\n])", cmd):
+    try:
+        argv = shlex.split(piece)
+    except ValueError:
+        argv = piece.split()
+    # step past leading env assignments (FOO=bar gh ...) so they cannot hide the verb
+    i = 0
+    while i < len(argv) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", argv[i]):
+        i += 1
+    argv = argv[i:]
+    if len(argv) < 3:
+        continue
+    if os.path.basename(argv[0]) != "gh":
+        continue
+    noun, verb = argv[1], argv[2]
+    if verb in OUTWARD.get(noun, ()):
+        print("gh %s %s" % (noun, verb))
+        break
+    # `gh api` with a mutating method is the same act wearing a read-shaped name.
+    if noun == "api" and re.search(r"(?:^|\s)(?:-X|--method)\s+(POST|PUT|PATCH|DELETE)\b", piece):
+        print("gh api (mutating method)")
+        break
+PY
+)
+    if [ -n "$gh_hit" ]; then
+      gh_auth=$(OFFENDER="$gh_hit" STATE_F="$STATE_F" GAMELOOP_DIR="$GAMELOOP_DIR" SID="$SID" python3 <<'PY'
+# THE SAME HATCH THE MCP DOOR SPENDS, matched on the verb string rather than a path, exactly as
+# guard-mcp does for a tool name. `authorize` realpaths what it is given, so "gh issue comment"
+# is recorded as "<cwd>/gh issue comment"; the basename is what carries meaning. Requiring the
+# candidate to start with "gh " keeps the hatches separate in both directions -- a path grant can
+# never be spent by a gh call, nor a gh grant by a filesystem write.
+import datetime, json, os, sys
+off = os.environ["OFFENDER"]
+state_f = os.environ["STATE_F"]
+try:
+    with open(state_f) as f:
+        st = json.load(f)
+except (OSError, ValueError):
+    sys.exit(0)
+for a in st.get("authorized", []):
+    if a.get("uses_left", 0) <= 0:
+        continue
+    for cand in (a.get("path", "") or "", os.path.basename(a.get("path", "") or "")):
+        if not cand.startswith("gh "):
+            continue
+        if off == cand or off.startswith(cand):
+            a["uses_left"] -= 1
+            try:
+                with open(state_f, "w") as f:
+                    json.dump(st, f, indent=2); f.write("\n")
+                with open(os.path.join(os.environ["GAMELOOP_DIR"], "log.jsonl"), "a") as f:
+                    rec = {"t": datetime.datetime.now().isoformat(timespec="seconds")}
+                    sid = os.environ.get("SID", "")
+                    if sid:
+                        rec["sid"] = sid[:8]
+                    rec.update({"kind": "authorized_gh", "verb": off,
+                                "reason": a.get("reason"), "uses_left": a["uses_left"]})
+                    f.write(json.dumps(rec) + "\n")
+            except OSError:
+                sys.exit(0)
+            print("yes")
+            print((a.get("reason") or "").replace("\n", " ").strip())
+            sys.exit(0)
+PY
+)
+      if [ -n "$gh_auth" ]; then
+        printf '%s\n' "gh: '$gh_hit' allowed by a spent human authorization — $(printf '%s' "$gh_auth" | sed -n 2p)" >&2
+      else
+        deny "BLOCKED: outward GitHub write at command position -> $gh_hit
+
+This is visible to other people, under the account owner's name, and it does not come back. The MCP
+door refuses the identical action and asks for a hatch; this one used to let it through in silence,
+which made the log read as MORE controlled than the tool actually was — every MCP call carried the
+human's words, and the shell equivalent carried nothing.
+
+READS ARE UNTOUCHED: gh issue list, gh pr view, gh pr checks, gh api without -X. Only the verbs
+somebody else can see are here.
+
+If a HUMAN has explicitly authorized this, quote them and try again:
+  game_loop authorize --path \"$gh_hit\" --reason \"<their exact words>\" [--uses N]
+One authorization per USE, logged permanently — the same hatch, and the same cost, as the MCP door.
+
+RUN THAT AS ITS OWN CALL, NOT CHAINED AHEAD OF THE VERB. This gate fires at PreToolUse — before any
+part of your command runs — so authorize-then-verb in ONE command is refused as a WHOLE and the hatch is never
+granted. Everything else in that command is discarded too, including a here-doc writing the body
+file you were about to pass. Authorize in one call; run the verb in the next.
+
+WRITING ABOUT THE VERB RATHER THAN RUNNING IT? You are not: this matches COMMAND POSITION only, so
+prose quoting the command is not affected, and neither is a --body-file whose CONTENTS mention it."
+      fi
     fi
 
     # 2. Mutation aimed OUTSIDE the allow roots, decided by RESOLVING PATHS — not matching names.
@@ -1369,8 +2095,26 @@ except (OSError, ValueError):
     pass
 allow = [os.path.realpath(p) for p in allow]
 
+# WHY THIS LIST HAS TO BE HONEST, WHILE guard-mcp's DOES NOT. That guard defaults to DENY: an MCP
+# tool whose verb it does not recognise is refused, so a verb missing from its lists costs a false
+# refusal a human can clear. This guard cannot do that. It sees EVERY Bash command, so defaulting to
+# deny would refuse everything and block its own repair (INV5) — which means a verb missing HERE is
+# a silent ALLOW, and the list's completeness is load-bearing in a way the MCP guard's is not.
+# Verified rather than assumed: every unrecognised MCP verb tested came back denied, including
+# `frobnicate`, a mid-name verb, and a name with no verb at all.
+#
+# That asymmetry is the whole reason the SCOPE header below names verbs instead of eliding them.
 MUTATORS = {"rm", "rmdir", "touch", "mkdir", "chmod", "chown", "ln", "dd", "truncate", "tee"}
-GIT_WRITES = {"commit", "push", "reset", "rebase", "checkout", "clean", "apply", "restore", "mv"}
+# A LIST OF VERBS CAN NEVER BE COMPLETE, AND THE POINT IS TO SHRINK THE GAP BETWEEN WHAT IS COVERED
+# AND WHAT IS CLAIMED. Measured against this guard: `curl -o`, `wget -O`, `tar -C`, `unzip -d`,
+# `rsync`, `install`, `patch -o`, `split` and `perl -i` all wrote outside the repo unchecked, while
+# the header advertised "Bash mutators (rm/mv/cp/mkdir/chmod/...)" -- and the `...` is what a reader
+# takes for "and the other obvious ones". Any program can still write; that is stated in SCOPE
+# rather than implied by an ellipsis.
+_DEST_FLAG = {"curl": ("-o", "--output"), "wget": ("-O", "--output-document"),
+              "tar": ("-C", "--directory"), "unzip": ("-d",), "patch": ("-o", "--output")}
+_DEST_LAST = {"install", "rsync", "split"}
+GIT_WRITES = {"clone", "commit", "push", "reset", "rebase", "checkout", "clean", "apply", "restore", "mv"}
 
 
 def under(path, root):
@@ -1467,6 +2211,36 @@ def policy_name(raw, cwd):
             return n + "\t" + real
     if real == os.path.join(gl, "config" + ".local.json"):
         return "config" + ".local.json\t" + real
+    # THE WAITING PROBE'S SCRIPT, on this path too (#120). The pointer lives in config.local.json,
+    # already covered above, so it cannot be moved; without this the script it names could still be
+    # appended to with `>>` and the watchdog told to hold off forever. Resolved from the CONFIG
+    # VALUE so it follows the pointer rather than assuming a path. Returned under its own name so
+    # the refusal can say what this file actually is instead of borrowing the policy wording.
+    if real == probe_script_path(gl):
+        return "WATCHDOG-PROBE\t" + real
+    return None
+
+
+def probe_script_path(gl):
+    """Absolute path of the script watchdog.waiting_probe names, or None."""
+    for cand in ("config" + ".local.json", "config.json"):
+        try:
+            with open(os.path.join(gl, cand)) as f:
+                cmd = str(((json.load(f).get("watchdog") or {}).get("waiting_probe") or "")).strip()
+        except (OSError, ValueError):
+            continue
+        if not cmd:
+            continue
+        try:
+            toks = shlex.split(cmd)
+        except ValueError:
+            toks = cmd.split()
+        for t in toks:
+            t = t.replace("${GAME_LOOP_ROOT}", gl).replace("$GAME_LOOP_ROOT", gl)
+            if "/" in t:
+                rp = os.path.realpath(t)
+                if os.path.exists(rp):
+                    return rp
     return None
 
 
@@ -1485,14 +2259,52 @@ def redirect_targets(seg):
     while i < n:
         c = seg[i]
         if q:
+            # A BACKSLASH-ESCAPED QUOTE DOES NOT CLOSE THE STRING, and reading it as if it did
+            # handed out a bypass: in `echo "a \\" b" > <path outside the repo>` the escaped quote
+            # was taken as the closing one, the next quote was read as an OPENING one, and the real
+            # redirect after it looked like quoted data -- so the write was allowed. Found by
+            # testing the #110 fix rather than reported. Only double quotes take escapes; inside
+            # single quotes a backslash is a literal character, which is why q is tested.
+            if c == chr(92) and q == chr(34) and i + 1 < n:
+                i += 2
+                continue
             if c == q:
                 q = None
+        elif c == chr(92) and i + 1 < n:
+            i += 2
+            continue
         elif c in "'\"":
             q = c
         elif c == ">":
             j = i + 1
             if j < n and seg[j] == ">":
                 j += 1
+            # THE CLOBBER OVERRIDES, WHICH WROTE STRAIGHT PAST THIS GUARD. `>|` is POSIX and works
+            # in bash; `>!` and `>>!` are zsh, and zsh is the shell this harness's own commands run
+            # under. All three write exactly like `>` and none of them was seen: after the `>`, a
+            # `|` is in the terminator set below so the target parsed as EMPTY and nothing was
+            # checked, while `!` is not a terminator so the target parsed as the literal "!" --
+            # which resolves inside the repo and is allowed. Measured: `echo x >| <path outside>`,
+            # `>!` and `>>!` were all ALLOWED, and all three genuinely write.
+            #
+            # Found by taking a sibling agent's finding seriously rather than assuming it was
+            # theirs alone: they ship a bash idiom that yields nothing under zsh. The question
+            # "which shell actually runs the commands this guard reads" had never been asked here.
+            while j < n and seg[j] in "|!":
+                j += 1
+            # `>& file` IS A WRITE; `2>&1` IS NOT. csh-style `>&` and `>>&` send both streams to a
+            # FILE -- valid in zsh and in bash, where `>& f` means what `&> f` means -- and both
+            # were ALLOWED to an out-of-repo path, because `&` is in the terminator set below so
+            # the target parsed as empty. Verified they write: `echo hello >& f` created it and
+            # `>>&` appended.
+            #
+            # The `&` is only skipped when a FILENAME follows. `2>&1`, `>&2`, `>&-` are file
+            # descriptor duplication and name no file at all, so consuming the `&` there would
+            # invent a target called "1" and refuse an ordinary redirect.
+            if j < n and seg[j] == "&" and j + 1 < n and seg[j + 1] not in "0123456789-":
+                j += 1
+                while j < n and seg[j] in " \t":
+                    j += 1
             while j < n and seg[j] in " \t":
                 j += 1
             if j < n and seg[j] in "'\"":
@@ -1526,9 +2338,102 @@ def redirect_targets(seg):
 
 offenders = []
 policy_hits = []
+unresolved = []
+
+
+def unexpandable(raw, cwd):
+    """The path this target would resolve to, if it still holds a variable this guard cannot expand.
+
+    The guard reads the command TEXT and never runs a shell, so `$r` is a name with no value here.
+    Joining it onto a directory produces a STRING SHAPED LIKE A PATH that names no file on this
+    machine, and the refusal then asserted that string as the target -- the report in #110 quoted
+    `/Users/.../development/$r/2026-08-18` and had to explain that no such thing existed.
+
+    A sum is not a distribution, and a guess is not a verdict. The decision does not change (an
+    unexpanded variable can name anything, out-of-repo included, so refusing stays right); what
+    changes is that "could not tell" stops being printed in the words of "here is the file".
+    """
+    p = os.path.expanduser(raw.replace("$HOME", home))
+    if not os.path.isabs(p):
+        p = os.path.join(cwd, p)
+    return p if "$" in p else None
 # Split on shell separators AND newlines. Omitting \n would collapse a multi-line command into one
 # segment whose verb is its first token, so a mutating later line would never be checked.
-for seg in re.split(r"&&|\|\||;|\||\n", cmd):
+def shell_segments(cmd):
+    """Split CMD on shell separators (&&, ||, ;, |, newline), QUOTE-AWARE.
+
+    A plain re.split is quote-BLIND, and that one fact broke this guard in BOTH directions
+    (#110). A jq filter like '[.[] | select(.a > "x")]' is one argument, but splitting on the
+    `|` inside it left the opening quote in the previous segment, so the `>` in the next one
+    looked UNQUOTED and the string after it looked like a redirect target: a refusal aimed at a
+    command that writes nothing. The same cut also handed out a BYPASS -- in
+    `echo 'a | b' > <path outside the repo>` the tail segment begins mid-quote, so a REAL
+    redirect was read as quoted data and allowed. That direction was found by testing this fix,
+    not by the report.
+    So quote-awareness here is what makes redirect_targets' own quote-awareness mean anything:
+    that function is careful, and was being handed segments whose quoting had already been
+    destroyed.
+
+    Unbalanced quotes fall back to the naive split. The command cannot be parsed, and between a
+    reading that keeps checking and one that stops, the guard takes the one that keeps checking.
+    """
+    segs, buf, i, n, q = [], [], 0, len(cmd), None
+    while i < n:
+        c = cmd[i]
+        if q is not None:
+            if c == chr(92) and q == chr(34) and i + 1 < n:
+                buf.append(c)
+                buf.append(cmd[i + 1])
+                i += 2
+                continue
+            buf.append(c)
+            if c == q:
+                q = None
+            i += 1
+            continue
+        if c == chr(92) and i + 1 < n:
+            buf.append(c)
+            buf.append(cmd[i + 1])
+            i += 2
+            continue
+        if c == "'" or c == chr(34):
+            q = c
+            buf.append(c)
+            i += 1
+            continue
+        if c == ";" or c == chr(10):
+            segs.append("".join(buf))
+            buf = []
+            i += 1
+            continue
+        if c == "&" and i + 1 < n and cmd[i + 1] == "&":
+            segs.append("".join(buf))
+            buf = []
+            i += 2
+            continue
+        if c == "|":
+            # `>|` IS A REDIRECT, NOT A PIPE. Splitting here cut `echo x >|` from its target, so
+            # the redirect had no target to check and the write went unseen -- the clobber
+            # override defeated the guard at the SPLITTER even after redirect_targets learned to
+            # skip it. Both halves were needed: one to stop cutting the operator in two, one to
+            # read past it.
+            if buf and "".join(buf[-2:]).rstrip().endswith(">"):
+                buf.append(c)
+                i += 1
+                continue
+            segs.append("".join(buf))
+            buf = []
+            i += 2 if (i + 1 < n and cmd[i + 1] == "|") else 1
+            continue
+        buf.append(c)
+        i += 1
+    segs.append("".join(buf))
+    if q is not None:
+        return re.split(r"&&|\|\||;|\||\n", cmd)
+    return segs
+
+
+for seg in shell_segments(cmd):
     try:
         argv = shlex.split(seg)
     except ValueError:
@@ -1551,6 +2456,39 @@ for seg in re.split(r"&&|\|\||;|\||\n", cmd):
         check = pathish                            # mv mutates source AND destination
     elif verb in MUTATORS:
         check = pathish
+    elif verb in _DEST_FLAG:
+        # WRITTEN BY A FLAG, NOT BY POSITION. `curl -o`, `wget -O`, `tar -C`, `unzip -d` and
+        # `patch -o` name their destination with an explicit flag, and every one of them wrote
+        # outside the repo unchecked -- measured, not assumed. Only the FLAG'S value is taken:
+        # curl's other argument is a URL and tar's is the archive it reads, so checking every
+        # pathish token here would refuse ordinary reads.
+        _f = _DEST_FLAG[verb]
+        for _i, _a in enumerate(args):
+            if _a in _f and _i + 1 < len(args):
+                check.append(args[_i + 1])
+                continue
+            for _name in _f:
+                if _a.startswith(_name + "="):     # --output=FILE
+                    check.append(_a.split("=", 1)[1])
+                elif len(_name) == 2 and _a.startswith("--"):
+                    continue
+                elif len(_name) == 2 and _a.startswith("-") and _name[1] in _a[1:]:
+                    # SHORT FLAGS CLUSTER, and `curl -so FILE` is how anyone actually writes it --
+                    # the first draft missed it because it only matched a bare `-o`. When the
+                    # letter ENDS the cluster the value is the next argument; when text follows it
+                    # in the same token, that text IS the value (`-oFILE`).
+                    _rest = _a[1:].split(_name[1], 1)[1]
+                    if _rest:
+                        check.append(_rest)
+                    elif _i + 1 < len(args):
+                        check.append(args[_i + 1])
+    elif verb in _DEST_LAST:
+        # DESTINATION IS THE LAST PATH, like cp: `install`, `rsync` and `split` read their earlier
+        # arguments and write the final one. Checking all of them would deny `install /etc/hosts
+        # <in-repo>` for reading /etc/hosts, which is exactly the false refusal cp's rule avoids.
+        check = pathish[-1:]
+    elif verb in ("perl", "ruby") and any(a.startswith("-i") for a in args):
+        check = pathish                            # -i is in-place, the same shape as sed -i
     elif verb == "sed" and "-i" in args:
         check = pathish
     elif verb == "git" and any(a in GIT_WRITES for a in args):
@@ -1560,7 +2498,15 @@ for seg in re.split(r"&&|\|\||;|\||\n", cmd):
     for raw in check:
         bad = offends(raw, cwd)
         if bad:
-            offenders.append(bad)
+            # Only when it would have been REFUSED anyway. A variable that resolves lexically to
+            # somewhere inside the repo is allowed today, and turning those into refusals would
+            # break ordinary work (`> $TMP/x`) on a guess. The gap that leaves -- a variable whose
+            # real value points outside -- is the one already named under "WHAT THIS CANNOT SEE".
+            fab = unexpandable(raw, cwd)
+            if fab:
+                unresolved.append(raw + chr(9) + fab)
+            else:
+                offenders.append(bad)
         # THE POLICY FILES, ON THE BASH PATH TOO (#86). Registered on Write/Edit only, the gate that
         # bounds the session was a suggestion against `>>` — and because nothing was refused,
         # nothing was logged either, which removes the very evidence #65 exists to preserve.
@@ -1574,18 +2520,41 @@ for o in dict.fromkeys(offenders):
     print(o)
 for p_ in dict.fromkeys(policy_hits):
     print("POLICY\t" + p_)
+for u_ in dict.fromkeys(unresolved):
+    print("UNRESOLVED\t" + u_)
 PY
 )
 
     pol_line=$(printf '%s' "$offender" | grep '^POLICY\t' | head -1)
-    offender=$(printf '%s' "$offender" | grep -v '^POLICY\t' | head -1)
+    unres_line=$(printf '%s' "$offender" | grep '^UNRESOLVED\t' | head -1)
+    offender=$(printf '%s' "$offender" | grep -v '^POLICY\t' | grep -v '^UNRESOLVED\t' | head -1)
     if [ -n "$pol_line" ]; then
       pol_name=$(printf '%s' "$pol_line" | cut -f2)
       pol_real=$(printf '%s' "$pol_line" | cut -f3)
-      consumed=$(consume_authorization "$pol_real")
+      consumed_raw=$(consume_authorization "$pol_real")
+      consumed=$(printf '%s\n' "$consumed_raw" | sed -n '1p')
       if [ "$consumed" = "yes" ]; then
         record_edit "$pol_real"
-        exit 0
+        note "$(consumed_note "$pol_real" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '2p')" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '3p')")"
+      fi
+      if [ "$pol_name" = "WATCHDOG-PROBE" ]; then
+        deny "BLOCKED: the watchdog's waiting-probe SCRIPT — a shell write is still a write.
+
+watchdog.waiting_probe names this script. When it exits 0 the watchdog treats the run as WAITING and
+holds off ringing, so a session editing it decides when its own idle alarm stops. The config that
+points here is already refused; this is the other end of the pointer, and \`>>\` reaches it just as
+well as an editor does.
+
+MEASURED: this repo's own agent extended its probe mid-run to treat a long measurement as a wait.
+Careful, bounded, failing toward ringing — and the care is not the point.
+
+If the human has authorized this specific edit, record their words and try again:
+  $GAMELOOP_DIR/bin/game_loop authorize --path $pol_real --reason \"<their exact words>\"
+
+WHAT THIS DOES NOT COVER: idle_sec and settle_sec honour WATCHDOG_IDLE_SEC / WATCHDOG_SETTLE_SEC,
+and a hook's environment is set in .claude/settings.json, which this guard does not gate."
       fi
       deny "BLOCKED: .game_loop/$pol_name is the PROJECT'S POLICY, and a shell write is still a write.
 
@@ -1606,10 +2575,79 @@ variable, or any MCP tool. It reads the command string. Prevention where it is c
 own hash is the detection this does not yet do."
     fi
 
+    # NAME THE TOKEN WHEN THE OFFENDER CAME OUT OF A NON-SHELL HEREDOC BODY (auditor's measurement,
+    # #114). A heredoc fed to python/node/ruby/perl is scanned with SHELL grammar, because the guard
+    # reads command text and cannot parse four languages. auditor counted their own transcript: 10
+    # of 100 non-shell heredocs would be refused, and EVERY hit was a numeric comparison or a string
+    # literal -- `i < len(body)`, `if age > 30 * 60`, a regex lookbehind. None exotic, none
+    # avoidable: comparing two numbers is not a style choice.
+    #
+    # This does NOT widen what is allowed. Doing that is the shape that re-admitted the whole
+    # masquerade earlier today. It changes only the REFUSING arm, which is the arm a human is
+    # standing in front of -- so the sentence they read says which token tripped and in whose
+    # grammar, instead of making them re-derive it from a path they never wrote.
+    hd_hint=""
     if [ -n "$offender" ]; then
-      consumed=$(consume_authorization "$offender")
-      [ "$consumed" = "yes" ] && exit 0
-      deny "BLOCKED: mutating command targets a path outside this repo → $offender
+      hd_hint=$(CMD="$cmd" OFF="$offender" python3 <<'PY'
+import os, re
+cmd, off = os.environ["CMD"], os.environ["OFF"]
+HD = chr(60) + chr(60)                       # no literal here-doc operator in this file
+NON_SHELL = {"python", "python3", "node", "nodejs", "ruby", "perl", "php", "osascript", "awk"}
+opener = re.compile(re.escape(HD) + r"-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1")
+lines, i, hit = cmd.split("\n"), 0, ""
+while i < len(lines):
+    line = lines[i]
+    found = opener.findall(line)
+    if found:
+        pre = re.sub(r">>?\s*[^\s;&|" + chr(60) + chr(62) + r"]*", " ", line.split(HD, 1)[0])
+        tail = re.split(r"\|\||&&|[|;]", pre)[-1].strip()
+        w = re.findall(r"[A-Za-z0-9_./]+", tail)
+        who = os.path.basename(w[0]) if w else ""
+        delims = [d for _q, d in found]
+        i += 1
+        di = 0
+        while i < len(lines) and di < len(delims):
+            if lines[i].strip() == delims[di]:
+                di += 1
+            # The hint fires only if the OFFENDING text is really in this body -- a command that
+            # merely contains a python heredoc somewhere else must not get a note about it. Match on
+            # the BASENAME: the offender is the RESOLVED path and the body holds what was written,
+            # so `~/x.txt` in the body never contains `/Users/me/x.txt` and an exact test fired
+            # never, silently, on the one case that prompted this.
+            elif who in NON_SHELL and off and os.path.basename(off.rstrip("/")) in lines[i]:
+                hit = who
+            i += 1
+        continue
+    i += 1
+print(hit)
+PY
+)
+      consumed_raw=$(consume_authorization "$offender")
+      if [ "$(printf '%s\n' "$consumed_raw" | sed -n '1p')" = "yes" ]; then
+        note "$(consumed_note "$offender" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '2p')" \
+                  "$(printf '%s\n' "$consumed_raw" | sed -n '3p')")"
+      fi
+      if [ -n "$hd_hint" ]; then
+        hd_note="
+
+READ THIS FIRST — THE TEXT ABOVE CAME OUT OF A \`$hd_hint\` HERE-DOC BODY, WHICH THIS GUARD SCANNED
+WITH SHELL GRAMMAR. It reads command text and does not parse $hd_hint, so a redirect token in that
+body is read as a redirect even when the program would never run one. If that is what happened,
+this is a FALSE REFUSAL and nothing was going to be written.
+
+WHAT ACTUALLY TRIPS IT, measured against this guard rather than assumed: an UNQUOTED redirect token
+followed by an out-of-repo path — most often in a COMMENT. Quoting is already handled: the same
+path inside a string literal is allowed, and so are bare comparisons like a less-than between two
+numbers, because their target resolves inside the repo. So the fix is usually to quote it, put the
+program in a file, or assemble the literal from pieces.
+
+The refusal itself stays. An unparsed body is treated as shell, which costs a refusal you can clear
+rather than a write nobody sees."
+      else
+        hd_note=""
+      fi
+      deny "BLOCKED: mutating command targets a path outside this repo → $offender$hd_note
 
 Everything outside this project is READ-ONLY by default. READING elsewhere is fine, and so is copying
 OUT of it: \`cp <their path> <repo path>\` is allowed. Copy what you need in and work on the copy.
@@ -1622,11 +2660,48 @@ If a HUMAN has explicitly authorized this specific path, quote them and try agai
 One authorization, one mutation, logged permanently. That is the only escape hatch, by design."
     fi
 
+    # THE THIRD OUTCOME (#110). A target holding a variable this guard cannot expand is neither
+    # "known bad" nor "fine" -- it is UNKNOWN, and the two refusals must not share their wording.
+    # The old message printed the unexpanded string joined onto a directory and called it the
+    # target, so the reporter was handed `/Users/.../development/$r/2026-08-18`: a path that names
+    # nothing, cannot be checked, and cannot be authorized. Same decision, honest sentence.
+    if [ -n "${unres_line:-}" ]; then
+      unres_raw=$(printf '%s' "$unres_line" | cut -f2)
+      unres_fab=$(printf '%s' "$unres_line" | cut -f3)
+      deny "BLOCKED: a mutating target could not be RESOLVED — it still contains a shell variable.
+
+    written as       : $unres_raw
+    as far as I got  : $unres_fab
+
+This guard reads the command TEXT and never runs a shell, so that variable is a name with no value
+here. The second line is NOT a claim about a file: it is how far the substitution got before it hit
+something with no value, and no such path need exist.
+
+Refused rather than allowed, because an unexpanded variable can name anything — including a path
+outside this repo — and COULD NOT TELL is not NOTHING TO REPORT. If the write is meant to land in
+this repo, run it with the variable expanded and the guard can check what you actually mean. If it
+is meant to land outside and a HUMAN authorized that, quote them against the RESOLVED path:
+  \$GAMELOOP_DIR/bin/game_loop authorize --path <the real prefix> --reason \"<their exact words>\""
+    fi
+
     # LAST, deliberately: these warnings are the only non-blocking output here, so they are emitted
     # after every check that can deny. A denial means the command never ran, and a warning about a
     # commit that did not happen is noise. `note` exits, so the two are joined into one body — a
     # commit can be both widened past the work AND carrying paths nothing checks.
+    edit_note=""
+    if [ -f "$SCOPE_OUT.writes" ]; then
+      edit_note="THIS COMMAND WRITES BEFORE IT COMMITS, so the checks above ran against the tree as it is NOW:
+    $(head -1 "$SCOPE_OUT.writes")
+This gate is PreToolUse. A file that segment is about to change is not stale YET, owes nothing yet,
+and can land in this commit unchecked — the checks above did not look at it and cannot. Run the
+edit as its own call, then commit, and the gate sees the change it is meant to see."
+    fi
     commit_note="${blast_note:-}"
+    if [ -n "$edit_note" ]; then
+      [ -n "$commit_note" ] && commit_note="$commit_note
+"
+      commit_note="$commit_note$edit_note"
+    fi
     if [ -n "${cov_note:-}" ]; then
       [ -n "$commit_note" ] && commit_note="$commit_note
 "

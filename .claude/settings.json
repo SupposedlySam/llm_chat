@@ -77,6 +77,17 @@
           }
         ],
         "matcher": "Bash"
+      },
+      {
+        "hooks": [
+          {
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.showrunner/hooks/reach-gate.sh",
+            "statusMessage": "showrunner: is there a verb for what this is doing?",
+            "timeout": 10,
+            "type": "command"
+          }
+        ],
+        "matcher": "Write|Edit|NotebookEdit|Bash|TodoWrite"
       }
     ],
     "SessionStart": [

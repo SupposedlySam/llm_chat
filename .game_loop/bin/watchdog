@@ -144,27 +144,62 @@ def set_session(sid):
         PID_PATH = os.path.join(sdir, ".watchdog.pid")
 
 
+_UNION_KEYS = {"read_roots", "allow_write_roots", "deploy_verbs", "generated_globs",
+               "mcp_read_only_tools", "mcp_standing_writes", "mcp_trusted_servers"}
+
+
+def _merge(base, over):
+    """The twin of _config_merge() in bin/_gl_impl.py, and it has to stay one. Deep for nested
+    blocks, union for the trust lists, later-wins for everything else."""
+    out = dict(base)
+    for _k, _v in over.items():
+        _cur = out.get(_k)
+        if _k in _UNION_KEYS and isinstance(_v, list) and isinstance(_cur, list):
+            out[_k] = _cur + [_x for _x in _v if _x not in _cur]
+        elif isinstance(_v, dict) and isinstance(_cur, dict):
+            out[_k] = _merge(_cur, _v)
+        else:
+            out[_k] = _v
+    return out
+
+
 def _merged_config(config_f):
-    """config.json, then config.local.json on top. The local file is GITIGNORED site wiring, and it
-    has to reach every component that reads config -- a setting only some of them honour is worse
-    than one nobody has, because it works in the place you test it and not in the place it matters.
-    (Shipped that way once: the waiting probe lived here and the watchdog could not see it.)"""
+    """~/.game_loop/config.json, then config.json, then config.local.json on top.
+
+    Every layer has to reach every component that reads config -- a setting only some of them
+    honour is worse than one nobody has, because it works in the place you test it and not in the
+    place it matters. (Shipped that way twice, and this file was the victim both times: first the
+    waiting probe lived in the local file the watchdog could not see, then the machine-wide file
+    reached both guards while the watchdog read two files and did not know it.)
+
+    DEEP, for the reason spelled out in _gl_impl.py's _config_merge: a nested block replaced whole
+    means a machine-wide `limits` setting vanishes the instant a project names `limits` for an
+    unrelated reason, and the run falls back to a default nobody re-chose."""
     import json as _json
     import os as _os
+    _gl = (_os.environ.get("GAME_LOOP_GLOBAL_CONFIG")
+           or _os.path.join("~", ".game_loop", "config.json"))
     cfg = {}
-    for _p in (config_f, _os.path.join(_os.path.dirname(config_f), "config.local.json")):
+    for _p in (_os.path.abspath(_os.path.expanduser(_gl)),
+               config_f,
+               _os.path.join(_os.path.dirname(config_f), "config.local.json")):
         try:
             with open(_p) as _f:
                 _d = _json.load(_f)
             if isinstance(_d, dict):
-                cfg.update(_d)
+                cfg = _merge(cfg, _d)
         except (OSError, ValueError):
             continue
     return cfg
 
 
 def _cfg():
-    wd = {"idle_sec": 30, "settle_sec": 5, "ring_cap": 3}
+    # waiting_probe_timeout_sec: THE COMMAND WAS CONFIGURABLE AND ITS BUDGET WAS NOT (#124). A
+    # consumer armed the command this project's own note recommends, it grew to ~20s on an ordinary
+    # workload, and every tick hit a hardcoded 15s ceiling — so a legitimately SLOW probe was
+    # unrepresentable and read as broken. 34 of 236 recorded verdicts were "failing" for that
+    # reason, across six days. Arming a command you cannot budget for is half a setting.
+    wd = {"idle_sec": 30, "settle_sec": 5, "ring_cap": 3, "waiting_probe_timeout_sec": 15}
     wd.update(_merged_config(CONFIG_F).get("watchdog") or {})
     return wd
 
@@ -185,9 +220,18 @@ IDLE_SEC = int(os.environ.get("WATCHDOG_IDLE_SEC") or _WD["idle_sec"])
 SETTLE_SEC = int(os.environ.get("WATCHDOG_SETTLE_SEC") or _WD["settle_sec"])
 CHUNK_SEC = 10          # bounds supersede latency
 RING_CAP = int(_WD["ring_cap"])  # consecutive unproductive rings before standing down
+# The probe's budget, settable beside the probe. Env override for the same reason as the others.
+PROBE_TIMEOUT_SEC = int(os.environ.get("WATCHDOG_PROBE_TIMEOUT_SEC")
+                        or _WD["waiting_probe_timeout_sec"])
 EXHAUSTED_PCT = float(_LC["exhausted_pct"])   # at/over this, the session is treated as rate-limited
 # Grace after a window resets before ringing — the reset timestamp is Anthropic's clock, not ours.
 RESUME_BUFFER_SEC = int(os.environ.get("WATCHDOG_RESUME_BUFFER_SEC") or 30)
+# How long a successor is allowed to be booting before this watchdog stops taking the handover on
+# trust. `successor` records the handover the instant it starts the next session; that session only
+# exists once its own SessionStart hook has run, which is a tab opening, a process spawning and a
+# hook firing. Below this age an unseen successor is assumed to be on its way; above it, it never
+# came, and the ring is the right answer.
+SUCCESSOR_BOOT_SEC = int(os.environ.get("WATCHDOG_SUCCESSOR_BOOT_SEC") or 120)
 
 
 def handoff_path():
@@ -201,10 +245,31 @@ def handoff_path():
 
 
 def load_state():
+    """{} for a fresh session — but a state file that EXISTS and will not parse is set aside first.
+
+    The same collapse game_loop's load() had, in a SEPARATE PROGRAM reading the SAME file, which is
+    why fixing it there did not fix it here. Corrupt state read as {} means the watchdog sees no
+    mandate and stands down: the run stops being watched, silently, in exactly the situation where
+    nobody is looking. Then save_state writes over the bytes.
+
+    The copy is what `status` reports — a file rather than an in-process flag, so a corruption first
+    noticed by the WATCHDOG still surfaces to the human reading status later.
+    """
     try:
         with open(STATE_F) as f:
-            return json.load(f)
-    except (OSError, ValueError):
+            raw = f.read()
+    except OSError:
+        return {}
+    try:
+        return json.loads(raw)
+    except ValueError:
+        try:
+            kept = STATE_F + ".unreadable"
+            if not os.path.exists(kept):
+                with open(kept, "w") as f:
+                    f.write(raw)
+        except OSError:
+            pass
         return {}
 
 
@@ -246,27 +311,155 @@ def quiet(why):
     sys.exit(0)
 
 
-def superseded():
+def _age_sec(stamp):
+    """Seconds since an ISO stamp written by bin/game_loop's now(), or None if it cannot be read."""
+    try:
+        return (datetime.datetime.now() - datetime.datetime.fromisoformat(stamp)).total_seconds()
+    except (TypeError, ValueError):
+        return None
+
+
+def handed_off_quiet(state):
+    """Why this watchdog must stand down because the session HANDED OVER — or None to carry on.
+
+    THE FAILURE THIS CLOSES, observed and logged (landlord, 2026-08-18, sessions 48641588 →
+    9187f2e8): the limit gate closed at 369K of context, `successor` started the next session, and
+    nothing stopped the predecessor's watchdog. It rang the old session back into a mandate the new
+    one already owned. Both drove it — six worktrees existed for three problems — and the run then
+    spent T3, the most expensive rung there is, asking a human "which of us is driving?". The
+    predecessor's watchdog was STILL ALIVE six days later, holding that question open.
+
+    Killing the armed process cannot be the fix on its own: a Stop hook arms a fresh watchdog at
+    EVERY turn-end, so the very next turn re-creates what the kill removed. The handover has to be
+    STATE the next watchdog reads. `successor` writes it; this reads it.
+
+    The two ways to be wrong here are not symmetric:
+      * quiet when nobody actually took over → the run stalls with no engine and nobody is told.
+      * ring when somebody did               → one wasted wake-up on a session with nothing to do.
+    The first is strictly worse, so this quiets only on an OBSERVED successor: its session state
+    file, which nothing but a real session start writes. `successor` in "print" mode hands over a
+    COMMAND, not a session, and a human who never runs it must not silently disarm the engine.
+    A handover recorded but never taken up falls through to the ring and says so in the log.
+    """
+    ho = state.get("handed_off")
+    if not isinstance(ho, dict):
+        return None
+    to = ho.get("to") or ""
+    short = to[:8] or "(unnamed)"
+    if to and os.path.isfile(os.path.join(ROOT, "sessions", to, "state.json")):
+        return (f"handed off to {short} at {ho.get('at')} — that session exists and owns this "
+                "mandate now; two sessions driving one mandate is the failure this avoids")
+    age = _age_sec(ho.get("at"))
+    if age is not None and age < SUCCESSOR_BOOT_SEC:
+        return (f"handed off to {short} {int(age)}s ago and it has not written state yet — inside "
+                f"the {SUCCESSOR_BOOT_SEC}s boot grace, so it is assumed to be starting")
+    logline({"kind": "watchdog_handover_gone", "to": to, "at": ho.get("at"),
+             "mode": ho.get("mode"), "age_sec": None if age is None else int(age),
+             "note": "a handover was recorded but the successor never wrote state — ringing this "
+                     "session rather than leaving the mandate with no engine"})
+    return None
+
+
+# THE PIDFILE CARRIES AN IDENTITY, NOT JUST A NUMBER. Nothing removes this file when a watchdog
+# exits — no atexit, no finally — so a stale pid is the NORMAL state here rather than the rare one,
+# and a pid the OS has recycled onto an unrelated process is indistinguishable from ours by number
+# alone. Both readers of this file go on to SIGTERM what they find in it. The start time tells them
+# apart: it belongs to a process INSTANCE, so a recycled pid reads as the different process it is.
+# Mirrored in bin/game_loop's disarm_watchdog() — two files, one convention; if either moves, both
+# move. Observed shape, not hypothesised: game_loop#102.
+# TWO KINDS OF SILENCE, AND ONLY ONE OF THEM IS AN ANSWER (lamp-owner, 2026-08-25, after they read
+# a working agent as dead from quiet CPU and an empty log). Signals that report ABSENCE OF OUTPUT --
+# ps not runnable, a log not written -- say nothing about whether the thing is alive. Signals that
+# report ABSENCE OF LIFE -- a reaped pid, a vanished process -- do. This file had them sharing a
+# return value: `_proc_start` gave None both when ps said "no such process" and when ps could not be
+# run at all, and its own docstring claimed "the callers keep them apart" while pid_is_ours mapped
+# None to False. The behaviour was safe by luck -- False means do not signal -- and the sentence
+# above it was false, which is the half that misleads the next reader.
+PROC_GONE = "\x00gone"          # ps ran and reported no such process: an ANSWER, not a silence
+
+
+def _proc_start(pid):
+    """The process's start time as ps reports it · PROC_GONE if ps ran and there is no such process
+    · None if ps could not be run at all.
+
+    Three outcomes because there are three, and the middle one is a finding: a pid that is GONE is
+    genuinely not the watchdog we armed, and saying so is different from being unable to look.
+    """
+    try:
+        r = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                           capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        return None                      # could not look. NOT evidence about the process.
+    out = (r.stdout or "").strip()
+    if out:
+        return out
+    return PROC_GONE if r.returncode != 0 else None
+
+
+def read_pidfile():
+    """(pid, recorded_start) from the pidfile. recorded_start is None for a file written before this
+    format existed, which is UNVERIFIABLE — a third outcome, and not the same as 'it matches'."""
     try:
         with open(PID_PATH) as f:
-            return int(f.read().strip()) != os.getpid()
-    except (OSError, ValueError):
-        return False
+            parts = f.read().strip().split(None, 1)
+        return int(parts[0]), (parts[1].strip() or None if len(parts) > 1 else None)
+    except (OSError, ValueError, IndexError):
+        return None, None
+
+
+def pid_is_ours(pid, recorded):
+    """True / False / None-for-cannot-tell, and now the callers really do keep them apart.
+
+    None when the pidfile predates this format, OR when ps could not be run — both are "I could not
+    check", and the caller MUST NOT signal on either. False is reserved for an ANSWER: the pid is
+    gone, or it is alive and is somebody else's. 'I could not check' and 'I checked and it is ours'
+    are the two outcomes that must never share a consequence, and here the consequence is a SIGTERM.
+    """
+    if recorded is None:
+        return None
+    live = _proc_start(pid)
+    if live is None:
+        return None                      # ps unavailable: no answer, not a negative one
+    if live == PROC_GONE:
+        return False                     # an answer: nothing there to signal
+    return live == recorded
+
+
+def superseded():
+    pid, _ = read_pidfile()
+    return pid is not None and pid != os.getpid()
 
 
 def claim_pidfile():
-    """Newest watchdog wins: kill any previously armed one and record ourselves. False if we can't."""
-    try:
-        with open(PID_PATH) as f:
-            old = int(f.read().strip())
-        if old != os.getpid():
-            os.kill(old, 15)
-    except (OSError, ValueError, ProcessLookupError):
-        pass
+    """Newest watchdog wins: kill any previously armed one and record ourselves. False if we can't.
+
+    It signals only a pid it can PROVE wrote this file. An unverifiable one is left alone and said
+    so in the log: two watchdogs ringing one session is a bad day, but SIGTERMing a stranger holding
+    a recycled pid is somebody else's process dying for our bookkeeping. Between a bad day and that,
+    the bad day is the one we take — and it is bounded, because this rewrites the file in the new
+    format on the way past, so a session pays it at most once.
+    """
+    old, recorded = read_pidfile()
+    if old is not None and old != os.getpid():
+        ours = pid_is_ours(old, recorded)
+        if ours:
+            try:
+                os.kill(old, 15)
+            except OSError:
+                pass
+        elif ours is None:
+            logline({"kind": "watchdog_pid_unverifiable", "pid": old,
+                     "why": ("no start time in the pidfile (written before that format)"
+                             if recorded is None else "ps could not be run, so nothing was looked at"),
+                     "note": "this pid could not be SHOWN to be the watchdog that wrote it — NOT "
+                             "signalled, because a recycled pid is somebody else's process. The two "
+                             "causes are recorded separately: an old pidfile is a fact about the "
+                             "file, an unrunnable ps is a fact about this machine, and only the "
+                             "second one means the check itself is broken"})
     try:
         os.makedirs(os.path.dirname(PID_PATH), exist_ok=True)
         with open(PID_PATH, "w") as f:
-            f.write(str(os.getpid()))
+            f.write("%d %s" % (os.getpid(), _proc_start(os.getpid()) or ""))
         return True
     except OSError:
         return False
@@ -526,6 +719,7 @@ def waiting_verdict(tpath=None):
     cmd = str(_WD.get("waiting_probe") or "").strip()
     if not cmd:
         return False, ""
+    why = ""          # bound before the try: an arm that forgot it would be a NameError at the log
     try:
         # SAME ENVIRONMENT CONTRACT AS A TRIGGER. Both features run a command the PROJECT supplied,
         # and they were handing it different environments: triggers set GAME_LOOP_ROOT and
@@ -538,8 +732,8 @@ def waiting_verdict(tpath=None):
         # signal, so a probe never has to glob across the sessions sharing a checkout (#60).
         env = dict(os.environ, GAME_LOOP_ROOT=ROOT, GAME_LOOP_REPO=REPO_ROOT,
                    GAME_LOOP_TRANSCRIPT=tpath or "", **session_env())
-        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True, timeout=15,
-                           cwd=REPO_ROOT, env=env)
+        r = subprocess.run(["bash", "-c", cmd], capture_output=True, text=True,
+                           timeout=PROBE_TIMEOUT_SEC, cwd=REPO_ROOT, env=env)
         # THE EXIT CONTRACT IS 0 OR 1 AND NOTHING ELSE.
         #
         # "Conservative toward not waiting" is right, and on its own it made a BROKEN probe
@@ -558,10 +752,34 @@ def waiting_verdict(tpath=None):
         detail = reason if waiting else (r.stderr or "").strip()[:160]
         if not answered:
             detail = (detail or f"exit {r.returncode} with nothing on stderr")[:160]
+            # 127 IS BASH'S "command not found", and it arrives as a COMPLETED run rather than an
+            # exception — so the exception arm below, which reads like the cannot-run case, almost
+            # never sees a missing probe. Measured: an assertion for why=unrunnable failed against
+            # `/nonexistent/probe/xyz` because bash exited 127 quite happily. A consumer diagnosing
+            # "my probe is missing" and one diagnosing "my probe answered 3" do different things.
+            why = "unrunnable" if r.returncode == 127 else "unexpected_exit"
+    except subprocess.TimeoutExpired:
+        why = "timeout"
+        # A TIMEOUT IS NOT "DID NOT RUN", and saying so cost the reporter real diagnosis time (#124):
+        # they went looking for a missing binary and a cwd problem — both of which this runner is
+        # careful about — before thinking to time the command. The probe ran fine; it ran LONG.
+        waiting, answered, detail = False, False, (
+            "probe TIMED OUT after %ss — it ran, it did not finish. Raise "
+            "watchdog.waiting_probe_timeout_sec if this command is legitimately slow, or make the "
+            "probe cheaper; it runs on every tick." % PROBE_TIMEOUT_SEC)
     except Exception:  # noqa: BLE001 — unrunnable, hung, anything: NOT waiting, and say so
-        waiting, answered, detail = False, False, "probe did not run at all"
+        # No process at all: bash itself missing, an OS error, anything before an exit code exists.
+        waiting, answered, detail, why = False, False, "probe did not run at all", "unrunnable"
+    # WHY, STRUCTURED, BESIDE THE PROSE (#124). `answered: false` collapses three causes with
+    # different repairs: a probe that ran long, one that could not run, and one that answered with a
+    # code outside the 0/1 contract. The detail string has always said which — in prose, which a
+    # consumer's reconcile would have to parse. A field it can switch on costs nothing and is
+    # additive: nothing that reads `answered` today changes behaviour.
+    #
+    # Empty string when the probe ANSWERED, so "why did it fail" is never a question about a run
+    # that did not fail. The three values are timeout · unrunnable · unexpected_exit.
     logline({"kind": "watchdog_waiting", "waiting": waiting, "answered": answered,
-             "detail": detail})
+             "detail": detail, "why": why})
     return waiting, detail
 
 
@@ -632,6 +850,18 @@ def main():
     m = state.get("mandate") or {}
     tpath = payload.get("transcript_path")
     state["_tpath"] = tpath
+
+    # A HANDOVER OUTRANKS EVERYTHING BELOW, the Slack poll included. Once another session owns this
+    # mandate, every job this watchdog has is somebody else's: ringing drags a retired session back
+    # into work that is being done, and forwarding a Slack reply carries an answer to the one session
+    # that can no longer act on it. Stand down first and let the successor's own watchdog do the job.
+    #
+    # WHAT THIS COSTS, said plainly: a T3 question armed BEFORE the handover does not travel — the
+    # arm lives in this session's state and the successor never sees it. `successor` warns when it
+    # hands over on top of a live arm; the answer belongs in the handoff file, not in a poll nobody
+    # is left to hear.
+    if (why := handed_off_quiet(state)):
+        quiet(why)
 
     # A live T3 arm means the human is legitimately holding the ball — do not ring. Unless the arm was
     # paged to Slack, in which case the ball can come back from a phone: poll the thread. This runs
@@ -743,6 +973,12 @@ def main():
         quiet("the human called a break while sleeping")
     if state.get("t3_armed"):
         quiet("T3 armed while sleeping")
+    # The handover can land while we sleep — `successor` kills the armed watchdog, but a kill is
+    # latency, not a gate: it can lose the race, fail on permissions, or never run at all in a mode
+    # that only printed a command. The state flag is what actually decides, so it is read again HERE,
+    # against the world as it is now rather than as it was when this watchdog armed.
+    if (why := handed_off_quiet(state)):
+        quiet(why)
 
     # A DECLARED WAIT STOPS THE RING, not merely the escalation at the cap.
     #
