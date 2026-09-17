@@ -2482,7 +2482,7 @@ def shared_name_note(audience, live):
     return "\n".join(lines)
 
 
-def say_reach(server, channel, sender, audience, chan, known=None):
+def say_reach(sender, audience, chan, roster):
     """One line telling the sender who it just woke, and who merely gets to see it.
 
     Every message used to wake every idle member and nothing said so, which is
@@ -2503,12 +2503,19 @@ def say_reach(server, channel, sender, audience, chan, known=None):
     faster than the write they accompanied. Found because showrunner measured
     a send against the live counter table while asking a different question.
 
-    Still reads when `known` is absent: the parameter is an optimisation for
-    a caller that has the rows, not a new requirement on one that does not.
+    NO FALLBACK, AND NO `server` OR `channel` PARAMETER. The first version
+    kept `known=None` and re-read the table when it was absent, so that a
+    caller without the rows still worked. Coverage then showed that branch had
+    never executed — there is one caller and it always has them — and an
+    unexercised branch is indistinguishable from a broken one. Worse, the two
+    parameters it needed made this look like a function that talks to the
+    server, which it no longer does.
+
+    So the roster is required. A future caller without one reads the table
+    itself, where the cost is visible at the call site rather than hidden
+    behind a default.
     """
-    if known is None:
-        known = rows(server, "memberships", eq("channel", channel))
-    members = sorted(m["identity"] for m in known
+    members = sorted(m["identity"] for m in roster
                      if m["identity"] != sender)
     woken = [m for m in members if wakes({"audience": audience}, m, chan)]
     passive = [m for m in members if m not in woken]
@@ -3081,7 +3088,7 @@ def do_say(server, name, identity, text, audience=None, thread=None,
     listening = [m for m in members
                  if m != identity and wakes({"audience": audience}, m, chan)
                  and ring(name, m, server)]
-    print(f"  {say_reach(server, name, identity, audience, chan, roster)}")
+    print(f"  {say_reach(identity, audience, chan, roster)}")
     # DIRECTLY UNDER THE REACH LINE, because that is the line being corrected.
     # "LEFT FOR <name> — no live session, so nobody was woken" is printed
     # whether or not a bridge exists, and for a bridged room it is TRUE and

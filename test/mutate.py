@@ -2828,6 +2828,15 @@ NOT_SWEPT = {
         "subprocess module. The expiry path is asserted against a REAL child "
         "instead, because the defect is that subprocess collects partial "
         "output and the wrapper drops it, which a fake cannot exhibit",
+    "bin/llm-chat-mcp:_prose_argv": "every branch asserted directly — text "
+        "alone becomes `--file -` with the prose ABSENT from argv, file alone "
+        "stays a path, and both together are a ToolError. The first of those "
+        "is the whole fix: a mutation putting the text back in argv is caught "
+        "by an explicit assertion that no element contains the message",
+    "bin/llm-chat-mcp:_prose_stdin": "both branches asserted directly, plus "
+        "that the value REACHES run_cli and that no other tool declares a "
+        "feeder — a builder emitting `--file -` whose tool has no stdin would "
+        "send an EMPTY message and report success",
     "bin/llm-chat-mcp:_decode": "all three inputs asserted directly — bytes "
         "(what an expiry actually carries, `text=True` notwithstanding), str, "
         "and None — plus undecodable bytes, since replacing this with a bare "

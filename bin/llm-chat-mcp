@@ -61,7 +61,7 @@ class ToolError(Exception):
     CALLED, not in anything llm_chat did."""
 
 
-def run_cli(argv, timeout):
+def run_cli(argv, timeout, stdin_text=None):
     """The one seam: every tool call reaches the CLI through here, and only
     here, so a test replaces this single function instead of the shared
     `subprocess` module. Combines stdout and stderr in the order the CLI
@@ -69,13 +69,19 @@ def run_cli(argv, timeout):
     stderr, and a caller reading only stdout would see nothing at all for
     every error path there is.
 
-    `stdin=DEVNULL`, deliberately: `say --file -` and `briefing --file -`
-    read the CLI's own stdin, which without this would be inherited from THIS
-    server's stdin — the same pipe `main()` below is reading JSON-RPC frames
-    from. A client that passed `file: "-"` would then race this process's own
-    read loop against the child's, on the same underlying fd. DEVNULL turns
-    that into an immediate, harmless EOF (an empty message) instead of a
-    server-wide hang or a corrupted JSON-RPC stream.
+    `stdin=DEVNULL` UNLESS `stdin_text` IS GIVEN, and the distinction is the
+    whole reason this parameter exists. `say --file -` and `briefing --file -`
+    read the CLI's own stdin, which without DEVNULL would be inherited from
+    THIS server's stdin — the same pipe `main()` below is reading JSON-RPC
+    frames from. A client that passed `file: "-"` would then race this
+    process's own read loop against the child's, on the same underlying fd.
+    DEVNULL turns that into an immediate, harmless EOF (an empty message)
+    instead of a server-wide hang or a corrupted JSON-RPC stream.
+
+    `input=` is NOT that. It hands the child a fresh pipe carrying exactly the
+    bytes named, so nothing is inherited and nothing is raced — the JSON-RPC
+    stream is untouched. That is what lets `text` reach the CLI as data
+    without ever appearing in argv; see `_build_say`.
     """
     # UNBUFFERED, so that the timeout path below has something to return.
     # Python block-buffers stdout when it is a pipe, and `capture_output`
@@ -91,10 +97,15 @@ def run_cli(argv, timeout):
     # which is the defect this whole rescue exists to remove. The cost is one
     # write syscall per line on verbs nobody is timing.
     env = dict(os.environ, PYTHONUNBUFFERED="1")
+    # `input=` and `stdin=` are mutually exclusive to subprocess.run, so this
+    # picks one rather than passing both and getting a ValueError on the path
+    # that matters most.
+    feed = ({"input": stdin_text} if stdin_text is not None
+            else {"stdin": subprocess.DEVNULL})
     try:
         done = subprocess.run([sys.executable, CLI] + argv,
                               capture_output=True, text=True, timeout=timeout,
-                              stdin=subprocess.DEVNULL, env=env)
+                              env=env, **feed)
     except subprocess.TimeoutExpired as expiry:
         # RETURN WHAT IT HAD. Reported against the `doctor` tool: it expired
         # at 15s where the CLI answered in 2.4s, and the caller got a single
@@ -180,12 +191,59 @@ def _build_setup(a):
     return argv
 
 
-def _build_say(a):
-    argv = ["say", _require(a, "channel")]
+# WHICH PROPERTIES CANNOT BE GIVEN TOGETHER, declared once and read by both
+# the refusal below and the correspondence test's fixture. A test that carried
+# its own copy of this would be the failure that fixture exists to catch — a
+# belief written down twice, where only one copy gets updated.
+EXCLUSIVE = {"say": ("text", "file"), "briefing": ("text", "file")}
+
+
+def _prose_argv(verb, a):
+    """`say`/`briefing` argv, with any `text` routed to STDIN, not argv.
+
+    THE DOCUMENTED SAFE PATH WAS THE REFUSED ONE. llms.txt tells an agent to
+    pass `text` here precisely because a tool call is a list and never meets a
+    shell — and the CLI then refused it, because its prose guard keys on
+    length-or-newline and its premise is "prose on a command line has already
+    been through a SHELL before this program starts". That premise is false
+    for `subprocess.run([...])`. Reported by balooga-owner, who had to write a
+    temp file to say something ordinary.
+
+    NOT FIXED WITH A FLAG THE GUARD TRUSTS, which was the other option offered
+    and is the one that quietly removes the protection: anything that can set
+    a flag can set it from a shell too, and an override that exists gets typed
+    routinely and stops being read. Routing the text through stdin SATISFIES
+    the guard's premise instead of exempting the caller from it — the text
+    genuinely never appears in argv, so there is no shell that could have
+    rewritten it, and a `say` typed at a real shell is refused exactly as
+    before.
+    """
+    argv = [verb, _require(a, "channel")]
+    given = [p for p in EXCLUSIVE[verb]
+             if a.get(p) is not None and a.get(p) != ""]
+    if len(given) > 1:
+        # REFUSED HERE rather than left to the CLI. With `text` now routed to
+        # `--file -`, passing both would emit two `--file` flags and be caught
+        # by RefuseRepeat — correctly, but it would tell a caller who passed
+        # one file and some text that "--file was given twice ... pass one
+        # file", which describes an argv they never wrote.
+        raise ToolError(
+            "give %s, not both — with both, which one was sent is not "
+            "knowable from the call" % " or ".join(repr(p) for p in given))
     if a.get("text") is not None:
-        argv.append(a["text"])
-    if a.get("file"):
+        argv += ["--file", "-"]
+    elif a.get("file"):
         argv += ["--file", a["file"]]
+    return argv
+
+
+def _prose_stdin(a):
+    """The bytes for `--file -`, or None when the call named a path."""
+    return a["text"] if a.get("text") is not None and not a.get("file") else None
+
+
+def _build_say(a):
+    argv = _prose_argv("say", a)
     if a.get("to"):
         argv += ["--to", a["to"]]
     if a.get("to_all"):
@@ -282,11 +340,7 @@ def _build_channels(a):
 
 
 def _build_briefing(a):
-    argv = ["briefing", _require(a, "channel")]
-    if a.get("text") is not None:
-        argv.append(a["text"])
-    if a.get("file"):
-        argv += ["--file", a["file"]]
+    argv = _prose_argv("briefing", a)
     argv += _as_flag(a)
     return argv
 
@@ -414,6 +468,7 @@ TOOLS = [
                         "the three, the room's mode decides: ordinary rooms "
                         "wake every member, broadcast rooms wake nobody.",
         "build": _build_say,
+        "stdin": _prose_stdin,
         "timeout": 30,
         "schema": {
             "type": "object",
@@ -695,6 +750,7 @@ TOOLS = [
                         "text or file — " + _FILE_NOTE + " Capped at 2000 "
                         "characters — say the rules, link the rest.",
         "build": _build_briefing,
+        "stdin": _prose_stdin,
         "timeout": 30,
         "schema": {
             "type": "object",
@@ -934,7 +990,10 @@ def handle_tools_call(params):
         raise ToolError("unknown tool: %r" % (name,))
     arguments = params.get("arguments") or {}
     argv = _server_argv(arguments) + tool["build"](arguments)
-    code, text = run_cli(argv, budget_for(tool))
+    # A tool that carries prose declares how to feed it. Absent for every
+    # other verb, which has nothing to put on stdin and keeps DEVNULL.
+    feed = tool["stdin"](arguments) if tool.get("stdin") else None
+    code, text = run_cli(argv, budget_for(tool), feed)
     return {"content": [{"type": "text",
                          "text": with_outcome(code, text)}],
             # UNCHANGED, and deliberately: `isError` is boolean by the

@@ -19,14 +19,23 @@ from support import load  # noqa: E402
 
 
 class RunCli:
-    """Stands in for run_cli(argv, timeout) -> (returncode, text)."""
+    """Stands in for run_cli(argv, timeout, stdin_text=None) -> (code, text).
+
+    THE SIGNATURE HAS TO TRACK THE SEAM. When `run_cli` grew `stdin_text`,
+    this did not, and every one of the 58 tests that route through it failed
+    with `IndexError: list index out of range` — the TypeError was raised
+    inside `dispatch`, turned into a JSON-RPC error response, and `calls`
+    stayed empty. Fifty-eight identical index errors and not one of them
+    named an argument, which is the cost of a double that can go out of date
+    silently: the failure is loud but says nothing about its cause.
+    """
 
     def __init__(self, *outputs):
         self.outputs = list(outputs)
         self.calls = []
 
-    def __call__(self, argv, timeout):
-        self.calls.append((argv, timeout))
+    def __call__(self, argv, timeout, stdin_text=None):
+        self.calls.append((argv, timeout, stdin_text))
         if self.outputs:
             return self.outputs.pop(0)
         return 0, ""
@@ -41,11 +50,16 @@ class McpTestCase(unittest.TestCase):
 
     def call(self, name, arguments):
         """Dispatch a tools/call and return the argv the (faked) CLI saw."""
+        return self.call_fully(name, arguments)[0]
+
+    def call_fully(self, name, arguments):
+        """(argv, stdin_text) — for the verbs that carry prose on stdin."""
         fake = RunCli((0, "ok"))
         self.mod.run_cli = fake
         self.dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
                        "params": {"name": name, "arguments": arguments}})
-        return fake.calls[0][0]
+        argv, _timeout, stdin_text = fake.calls[0]
+        return argv, stdin_text
 
     def run_main(self, *messages):
         payload = "".join(json.dumps(m) + "\n" for m in messages)
@@ -144,7 +158,8 @@ class ToolsCallTest(McpTestCase):
                                                       "identity": "me"}}})
         self.assertFalse(resp["result"]["isError"])
         self.assertIn("sent #1", resp["result"]["content"][0]["text"])
-        self.assertEqual(fake.calls[0][0], ["say", "room", "hi", "--as", "me"])
+        self.assertEqual(fake.calls[0][0],
+                         ["say", "room", "--file", "-", "--as", "me"])
 
     def test_a_nonzero_exit_is_flagged_as_an_error(self):
         self.mod.run_cli = RunCli((1, "room is closed"))
@@ -245,24 +260,33 @@ class ArgvBuildersTest(McpTestCase):
                                 "--max-messages", "50", "--in-checkout"])
 
     def test_say_with_text_only(self):
-        self.assertEqual(self.call("say", {"channel": "c", "text": "hi"}),
-                         ["say", "c", "hi"])
+        """The text goes on STDIN, not in argv — see ProseReachesTheCliAsData.
+        Asserted here too because this is where somebody reads the argv shape
+        of every verb, and a reader who found `hi` in this list would
+        reasonably conclude prose still travels that way."""
+        argv, stdin = self.call_fully("say", {"channel": "c", "text": "hi"})
+        self.assertEqual(argv, ["say", "c", "--file", "-"])
+        self.assertEqual(stdin, "hi")
 
     def test_say_with_file_instead_of_text(self):
-        argv = self.call("say", {"channel": "c", "file": "/tmp/msg.txt"})
+        argv, stdin = self.call_fully("say", {"channel": "c",
+                                              "file": "/tmp/msg.txt"})
         self.assertEqual(argv, ["say", "c", "--file", "/tmp/msg.txt"])
+        self.assertIsNone(stdin)
 
     def test_say_addressed_to_specific_identities(self):
-        argv = self.call("say", {"channel": "c", "text": "hi", "to": "a,b"})
-        self.assertEqual(argv, ["say", "c", "hi", "--to", "a,b"])
+        argv, stdin = self.call_fully("say", {"channel": "c", "text": "hi",
+                                              "to": "a,b"})
+        self.assertEqual(argv, ["say", "c", "--file", "-", "--to", "a,b"])
+        self.assertEqual(stdin, "hi")
 
     def test_say_to_all(self):
         argv = self.call("say", {"channel": "c", "text": "hi", "to_all": True})
-        self.assertEqual(argv, ["say", "c", "hi", "--to-all"])
+        self.assertEqual(argv, ["say", "c", "--file", "-", "--to-all"])
 
     def test_say_to_none(self):
         argv = self.call("say", {"channel": "c", "text": "hi", "to_none": True})
-        self.assertEqual(argv, ["say", "c", "hi", "--to-none"])
+        self.assertEqual(argv, ["say", "c", "--file", "-", "--to-none"])
 
     def test_sync_takes_no_arguments(self):
         self.assertEqual(self.call("sync", {}), ["sync"])
@@ -319,9 +343,11 @@ class ArgvBuildersTest(McpTestCase):
         self.assertEqual(self.call("channels", {}), ["channels"])
 
     def test_briefing_with_text(self):
-        argv = self.call("briefing", {"channel": "c", "text": "be nice",
-                                      "identity": "me"})
-        self.assertEqual(argv, ["briefing", "c", "be nice", "--as", "me"])
+        argv, stdin = self.call_fully("briefing", {"channel": "c",
+                                                   "text": "be nice",
+                                                   "identity": "me"})
+        self.assertEqual(argv, ["briefing", "c", "--file", "-", "--as", "me"])
+        self.assertEqual(stdin, "be nice")
 
     def test_briefing_with_file(self):
         argv = self.call("briefing", {"channel": "c", "file": "/tmp/rules.md"})
@@ -514,8 +540,17 @@ class CliCorrespondenceTest(McpTestCase):
 
         Read off the schema, a property is exercised the moment it is
         declared. Values need only be well-formed: combinations the CLI refuses
-        for other reasons (text with file, to with to_all) still PARSE, and
-        that exclusivity is enforced after parsing and covered where it lives.
+        for other reasons (to with to_all) still PARSE, and that exclusivity is
+        enforced after parsing and covered where it lives.
+
+        THE ONE EXCEPTION IS `EXCLUSIVE`, and it is read from the module
+        rather than restated here. `say`/`briefing` route `text` through
+        stdin as `--file -`, so text-with-file is refused at BUILD time now
+        instead of by the parser — a fixture that set both would raise before
+        producing any argv. Keeping the pair list in bin/llm-chat-mcp means
+        this cannot drift from what is enforced, which is precisely the
+        failure this class exists to catch: a belief written down twice, of
+        which only one copy gets updated.
         """
         args = {}
         for name, spec in tool["schema"]["properties"].items():
@@ -529,6 +564,12 @@ class CliCorrespondenceTest(McpTestCase):
                 args[name] = 5
             else:
                 args[name] = "x"
+        # Keep the FIRST of any mutually exclusive group that survived `skip`,
+        # so the fixture still exercises one of them rather than dropping both.
+        for group in (self.mod.EXCLUSIVE.get(tool["name"]) or (),):
+            present = [p for p in group if p in args]
+            for extra in present[1:]:
+                del args[extra]
         return args
 
     def argv_for(self, tool, skip=()):
@@ -575,10 +616,31 @@ class CliCorrespondenceTest(McpTestCase):
         """
         for tool in self.mod.TOOLS:
             required = set(tool["schema"].get("required") or ())
+            group = self.mod.EXCLUSIVE.get(tool["name"]) or ()
             for name in tool["schema"]["properties"]:
                 if name in required:
                     continue      # its absence is refused, which is different
                 with self.subTest(tool=tool["name"], property=name):
+                    if name in group:
+                        # WITH-vs-WITHOUT CANNOT WORK HERE, and the check was
+                        # right to say so: the fixture keeps one member of an
+                        # exclusive pair, so removing `file` leaves `text`,
+                        # which builds the identical argv. That is not `file`
+                        # being ignored — it is `text` standing in for it.
+                        #
+                        # The question that still has an answer is whether the
+                        # builder DISTINGUISHES them, so each is given alone
+                        # and the two argvs must differ.
+                        others = [p for p in group if p != name]
+                        mine = self.argv_for(tool, skip=tuple(others))
+                        theirs = self.argv_for(tool, skip=(name,))
+                        self.assertNotEqual(
+                            mine, theirs,
+                            "the %s tool builds the same argv for %r as for "
+                            "%s, so one of them is not read"
+                            % (tool["name"], name, " or ".join(map(repr,
+                                                                   others))))
+                        continue
                     self.assertNotEqual(
                         self.argv_for(tool), self.argv_for(tool, skip=(name,)),
                         "the %s tool declares %r and builds the same argv "
@@ -675,6 +737,166 @@ class ExpiryReturnsWhatItHad(McpTestCase):
         self.assertEqual(seen.get("PYTHONUNBUFFERED"), "1",
                          "the child inherits block-buffered stdout, so the "
                          "partial-output rescue above can never fire")
+
+
+class ProseReachesTheCliAsData(McpTestCase):
+    """The documented safe path was the refused one.
+
+    llms.txt tells an agent to pass `text` to this tool rather than
+    `file: "-"`, precisely because a tool call is a list of arguments and
+    never meets a shell. The CLI then refused it: its prose guard fires on
+    length-or-newline, and its stated premise is that "prose passed on a
+    command line has already been through a SHELL before this program
+    starts" — which is false for `subprocess.run([...])`.
+
+    So the guard was right about the hazard, wrong about this caller, and the
+    consumer who reported it (balooga-owner) had to write a temp file to say
+    something ordinary. The fix routes `text` through stdin so the premise is
+    SATISFIED rather than exempted: the prose genuinely never appears in argv.
+    """
+
+    LONG = ("line one with prose in it\n" * 40)[:1001]
+
+    def test_the_prose_is_NOT_in_argv(self):
+        """The property the whole fix rests on. If the text is in argv, the
+        guard is right to refuse it and no amount of trusting a flag would
+        make it safe."""
+        argv = self.mod._build_say({"channel": "room", "text": self.LONG})
+        self.assertNotIn(self.LONG, argv)
+        self.assertFalse([a for a in argv if "line one with prose" in a],
+                         "the message body is still on the command line")
+        self.assertEqual(argv, ["say", "room", "--file", "-"])
+
+    def test_the_prose_goes_to_STDIN_instead(self):
+        self.assertEqual(
+            self.mod._prose_stdin({"channel": "room", "text": self.LONG}),
+            self.LONG)
+
+    def test_a_named_FILE_still_goes_as_a_path_with_no_stdin(self):
+        """`file:` names something the CLI opens itself; feeding stdin as
+        well would be a second message nobody asked for."""
+        argv = self.mod._build_say({"channel": "room", "file": "/tmp/msg"})
+        self.assertEqual(argv, ["say", "room", "--file", "/tmp/msg"])
+        self.assertIsNone(
+            self.mod._prose_stdin({"channel": "room", "file": "/tmp/msg"}))
+
+    def test_BOTH_text_and_file_is_refused_as_a_call_shape_error(self):
+        """Previously the CLI caught this. Now the text becomes `--file -`,
+        so both would emit two `--file` flags — refused, but for a reason
+        that describes the argv rather than the call."""
+        for verb in ("say", "briefing"):
+            with self.subTest(tool=verb):
+                with self.assertRaises(self.mod.ToolError) as caught:
+                    self.mod.TOOLS_BY_NAME[verb]["build"](
+                        {"channel": "room", "text": "a", "file": "/tmp/b"})
+                self.assertIn("not both", str(caught.exception))
+
+    def test_briefing_carries_prose_the_same_way(self):
+        argv = self.mod._build_briefing({"channel": "room",
+                                         "text": self.LONG})
+        self.assertEqual(argv[:4], ["briefing", "room", "--file", "-"])
+        self.assertNotIn(self.LONG, argv)
+
+    def test_both_prose_tools_DECLARE_a_stdin_feeder(self):
+        """A builder that emits `--file -` while its tool declares no stdin
+        sends an EMPTY message and reports success — the exact silent-success
+        shape this repo keeps removing."""
+        for verb in ("say", "briefing"):
+            with self.subTest(tool=verb):
+                self.assertIs(self.mod.TOOLS_BY_NAME[verb].get("stdin"),
+                              self.mod._prose_stdin)
+
+    def test_NO_OTHER_TOOL_feeds_stdin(self):
+        """Every other verb keeps DEVNULL. Handing one a pipe it does not
+        read is harmless; handing it THIS server's stdin would not be, and
+        the distinction is worth pinning."""
+        for tool in self.mod.TOOLS:
+            if tool["name"] in ("say", "briefing"):
+                continue
+            with self.subTest(tool=tool["name"]):
+                self.assertIsNone(tool.get("stdin"))
+
+    def test_the_text_REACHES_the_seam(self):
+        """A stdin feeder nothing passes to run_cli is a knob nobody reads."""
+        seen = {}
+
+        def spy(argv, timeout, stdin_text=None):
+            seen["argv"] = argv
+            seen["stdin"] = stdin_text
+            return 0, "ok"
+
+        self.mod.run_cli = spy
+        self.dispatch({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                       "params": {"name": "say",
+                                  "arguments": {"channel": "room",
+                                                "text": self.LONG}}})
+        self.assertEqual(seen["stdin"], self.LONG)
+        self.assertIn("--file", seen["argv"])
+
+    def test_run_cli_actually_DELIVERS_stdin_to_the_child(self):
+        """Against a real child, because `input=` and `stdin=` are mutually
+        exclusive to subprocess.run and passing both raises — on exactly the
+        path that carries every message this tool sends."""
+        self.mod.CLI = "-c"
+        code, out = self.mod.run_cli(
+            ["import sys; sys.stdout.write(sys.stdin.read())"],
+            timeout=10, stdin_text="carried on stdin")
+        self.assertEqual(code, 0)
+        self.assertIn("carried on stdin", out)
+
+    def test_without_stdin_text_the_child_still_gets_DEVNULL(self):
+        """The reason DEVNULL was there: a child inheriting this server's
+        stdin races `main()`'s own JSON-RPC read loop on the same fd."""
+        self.mod.CLI = "-c"
+        code, out = self.mod.run_cli(
+            ["import sys; sys.stdout.write(repr(sys.stdin.read()))"],
+            timeout=10)
+        self.assertEqual(code, 0)
+        self.assertIn("''", out, "stdin was not an immediate EOF: %r" % out)
+
+
+class ProseGuardStillRefusesAShell(unittest.TestCase):
+    """The other half — the fix must not weaken the guard it routes around.
+
+    A flag the guard trusts was the obvious alternative and is the one that
+    quietly removes the protection: anything that can set a flag can set it
+    from a shell, and an override that exists gets typed routinely. This
+    asserts the argv path is refused exactly as before.
+    """
+
+    def setUp(self):
+        self.cli = load("llm_chat")
+
+    def args(self, **kw):
+        import types
+        base = {"file": None, "text": None, "cmd": "say", "channel": "room"}
+        base.update(kw)
+        return types.SimpleNamespace(**base)
+
+    def test_long_prose_in_ARGV_is_still_refused(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.cli.message_text(self.args(text="x" * 1001))
+        self.assertIn("SHELL", str(caught.exception))
+
+    def test_multiline_prose_in_ARGV_is_still_refused(self):
+        with self.assertRaises(SystemExit) as caught:
+            self.cli.message_text(self.args(text="one\ntwo"))
+        self.assertIn("SHELL", str(caught.exception))
+
+    def test_the_same_prose_on_STDIN_is_accepted_verbatim(self):
+        """Byte-identical, including the metacharacters the guard exists to
+        protect — if stdin mangled them too, routing there would be a
+        different way to lose the message rather than a fix."""
+        text = "backticks `whoami` and $(date) and $HOME\nsecond line\n" * 20
+        stdin = sys.stdin
+        sys.stdin = io.StringIO(text)
+        try:
+            got = self.cli.message_text(self.args(file="-"))
+        finally:
+            sys.stdin = stdin
+        self.assertEqual(got, text.rstrip("\n"))
+        self.assertIn("`whoami`", got)
+        self.assertIn("$(date)", got)
 
 
 class BudgetIsConfigurable(McpTestCase):
