@@ -5891,7 +5891,7 @@ def missing_workers():
 # host, read out of the extracted binary, and `test/test_pins.py` fails when
 # this constant and that binary disagree — so upgrading zonai without moving
 # this line is caught rather than discovered through a dead server.
-HOST_DART = "3.12.0"
+HOST_DART = "3.13.2"
 
 
 def pinned_zonai_version():

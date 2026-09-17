@@ -437,8 +437,8 @@ packages:
     dependency: "direct main"
     description:
       path: "libs/zonai_schema"
-      ref: "v0.8.5"
-      resolved-ref: "19df58d44bbf5bb537f28eb5315b83a23b6e6dad"
+      ref: "v0.9.1"
+      resolved-ref: "1c5ef06a7c25032d6ee809a9f002b9fb0b1b4065"
       url: "https://github.com/mrgnhnt96/zonai.git"
     source: git
     version: "0.4.2"

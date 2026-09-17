@@ -80,6 +80,17 @@ class MatchingSdkTest(unittest.TestCase):
             handle.write(version + "\n")
         return where
 
+    def not_host_dart(self):
+        """A well-formed version guaranteed not to be the pinned one.
+
+        Bumping the MAJOR rather than picking a number: any literal can
+        collide with a future pin, and this one already did.
+        """
+        major, _, rest = cli.HOST_DART.partition(".")
+        other = "%d.%s" % (int(major) + 1, rest)
+        self.assertNotEqual(other, cli.HOST_DART)
+        return other
+
     def test_DART_SDK_is_honoured_when_it_matches(self):
         """A human who has already answered this must not be overruled by a
         version manager that happens to have a copy."""
@@ -89,14 +100,30 @@ class MatchingSdkTest(unittest.TestCase):
     def test_a_DART_SDK_of_the_WRONG_version_is_not_used(self):
         """The dangerous case, and the one a truthy check would wave through:
         the variable is set, so it looks configured, and it points at exactly
-        the SDK that produces an unloadable snapshot."""
-        os.environ["DART_SDK"] = self.sdk("3.13.2")
+        the SDK that produces an unloadable snapshot.
+
+        DERIVED FROM HOST_DART, NOT NAMED. This said "3.13.2", which was a
+        wrong version while the pin was 3.12.0 — and became the RIGHT one the
+        day zonai 0.9.1 moved the pin to 3.13.2. The test then asserted that
+        the correct SDK must be rejected, and failed for being satisfied.
+        A fixture that writes down a fact it could compute ages into the
+        opposite of its own intent.
+        """
+        os.environ["DART_SDK"] = self.sdk(self.not_host_dart())
         self.assertNotEqual(cli.matching_dart_sdk(), os.environ["DART_SDK"])
 
     def test_the_match_is_exact_rather_than_a_prefix(self):
-        """Patch releases are free to move the snapshot format, so 3.12.1 is
-        not 3.12.0 and must not satisfy this."""
-        os.environ["DART_SDK"] = self.sdk("3.12.10")
+        """Patch releases are free to move the snapshot format, so a version
+        the pin is a PREFIX of must not satisfy it.
+
+        Built from HOST_DART for the same reason as above: appending a digit
+        makes `HOST_DART` a literal prefix of it whatever the pin currently
+        is, which is the relationship being tested. The old "3.12.10" was a
+        prefix-extension of 3.12.1 only while the pin was 3.12.0; against
+        today's 3.13.2 it is simply an unrelated string, so the test still
+        passed and had stopped testing prefixes at all.
+        """
+        os.environ["DART_SDK"] = self.sdk(cli.HOST_DART + "0")
         self.assertNotEqual(cli.matching_dart_sdk(), os.environ["DART_SDK"])
 
 

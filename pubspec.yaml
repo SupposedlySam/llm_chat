@@ -23,5 +23,5 @@ dependencies:
   zonai_schema:
     git:
       url: https://github.com/mrgnhnt96/zonai.git
-      ref: v0.8.5
+      ref: v0.9.1
       path: libs/zonai_schema
