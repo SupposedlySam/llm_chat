@@ -943,6 +943,83 @@ class ChannelsAndInviteTest(unittest.TestCase):
         finally:
             self.restoreNames()
 
+    # ── the cheap poll ──────────────────────────────────────────────────────
+
+    def counted(self, **kw):
+        """`channels --counts`, plus every table it asked the server for."""
+        asked = []
+        real = self.fake.call
+
+        def counting(server, method, path, body=None, query=None, timeout=10):
+            asked.append((query or {}).get("table") or (body or {}).get("table"))
+            return real(server, method, path, body=body, query=query,
+                        timeout=timeout)
+
+        cli.call = counting
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                cli.do_channels("http://127.0.0.1:1", counts=True, **kw)
+        finally:
+            cli.call = self.fake.call
+        return parsed(out.getvalue()), asked
+
+    def test_counts_does_NOT_read_the_membership_table(self):
+        """The entire point, and the only thing worth asserting hardest.
+
+        The delivery hook runs this after every tool call in every repo on the
+        machine and reads name and message_count. `--json` also fetched the
+        whole membership table for fields nothing there looks at — and zonai
+        buckets per (client IP, collection, operation), so with every agent on
+        `::1` that wasted request came out of a budget shared by all of them.
+        Measured: the hook went from 2 requests to 1.
+        """
+        self.fake.channel("room")
+        self.fake.membership("room", "me")
+        rows, asked = self.counted()
+        self.assertEqual(asked, ["channels"],
+                         "the cheap poll read %r" % (asked,))
+        self.assertEqual(rows, [{"name": "room", "message_count": 0,
+                                 "closed": False}])
+
+    def test_counts_carries_what_change_detection_NEEDS(self):
+        """name and message_count, or the caller cannot tell a quiet room
+        from a busy one and the pre-check it feeds is worthless."""
+        self.fake.channel("busy")
+        self.fake.message("busy", 7, "me", "hi")
+        rows, _ = self.counted()
+        self.assertEqual(rows[0]["name"], "busy")
+        self.assertEqual(rows[0]["message_count"], 7)
+
+    def test_counts_marks_closed_rooms_rather_than_omitting_them(self):
+        """The waker reads this field. A rendering that DROPS closed rooms is
+        what made its old check unreachable — absence conflated 'closed' with
+        'server down' and 'CLI failed'."""
+        self.fake.channel("dead", closed=1)
+        self.fake.channel("live")
+        rows, _ = self.counted()
+        self.assertEqual({r["name"]: r["closed"] for r in rows},
+                         {"dead": True, "live": False})
+
+    def test_counts_REFUSES_the_membership_questions(self):
+        """`--mine` and `--awaiting-me` need the table this flag exists to
+        skip. Honouring them would defeat it; ignoring them would hand back
+        every room on the server under a flag that says 'mine'."""
+        self.fake.channel("room")
+        for flag in ({"mine": True}, {"awaiting_me": True}):
+            with self.subTest(flag=flag):
+                with self.assertRaises(SystemExit) as caught:
+                    self.counted(**flag)
+                self.assertIn("--counts", str(caught.exception))
+
+    def test_counts_still_honours_prefix_because_that_is_free(self):
+        """A flag that silently does nothing is the defect next door."""
+        self.fake.channel("drops_one")
+        self.fake.channel("other")
+        rows, asked = self.counted(prefix="drops_")
+        self.assertEqual([r["name"] for r in rows], ["drops_one"])
+        self.assertEqual(asked, ["channels"])
+
     def test_the_invite_is_written_as_instructions_to_an_agent(self):
         """Because that is literally what happens to it: a human pastes it into
         another session and says 'do that'."""

@@ -634,8 +634,14 @@ def still_worth_listening(rooms) -> bool:
         if not server:
             continue
         try:
+            # `--counts` carries `name` and `closed`, which is everything read
+            # below. `--json` would also fetch the membership table for
+            # fields this never looks at — and this runs in a loop, per room,
+            # in a long-lived process, against a rate-limit budget every
+            # agent on the machine shares.
             done = subprocess.run(
-                [sys.executable, CLI, "--server", server, "channels", "--json"],
+                [sys.executable, CLI, "--server", server, "channels",
+                 "--counts"],
                 capture_output=True, text=True, timeout=8)
         except Exception:
             return True          # can't tell

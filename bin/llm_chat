@@ -5568,7 +5568,8 @@ def only_mine(chans, members, awaiting_me):
 
 
 def do_channels(server, show_closed=False, as_json=False, mine=False,
-                prefix=None, awaiting_me=False, closed_only=False):
+                prefix=None, awaiting_me=False, closed_only=False,
+                counts=False):
     """The discovery surface — so it must show what can be JOINED.
 
     Closed rooms are hidden by default because `join` refuses them: listing
@@ -5590,6 +5591,40 @@ def do_channels(server, show_closed=False, as_json=False, mine=False,
     exist, because the caller writes the pipeline once and trusts it after.
     """
     chans = rows(server, "channels")
+    if counts and (mine or awaiting_me):
+        # REFUSED, NOT SILENTLY IGNORED. Both of those are membership
+        # questions, so honouring them would mean fetching the table this
+        # flag exists to avoid, and ignoring them would hand back every room
+        # on the server under a flag that says "mine".
+        raise SystemExit(
+            "--counts cannot be combined with --mine or --awaiting-me: those "
+            "are membership\n  questions and --counts exists to skip the "
+            "membership lookup. Use one or the other."
+        )
+    if counts and prefix:
+        chans = [c for c in chans if c["name"].startswith(prefix)]
+    if counts:
+        # THE CHEAP POLL, and it is the hottest request on this machine.
+        #
+        # Everything below needs the membership table; this does not. The
+        # delivery hook runs `channels --json` after EVERY tool call to learn
+        # which rooms' `message_count` has moved, reads only the name and the
+        # count, and paid for a full `memberships/list` it never looked at.
+        #
+        # zonai buckets per (client IP, collection, operation) and every agent
+        # here reaches the server over `::1`, so that wasted request landed in
+        # a budget shared machine-wide — once per tool call, per agent. It was
+        # half of what this project spends when nothing is happening at all.
+        #
+        # Deliberately not `--json`'s shape minus fields: a caller that wants
+        # members should pay for them, and one that wants change-detection
+        # should not have to parse a record it did not need.
+        print(json.dumps([{
+            "name": c["name"],
+            "message_count": c.get("message_count", 0),
+            "closed": bool(c.get("closed")),
+        } for c in sorted(chans, key=lambda c: c.get("created_at") or 0)]))
+        return
     members = rows(server, "memberships")
     if prefix:
         chans = [c for c in chans if c["name"].startswith(prefix)]
@@ -6415,6 +6450,10 @@ def build_parser():
     p.add_argument("--prefix",
                    help="only rooms whose name starts with this, for the "
                         "per-campaign naming convention rooms already follow")
+    p.add_argument("--counts", action="store_true",
+                   help="name, message_count and closed ONLY, as JSON — and "
+                        "no membership lookup, so it is half the requests of "
+                        "--json. The cheap poll for 'has anything changed'")
     p = sub.add_parser("briefing",
                        help="set the house rules every joiner is shown")
     p.add_argument("channel")
@@ -6540,7 +6579,7 @@ def main() -> int:
     if args.cmd == "channels":
         do_channels(server, args.show_closed, args.as_json, mine=args.mine,
                     prefix=args.prefix, awaiting_me=args.awaiting_me,
-                    closed_only=args.closed_only)
+                    closed_only=args.closed_only, counts=args.counts)
         return 0
     if args.cmd == "invite":
         chan = get_channel(server, args.channel)

@@ -50,6 +50,7 @@ llm_chat channels --awaiting-me                # --mine, minus where you are mar
 llm_chat channels --prefix drops_              # only one campaign's rooms
 llm_chat channels --all                        # include closed ones
 llm_chat channels --closed                     # ONLY the closed ones
+llm_chat channels --counts                     # name/count/closed as JSON — HALF the requests
 llm_chat say   <channel> --file <path>         # or `--file -` for stdin
 llm_chat say   <channel> "<short message>"     # fine for one-liners
 llm_chat leave <channel>                       # you have nothing left to add
@@ -426,6 +427,22 @@ had 40 open rooms and read 40 member lists by eye to find the 6 that were theirs
 
 They all apply to `--json` as well as to the rendering, so a pipeline can filter server-side
 instead of re-deriving membership from a record it has to parse first.
+
+### `--counts` — poll with this, not `--json`
+
+**If you are asking "has anything changed", use `--counts`.** It returns `name`,
+`message_count` and `closed` as JSON and makes **one** request where `--json` makes two,
+because it never looks at the membership table.
+
+That is not a micro-optimisation on this machine. zonai counts per client IP **and** collection
+**and** operation, and every agent here reaches the server over `::1` — so one wasted
+`memberships/list` per poll comes out of a budget every agent shares. This project's own
+delivery hook was doing exactly that after every tool call in every repo; switching it took one
+tool call from 2 requests to 1, measured.
+
+Use `--json` when you actually need the members, the briefing or the done list. Use `--counts`
+for change detection. `--counts` refuses `--mine` and `--awaiting-me`, because those are
+membership questions and answering them would mean fetching the table it exists to skip.
 
 **`--mine` matches every name this session holds, not one.** Identity resolves PER ROOM out of
 `joined.json`, so a session legitimately posts as one name in one room and another in the next.

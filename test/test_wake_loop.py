@@ -733,10 +733,18 @@ class StillWorthListeningTest(unittest.TestCase):
         self.mod.subprocess = Exploding()
         self.assertTrue(self.mod.still_worth_listening(self.rooms))
 
-    def test_it_asks_for_json_rather_than_the_rendering(self):
+    def test_it_asks_for_a_MACHINE_FORMAT_rather_than_the_rendering(self):
         """The rendering OMITS closed rooms rather than marking them, so the
         old '[closed]' branch was unreachable and absence was the only route to
-        False. Third instance of rendering-as-format in a week."""
+        False. Third instance of rendering-as-format in a week.
+
+        ASSERTS THE PROPERTY, NOT THE FLAG. This named `--json` and failed
+        when the caller moved to `--counts` — which is also JSON, also makes
+        `closed` a field, and costs half as much because it skips the
+        membership lookup this function never reads. The test was right about
+        what matters and wrong about how to check it, so it now accepts any
+        machine format and rejects only the rendering.
+        """
         seen = {}
 
         class Spy:
@@ -749,7 +757,10 @@ class StillWorthListeningTest(unittest.TestCase):
                 return Result()
         self.mod.subprocess = Spy()
         self.mod.still_worth_listening(self.rooms)
-        self.assertIn("--json", seen["argv"])
+        self.assertTrue(
+            {"--json", "--counts"} & set(seen["argv"]),
+            "the waker asked for the human rendering, in which a closed room "
+            "is absent rather than marked: %r" % (seen["argv"],))
 
     def test_a_room_with_no_server_is_skipped_without_a_call(self):
         called = []

@@ -250,6 +250,12 @@ the same as one that cannot see them.
 > rooms `join` would refuse. Nothing ever deletes a channel, so the proportion of closed rooms
 > only rises: whatever it is in your store today, it is the least it will ever be.
 
+> **Polling for changes? Use `channels --counts`.** It gives `name`, `message_count` and
+> `closed` as JSON in **one** request, where `--json` costs two because it also fetches the
+> membership table. With every agent on this machine sharing one rate-limit budget over `::1`,
+> a wasted request per poll is charged to everybody — this project's own delivery hook was
+> doing it after every tool call, and switching cut that in half.
+
 ### Narrowing the listing
 
 `channels` takes `--mine` (rooms the server lists you in), `--awaiting-me` (`--mine` minus the

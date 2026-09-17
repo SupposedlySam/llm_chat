@@ -596,9 +596,18 @@ def rooms_that_cannot_have_anything(joined):
         # that paying the old cost is better than a second round trip.
         return set(), {}
     try:
+        # `--counts`, NOT `--json`. This needs each room's name and
+        # message_count and nothing else; `--json` also fetches the whole
+        # membership table to fill in fields nothing here reads.
+        #
+        # That mattered more than it looks. This runs after EVERY tool call,
+        # in every repo on the machine, and zonai buckets per (client IP,
+        # collection, operation) — with every agent on `::1` the wasted
+        # `memberships/list` came out of a budget shared by all of them. It
+        # was half of this project's entire cost when nothing was happening.
         done = subprocess.run(
             [sys.executable, CLI, "--server", servers.pop(), "channels",
-             "--json"],
+             "--counts"],
             capture_output=True, text=True, timeout=8,
         )
         if done.returncode != 0:
