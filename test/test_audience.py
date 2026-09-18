@@ -933,6 +933,39 @@ class WhatOneSendCostsTest(unittest.TestCase):
     commit that adds it and say why — that is the whole point of it failing.
     """
 
+    def setUp(self):
+        """A THROWAWAY PROJECT, for the reason ServerTest already documents.
+
+        `crowded_room_hint` writes `.llm_chat/hint.<channel>` as a FILE under
+        the calling project, once per room, when a send has no audience and
+        the room has three or more members. This class arranges exactly that
+        — a room called `room`, three members, `audience=None` for the bare
+        send — so without this it creates `.llm_chat/hint.room` in whatever
+        repo the suite is run from.
+
+        IT DID. This class shipped without the guard and turned the CI
+        `cold-clone` job red for a day: the suite passed 2068 tests, then
+        run.py's damage check found a file that had not been there, and
+        exited 1. It hid on this machine because `.llm_chat/hint.room` ALREADY
+        EXISTS here — writing it changed nothing, so the hash held. A cold
+        clone has no `.llm_chat/` at all, and creation moves the hash.
+
+        The comment on ServerTest predicted this in as many words: "the first
+        cold-clone run reported the suite modifying the repo it tests". I
+        wrote a second class beside it and did not carry the guard across.
+        """
+        holder = tempfile.TemporaryDirectory()
+        self.addCleanup(holder.cleanup)
+        self.real_project = os.environ.get("CLAUDE_PROJECT_DIR")
+        os.environ["CLAUDE_PROJECT_DIR"] = holder.name
+        self.addCleanup(self.restore_project)
+
+    def restore_project(self):
+        if self.real_project is None:
+            os.environ.pop("CLAUDE_PROJECT_DIR", None)
+        else:
+            os.environ["CLAUDE_PROJECT_DIR"] = self.real_project
+
     def cost(self, audience=None):
         """Every request one `say` makes, tallied by (table, operation)."""
         fake = FakeServer()

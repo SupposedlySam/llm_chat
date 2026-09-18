@@ -26,6 +26,7 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 import trace
 import unittest
 import warnings
@@ -537,6 +538,34 @@ def main():
             print("  %-45s in %s" % (name, relative))
         print("\nRepair the tree before trusting anything below.")
         return 1
+
+    # HERMETIC BY DEFAULT, because the alternative is remembering.
+    #
+    # A test that calls into bin/llm_chat without pointing CLAUDE_PROJECT_DIR
+    # somewhere disposable writes into whatever repo the suite runs from —
+    # `crowded_room_hint` leaves `.llm_chat/hint.<channel>`, `do_read` takes a
+    # lock file, `join` records membership. Twenty-one test files set it for
+    # exactly this reason, and the comment on test_audience.ServerTest spells
+    # the hazard out.
+    #
+    # It was not enough. A class written BESIDE that comment did not carry the
+    # guard across and turned the CI cold-clone job red for a day: 2068 tests
+    # passed, then the damage check found `.llm_chat/hint.room` that had not
+    # been there before.
+    #
+    # AND THE DAMAGE CHECK COULD NOT SEE IT HERE. It compares content hashes,
+    # so creating a file the tree already has, with the same bytes, moves
+    # nothing — on any machine that has used llm_chat, `hint.room` already
+    # exists and is empty, which is precisely what the test wrote. The guard
+    # was blind on every developer's machine and loud only on a cold clone.
+    # That is the guard-that-cannot-fire shape, inside the guard.
+    #
+    # So the ambient value is replaced for the whole run. A test that wants a
+    # specific project dir still sets its own; a test that forgets now writes
+    # somewhere harmless instead of into the repo under test. Escapes that
+    # hardcode a path rather than read the variable are still caught below.
+    sandbox = tempfile.TemporaryDirectory(prefix="llm_chat-suite-project-")
+    os.environ["CLAUDE_PROJECT_DIR"] = sandbox.name
 
     before = fingerprint_repo()
     globals_before = shared_callables()
