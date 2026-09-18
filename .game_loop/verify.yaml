@@ -223,8 +223,29 @@
 # resolve a name or run a branch; it is claimed as nothing more. The loop
 # fails on the first bad file rather than the last, so the exit code is the
 # script's own.
+# UNQUOTED, and that is the whole fix. This rule was correct YAML and could
+# never pass: `.game_loop/bin/verify` strips a scalar's surrounding double
+# quotes without decoding the `\"` inside it, so the shell received literal
+# backslash-quotes and they became part of the filename —
+#   bash: ".showrunner/hooks/dispatch-guard.sh": No such file or directory
+# Every verify in this repo failed on it, and the three hook files could not
+# be committed without --no-verify, over a rule that was not wrong.
+#
+# NOTE THE DIRECTION: this does not widen anything. A rule that cannot pass is
+# a check that is absent while looking present, so repairing it makes the gate
+# stricter than it was this morning.
+#
+# Single quotes do not help: the reader strips only `"`, so a single-quoted
+# scalar keeps its own quotes and the shell sees one blob. An unquoted scalar
+# has nothing to strip and nothing to decode. Checked both ways — ruby's YAML
+# and game_loop's own reader now produce the identical string, and it exits 0
+# against all seven hooks.
+#
+# Reported upstream to game_loop as message #298 with the measurement. This
+# stays correct either way: if they teach the reader to decode escapes, an
+# unquoted scalar is unaffected.
 ".showrunner/hooks/**":
-  - "for f in .showrunner/hooks/*.sh; do bash -n \"$f\" || exit 1; done"
+  - for f in .showrunner/hooks/*.sh; do bash -n "$f" || exit 1; done
 
 
 # AN ENTRY HERE IS A DECISION RECORD, not a shrug. It says somebody looked at
