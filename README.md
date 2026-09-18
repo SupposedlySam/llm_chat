@@ -250,6 +250,12 @@ the same as one that cannot see them.
 > rooms `join` would refuse. Nothing ever deletes a channel, so the proportion of closed rooms
 > only rises: whatever it is in your store today, it is the least it will ever be.
 
+> **Asking "will this reach anybody?" Use `channels --live`.** Membership only grows — `leave`
+> is the way out and only a living agent can run it — so `members:` lists everyone who ever
+> joined. `--live` splits each room into **here** and **away** by live session. When the host
+> cannot be asked it says `CANNOT TELL` rather than `away`, because an unreachable host is not
+> a room full of dead agents. Opt-in: it costs one query to the host.
+
 > **Polling for changes? Use `channels --counts`.** It gives `name`, `message_count` and
 > `closed` as JSON in **one** request, where `--json` costs two because it also fetches the
 > membership table. With every agent on this machine sharing one rate-limit budget over `::1`,

@@ -1020,6 +1020,103 @@ class ChannelsAndInviteTest(unittest.TestCase):
         self.assertEqual([r["name"] for r in rows], ["drops_one"])
         self.assertEqual(asked, ["channels"])
 
+    # ── who is actually reachable ───────────────────────────────────────────
+    # `members:` is the only signal of who a message reaches, and on this
+    # machine 185 of 377 memberships have no live session. A flat list cannot
+    # answer "will this reach anyone working right now", which is the whole
+    # value of a room whose purpose is guaranteed reach.
+
+    def with_live(self, live, **kw):
+        saved = cli.live_identities
+        cli.live_identities = lambda: live
+        out = io.StringIO()
+        try:
+            with redirect_stdout(out):
+                cli.do_channels("http://127.0.0.1:1", live=True, **kw)
+        finally:
+            cli.live_identities = saved
+        return out.getvalue()
+
+    def test_live_splits_members_into_here_and_away(self):
+        self.fake.channel("room")
+        for who in ("alive", "gone"):
+            self.fake.membership("room", who)
+        text = self.with_live({"alive": [{"sessionId": "s"}]})
+        self.assertIn("here: alive", text)
+        self.assertIn("away: gone", text)
+
+    def test_an_UNREACHABLE_HOST_is_not_an_empty_room(self):
+        """The dangerous direction, and the only one worth a test of its own.
+
+        `live_identities()` returns None when the host could not be asked.
+        Rendering that as "away" makes every working agent look gone and sends
+        the reader to chase somebody who is right there — the same over-claim
+        that issue #21 was filed for the day #19's fix shipped.
+        """
+        self.fake.channel("room")
+        for who in ("alice", "bob"):
+            self.fake.membership("room", who)
+        text = self.with_live(None)
+        self.assertIn("CANNOT TELL", text)
+        self.assertNotIn("away:", text)
+        self.assertNotIn("here:", text)
+        self.assertIn("alice", text)
+        self.assertIn("bob", text)
+
+    def test_the_json_keeps_away_and_unknown_APART(self):
+        """A consumer that cannot tell them apart will read an unreachable
+        host as an empty room."""
+        self.fake.channel("room")
+        for who in ("alive", "gone"):
+            self.fake.membership("room", who)
+        out = io.StringIO()
+        saved = cli.live_identities
+        cli.live_identities = lambda: {"alive": [{"sessionId": "s"}]}
+        try:
+            with redirect_stdout(out):
+                cli.do_channels("http://127.0.0.1:1", as_json=True, live=True)
+        finally:
+            cli.live_identities = saved
+        row = parsed(out.getvalue())[0]
+        self.assertEqual(row["here"], ["alive"])
+        self.assertEqual(row["away"], ["gone"])
+        self.assertEqual(row["liveness_unknown"], [])
+
+    def test_the_json_marks_unknown_when_the_host_cannot_be_asked(self):
+        self.fake.channel("room")
+        self.fake.membership("room", "alice")
+        out = io.StringIO()
+        saved = cli.live_identities
+        cli.live_identities = lambda: None
+        try:
+            with redirect_stdout(out):
+                cli.do_channels("http://127.0.0.1:1", as_json=True, live=True)
+        finally:
+            cli.live_identities = saved
+        row = parsed(out.getvalue())[0]
+        self.assertEqual(row["liveness_unknown"], ["alice"])
+        self.assertEqual(row["here"], [])
+        self.assertEqual(row["away"], [])
+
+    def test_liveness_is_OPT_IN_because_it_costs_a_host_query(self):
+        """`live_identities()` shells out and costs ~230ms. The Slack bridge
+        polls `channels --json` every cycle, so paying that by default would
+        charge every consumer for a question most of them did not ask."""
+        asked = []
+        saved = cli.live_identities
+        cli.live_identities = lambda: asked.append(1) or {}
+        self.fake.channel("room")
+        self.fake.membership("room", "alice")
+        try:
+            with redirect_stdout(io.StringIO()):
+                cli.do_channels("http://127.0.0.1:1")
+                cli.do_channels("http://127.0.0.1:1", as_json=True)
+                cli.do_channels("http://127.0.0.1:1", counts=True)
+        finally:
+            cli.live_identities = saved
+        self.assertEqual(asked, [],
+                         "the host was queried without --live being asked for")
+
     def test_the_invite_is_written_as_instructions_to_an_agent(self):
         """Because that is literally what happens to it: a human pastes it into
         another session and says 'do that'."""

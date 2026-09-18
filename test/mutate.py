@@ -3019,6 +3019,14 @@ NOT_SWEPT = {
         "covered too: returning None must give 'cannot check' rather than a "
         "fallback to somebody else's slice, which is how the wrong Dart "
         "version got reported in the first place",
+    "bin/llm_chat:liveness_split": "SHOULD BE SWEPT — the None branch is the "
+        "one that matters and it fails SILENTLY: collapsing 'host could not "
+        "be asked' into 'away' makes every working agent look gone, and the "
+        "output is still a well-formed room listing",
+    "bin/llm_chat:liveness_json": "asserted directly in both directions — a "
+        "known host splits here/away with liveness_unknown empty, and an "
+        "unaskable one puts every name in liveness_unknown with the other "
+        "two empty",
     "bin/llm_chat:my_names": "SHOULD BE SWEPT — the whole point is that it "
                              "returns MORE than one name, and a mutation "
                              "collapsing it to the resolved identity makes "

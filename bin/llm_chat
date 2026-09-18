@@ -5567,9 +5567,30 @@ def only_mine(chans, members, awaiting_me):
     return keep
 
 
+def liveness_split(names, live):
+    """(here, away, unknown) for one room's members.
+
+    `live` is `live_identities()`'s answer, and None means THE HOST COULD NOT
+    BE ASKED — which is not the same as nobody being alive, and must not be
+    rendered as everybody away. That direction is the dangerous one: it makes
+    a working agent look gone and sends the reader to chase somebody who is
+    right there. So an unaskable host puts every name in `unknown`.
+    """
+    if live is None:
+        return [], [], sorted(names)
+    here = sorted(n for n in names if n in live)
+    return here, sorted(n for n in names if n not in live), []
+
+
+def liveness_json(names, live):
+    """The same three groups as `liveness_split`, as record fields."""
+    here, away, unsure = liveness_split(names, live)
+    return {"here": here, "away": away, "liveness_unknown": unsure}
+
+
 def do_channels(server, show_closed=False, as_json=False, mine=False,
                 prefix=None, awaiting_me=False, closed_only=False,
-                counts=False):
+                counts=False, live=False):
     """The discovery surface — so it must show what can be JOINED.
 
     Closed rooms are hidden by default because `join` refuses them: listing
@@ -5591,6 +5612,12 @@ def do_channels(server, show_closed=False, as_json=False, mine=False,
     exist, because the caller writes the pipeline once and trusts it after.
     """
     chans = rows(server, "channels")
+    # ASKED ONCE, AND ONLY WHEN ASKED FOR. `live_identities()` shells out to
+    # the host and costs ~230ms — invisible to a human typing `channels`, and
+    # not invisible to the Slack bridge, which polls `channels --json` on
+    # every cycle. So it is opt-in rather than the default, and the cheap
+    # `--counts` path never reaches it at all.
+    alive = live_identities() if live else None
     if counts and (mine or awaiting_me):
         # REFUSED, NOT SILENTLY IGNORED. Both of those are membership
         # questions, so honouring them would mean fetching the table this
@@ -5671,6 +5698,13 @@ def do_channels(server, show_closed=False, as_json=False, mine=False,
                               if m["channel"] == c["name"]),
             "done": sorted(m["identity"] for m in members
                            if m["channel"] == c["name"] and m.get("done")),
+            # ONLY UNDER --live, and the three keys are deliberate. A consumer
+            # that gets `away` must be able to tell it from `unknown`, or it
+            # will read an unreachable host as an empty room — the direction
+            # that makes a working agent look gone.
+            **(liveness_json({m["identity"] for m in members
+                              if m["channel"] == c["name"]}, alive)
+               if live else {}),
         } for c in sorted(chans, key=lambda c: c.get("created_at") or 0)]))
         return
     if not chans:
@@ -5709,8 +5743,28 @@ def do_channels(server, show_closed=False, as_json=False, mine=False,
         done = sorted(m["identity"] for m in here if m.get("done"))
         flag = "  [closed]" if c.get("closed") else ""
         print(f"{c['name']}{flag}  —  {c.get('topic') or 'no topic'}")
-        print(f"    members: {who}   messages: {c.get('message_count', 0)}"
-              + (f"   done: {', '.join(done)}" if done else ""))
+        if alive is not None or live:
+            # WHO IS ACTUALLY THERE, which is the question `members:` was
+            # being read to answer and cannot. Reported as three groups
+            # because there are three answers, and the third is not the
+            # second: a host that could not be asked is not a room full of
+            # dead agents.
+            reachable, away, unsure = liveness_split(
+                {m["identity"] for m in here}, alive)
+            parts = []
+            if reachable:
+                parts.append("here: %s" % ", ".join(reachable))
+            if away:
+                parts.append("away: %s" % ", ".join(away))
+            if unsure:
+                parts.append("CANNOT TELL (host unreachable): %s"
+                             % ", ".join(unsure))
+            print("    %s" % ("   ".join(parts) or "nobody"))
+            print(f"    messages: {c.get('message_count', 0)}"
+                  + (f"   done: {', '.join(done)}" if done else ""))
+        else:
+            print(f"    members: {who}   messages: {c.get('message_count', 0)}"
+                  + (f"   done: {', '.join(done)}" if done else ""))
     if hidden:
         # ECHO THE FILTERS BACK INTO THE HINT. Bare `channels --all` was the
         # right advice when there was nothing else to preserve; under
@@ -6491,6 +6545,12 @@ def build_parser():
     p.add_argument("--prefix",
                    help="only rooms whose name starts with this, for the "
                         "per-campaign naming convention rooms already follow")
+    p.add_argument("--live", action="store_true",
+                   help="split each room's members into here / away, by "
+                        "whether they have a live session. Answers 'will "
+                        "this actually reach anyone', which a flat member "
+                        "list cannot. Costs one query to the host, so it is "
+                        "off by default")
     p.add_argument("--counts", action="store_true",
                    help="name, message_count and closed ONLY, as JSON — and "
                         "no membership lookup, so it is half the requests of "
@@ -6620,7 +6680,8 @@ def main() -> int:
     if args.cmd == "channels":
         do_channels(server, args.show_closed, args.as_json, mine=args.mine,
                     prefix=args.prefix, awaiting_me=args.awaiting_me,
-                    closed_only=args.closed_only, counts=args.counts)
+                    closed_only=args.closed_only, counts=args.counts,
+                    live=args.live)
         return 0
     if args.cmd == "invite":
         chan = get_channel(server, args.channel)
