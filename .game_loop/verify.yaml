@@ -170,8 +170,17 @@
 # exact failure above, and it is a no-op when deps are already resolved. Note
 # what this still misses: compile catches a table with rules and no row-rules,
 # and does NOT catch a renamed column — which is why contract.py runs beside it.
+#
+# UNQUOTED, for the reason the `.showrunner/hooks/**` rule below gives. This
+# was a double-quoted scalar full of `\"`, which game_loop's reader passed to
+# the shell raw — so `case \"$out\" in` wrapped the output in literal quote
+# characters. It worked by luck: the `*...*` patterns still matched as
+# substrings. game_loop's reader now REFUSES any rule containing a backslash
+# rather than running a different command than the file shows, and this was
+# the first thing it caught. `echo` rather than printf, so the line needs no
+# `\n` either.
 "lib/**":
-  - "dart pub get >/dev/null 2>&1 || exit 1; out=$(./zonai compile 2>&1); printf '%s\n' \"$out\"; case \"$out\" in *'Failed to compile'*|*'AOT compilation failed'*|*'Compiled 0 rules'*) exit 1;; esac"
+  - dart pub get >/dev/null 2>&1 || exit 1; out=$(./zonai compile 2>&1); echo "$out"; case "$out" in *'Failed to compile'*|*'AOT compilation failed'*|*'Compiled 0 rules'*) exit 1;; esac
   - "python3 test/contract.py"
 
 # Genuinely nothing to check. Anything neither listed here nor matched above stays UNCHECKED and
