@@ -3014,6 +3014,12 @@ NOT_SWEPT = {
                               "and already caught a live failure in another agent",
     "bin/llm_chat:do_channels": "SHOULD BE SWEPT — hiding closed rooms is a "
                                 "behaviour a regression could silently undo",
+    "triggers/undocumented-surface:drain_stdin": "every branch asserted "
+        "directly against REAL pipes — open with nothing, open with a "
+        "payload, closed to EOF, and a stream with no descriptor — plus main "
+        "end to end on an open stdin. A mutation back to a blocking read "
+        "would HANG a plain timing assertion rather than fail it, so each "
+        "test runs under SIGALRM and a block becomes a failure with a reason",
     "bin/llm_chat:pinned_zonai_version": "asserted directly against the real "
         "zonai.yaml and against a fabricated cache — and its FAILURE mode is "
         "covered too: returning None must give 'cannot check' rather than a "

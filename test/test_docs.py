@@ -756,3 +756,93 @@ class EntryPointTest(unittest.TestCase):
         path = os.path.join(os.path.dirname(os.path.dirname(
             os.path.abspath(__file__))), "triggers", "undocumented-surface")
         self.assertTrue(os.access(path, os.X_OK))
+
+
+class DrainNeverBlocksTest(unittest.TestCase):
+    """The gate that hung a publish.
+
+    `if not sys.stdin.isatty(): sys.stdin.read()` waits for an EOF, and a
+    pipe or socket that is never closed is not a tty — so it waited forever.
+    `lamp publish` runs the suite with exactly such a stdin, and
+    test_docs.ReportTest blocked inside this trigger at the first gate of a
+    release carrying nineteen fixes. In a terminal the branch never ran, so
+    every developer run passed.
+
+    These use a REAL pipe with the write end held open, because "no EOF yet"
+    is the whole condition and a StringIO cannot express it.
+    """
+
+    def pipe_held_open(self, payload=b""):
+        read_fd, write_fd = os.pipe()
+        if payload:
+            os.write(write_fd, payload)
+        self.addCleanup(os.close, write_fd)     # stays open: no EOF, ever
+        stream = os.fdopen(read_fd, "r")
+        self.addCleanup(stream.close)
+        return stream
+
+    def within(self, seconds, fn):
+        """Run fn, and FAIL — not hang — if it blocks.
+
+        A timing assertion after the call cannot catch a regression to a
+        blocking read, because the call never returns to be timed: the test
+        would hang, and so would the mutation sweep running it. SIGALRM
+        interrupts the blocked read, and a handler that raises turns the hang
+        into a failure with a sentence attached.
+        """
+        import signal
+        import time
+
+        def expired(signum, frame):
+            raise AssertionError("blocked for %ss waiting for an EOF that "
+                                 "was never coming" % seconds)
+
+        previous = signal.signal(signal.SIGALRM, expired)
+        signal.setitimer(signal.ITIMER_REAL, seconds)
+        start = time.monotonic()
+        try:
+            result = fn()
+        finally:
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            signal.signal(signal.SIGALRM, previous)
+        self.assertLess(time.monotonic() - start, seconds)
+        return result
+
+    def test_an_OPEN_pipe_with_nothing_in_it_returns_at_once(self):
+        stream = self.pipe_held_open()
+        self.assertEqual(self.within(1.0, lambda: check.drain_stdin(stream)), 0)
+
+    def test_an_OPEN_pipe_with_a_payload_drains_it_and_returns(self):
+        stream = self.pipe_held_open(b'{"event": "stepback"}')
+        self.assertEqual(self.within(1.0, lambda: check.drain_stdin(stream)),
+                         len(b'{"event": "stepback"}'))
+
+    def test_a_CLOSED_pipe_is_read_to_EOF(self):
+        read_fd, write_fd = os.pipe()
+        os.write(write_fd, b"payload")
+        os.close(write_fd)
+        stream = os.fdopen(read_fd, "r")
+        self.addCleanup(stream.close)
+        self.assertEqual(check.drain_stdin(stream), len(b"payload"))
+
+    def test_a_stream_with_NO_descriptor_is_left_alone(self):
+        """Politeness to the writer must never be able to cost a crash."""
+        self.assertEqual(check.drain_stdin(io.StringIO("x")), 0)
+
+    def test_main_does_not_hang_on_an_open_stdin(self):
+        """End to end: the call that actually hung."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        with open(os.path.join(tmp.name, "cli.py"), "w") as f:
+            f.write('sub.add_parser("x")\n')
+        with open(os.path.join(tmp.name, "README.md"), "w") as f:
+            f.write("x\n")
+        real = sys.stdin
+        sys.stdin = self.pipe_held_open()
+        try:
+            with redirect_stdout(io.StringIO()):
+                self.within(5.0, lambda: check.main(
+                    ["--repo", tmp.name, "--source", "cli.py",
+                     "--docs", "README.md"]))
+        finally:
+            sys.stdin = real

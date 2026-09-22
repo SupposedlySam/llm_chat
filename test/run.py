@@ -565,7 +565,35 @@ def main():
     # somewhere harmless instead of into the repo under test. Escapes that
     # hardcode a path rather than read the variable are still caught below.
     sandbox = tempfile.TemporaryDirectory(prefix="llm_chat-suite-project-")
+    # CLEANED UP EXPLICITLY. Left to the finalizer it printed a ResourceWarning
+    # about "implicitly cleaning up" at the end of every run — noise shipped
+    # with the change that added the sandbox, directly under the verdict a
+    # reader is looking for. `main` returns from several places, so atexit
+    # rather than a finally that each one would have to reach.
+    import atexit
+    atexit.register(sandbox.cleanup)
     os.environ["CLAUDE_PROJECT_DIR"] = sandbox.name
+
+    # STDIN, FOR THE SAME REASON AND FOUND THE SAME WAY. The suite inherited
+    # whatever stdin its caller had. In a terminal that is a tty, and code
+    # guarded by `if not sys.stdin.isatty(): sys.stdin.read()` never runs — so
+    # every developer run passed. `lamp publish` runs this suite as its gate
+    # with stdin an open socket that never reaches EOF, and
+    # test_docs.ReportTest blocked in `read()` inside
+    # triggers/undocumented-surface for as long as anyone waited: the publish
+    # that would have released nineteen fixes hung at its first gate.
+    #
+    # Any wrapper that does not close stdin — a CI step, an agent's
+    # subprocess, a remote user's harness — would hang identically, and only
+    # the machines where it works are the ones anybody checks from.
+    #
+    # Both levels, because they fail separately: `sys.stdin` for code that
+    # reads in-process, and fd 0 for the subprocesses tests spawn, which
+    # inherit the descriptor rather than the Python object.
+    devnull = os.open(os.devnull, os.O_RDONLY)
+    os.dup2(devnull, 0)
+    os.close(devnull)
+    sys.stdin = open(0, closefd=False)
 
     before = fingerprint_repo()
     globals_before = shared_callables()

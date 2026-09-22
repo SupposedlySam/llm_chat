@@ -403,6 +403,36 @@ def unmentioned_entrypoints(repo, bindir, agent_doc):
     return missing
 
 
+def drain_stdin(stream=None):
+    """Consume whatever is already waiting on stdin, without blocking.
+
+    Returns the number of bytes drained. A tty is left alone. Anything that
+    cannot be polled — a closed or odd descriptor — is left alone too, since
+    the only purpose here is politeness to the writer, and that must never be
+    able to cost a hang.
+    """
+    import select
+    stream = stream if stream is not None else sys.stdin
+    try:
+        if stream.isatty():
+            return 0
+        fd = stream.fileno()
+    except (AttributeError, OSError, ValueError):
+        return 0
+    drained = 0
+    while True:
+        try:
+            ready, _, _ = select.select([fd], [], [], 0)
+        except (OSError, ValueError):
+            return drained
+        if not ready:
+            return drained
+        chunk = os.read(fd, 65536)
+        if not chunk:
+            return drained          # EOF
+        drained += len(chunk)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--source", nargs="+", default=["bin/llm_chat"])
@@ -416,8 +446,15 @@ def main(argv=None):
                     help="the command name that precedes a subcommand")
     args = ap.parse_args(argv)
 
-    if not sys.stdin.isatty():
-        sys.stdin.read()          # drain the payload; nothing here needs it
+    # DRAIN WHAT IS ALREADY THERE, AND NEVER WAIT FOR MORE. Nothing here uses
+    # the payload; it is drained so the writer is not left holding a full
+    # pipe. This used to be `if not isatty(): read()`, which is the wrong
+    # test: a pipe or socket that never closes is not a tty, so `read()`
+    # waited for an EOF that never came. `lamp publish` hit exactly that — it
+    # runs the suite with stdin an open socket, and the publish hung here.
+    # `select` with a zero timeout takes whatever has already arrived and
+    # returns, so a caller that leaves stdin open costs nothing.
+    drain_stdin()
 
     repo = args.repo or os.environ.get("GAME_LOOP_REPO") or os.getcwd()
     verbs, options = declared([os.path.join(repo, p) for p in args.source])
