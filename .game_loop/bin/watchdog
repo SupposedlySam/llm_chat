@@ -816,11 +816,26 @@ def ring(state, rings):
 
     save_state(st)
 
+    # Error-swallowed for the same reason flair is: a note about a date must never be the thing
+    # that stops the watchdog ringing.
+    try:
+        _phase_note = phase_written_note(ph)
+    except Exception:  # noqa: BLE001
+        _phase_note = ""
+    # The date note is silent within the day; this is the half that sees a phase gone stale within
+    # the hour. THIS banner is the one that quoted a stale phase back as current state.
+    try:
+        _head_note = phase_head_note(ph, *phase_head_facts(ph))
+    except Exception:  # noqa: BLE001
+        _head_note = ""
+
     print(
         f"WATCHDOG: {IDLE_SEC}s idle, and your game_loop state contradicts your harness state.\n\n"
         f"  game_loop says: mandate bound — {m.get('text')}\n"
         f"  game_loop says: {ph.get('milestone')} · {ph.get('doing')}\n"
-        f"  game_loop says: nobody is waiting on you (no T3 armed)\n"
+        + (f"  game_loop says: ...and that phase line is {_phase_note}\n" if _phase_note else "")
+        + (f"{_head_note}\n" if _head_note else "")
+        + f"  game_loop says: nobody is waiting on you (no T3 armed)\n"
         f"  harness says  : the transcript has not grown in {IDLE_SEC}s — you are parked\n\n"
         "Both cannot be true. You are under an autonomy mandate with work outstanding and you are\n"
         "doing nothing. The Stop gate can stop you SAYING the wrong thing, but it cannot press go for\n"
@@ -832,6 +847,113 @@ def ring(state, rings):
         + tail,
         file=sys.stderr)
     sys.exit(2)
+
+
+def phase_head_note(ph, head=None, ahead=None):
+    """The phase line was written at a COMMIT; say so once the tree has moved past it.
+
+    THE DATE IS NOT THE SCOPE, and `phase_written_note` beside this says why in its own words:
+    "the decision was written to the record WITH the thing that scopes it, and the reader ignored
+    the scope. There the scope was a HEAD; here it is a date." It was right about the shape and
+    the date is only half of it.
+
+    OBSERVED, SAME DAY, TWICE IN ONE SESSION. A phase written at 00:22 was three commits stale by
+    00:47 — so `phase_written_note` was correctly silent (same day, nothing to correct about the
+    prose) while the phase itself claimed an open gap that had been closed two commits earlier.
+    The watchdog then quoted that line back as current state to argue the session was idle. A
+    banner is read as a description of the tree, and nothing compared it to the tree.
+
+    PURE, and the git calls live at the call site, because `phase_written_note` is a TWIN carried
+    separately in bin/watchdog and the lesson recorded there is that a copy which is hard to drive
+    is a copy that silently diverges. Both of these take their facts as arguments so both can be
+    driven against the same table.
+
+    THREE ANSWERS, AND "COULD NOT TELL" ONLY SPEAKS WHEN THERE IS SOMETHING TO COMPARE:
+      * no recorded head — a phase stamped before this existed. Silent: accusing a record that
+        never claimed a commit would be a false report, and every consumer upgrading has one.
+      * a recorded head and git could not answer — ONE line saying so. It is rare by construction
+        (it needs a stamped phase AND a git that will not respond) and it is exactly the case
+        where silence would read as agreement.
+      * moved — name both commits and the distance.
+    """
+    if not isinstance(ph, dict):
+        return ""
+    was = str(ph.get("head") or "").strip()
+    if not was:
+        return ""
+    if not head:
+        return ("  phase stamped at %s; COULD NOT READ HEAD to compare — this is not agreement, "
+                "nothing was compared" % was[:8])
+    if head.startswith(was) or was.startswith(head):
+        return ""
+    if ahead is None:
+        return ("  ⚠ phase was written at %s and HEAD is %s — the distance could not be counted, "
+                "but they are not the same commit" % (was[:8], head[:8]))
+    return ("  ⚠ phase was written at %s · HEAD is now %s, %d commit(s) later — anything it says "
+            "about the tree describes THAT commit" % (was[:8], head[:8], ahead))
+
+
+def phase_head_facts(ph):
+    """(current HEAD short sha or None, commits HEAD is past the phase's head or None).
+
+    The impure half of phase_head_note, same split as _gl_impl.py's. Never raises: a missing git, no
+    repo, or a hung index lock all read as "could not tell", never as zero.
+    """
+    def _g(*args):
+        try:
+            r = subprocess.run(["git", *args], cwd=REPO_ROOT, capture_output=True, text=True,
+                               timeout=5)
+        except Exception:  # noqa: BLE001
+            return None
+        return r.stdout.strip() if r.returncode == 0 else None
+    head = _g("rev-parse", "--short", "HEAD")
+    was = str(ph.get("head") or "").strip() if isinstance(ph, dict) else ""
+    if not (head and was):
+        return head, None
+    try:
+        return head, int(_g("rev-list", "--count", "%s..HEAD" % was))
+    except (TypeError, ValueError):
+        return head, None
+
+
+def phase_written_note(ph, when=None):
+    """How old the phase line is, but ONLY once it is old enough to lie — "" on the same day.
+
+    `trans` has always stamped `phase["since"]`, and nothing has ever read it back. So a phase
+    written on one day keeps being re-printed on the next, and every relative date inside it —
+    "today", "this morning", "earlier" — silently re-points at whatever day the reader is having.
+    OBSERVED TWICE in one run: a banner saying "FOUR fixes today" about the previous day, and then
+    a banner saying "#125 ARRIVED TODAY" that went on saying it across a date rollover. Both were
+    repaired by hand, which is rung 0 and lasts until the next rollover.
+
+    This is behaviour 56's shape exactly, one file over: the decision was written to the record
+    WITH the thing that scopes it, and the reader ignored the scope. There the scope was a HEAD;
+    here it is a date.
+
+    SAME-DAY IS SILENT, deliberately. A note on every banner is a note nobody reads by the third
+    one, and on the day it was written the prose is simply true — there is nothing to correct.
+    Negative ages (a clock that moved backwards, a phase stamped in the future) are treated as
+    same-day rather than reported: this is a readability aid, and an aid that starts making
+    accusations about the clock has become a different feature.
+
+    WHAT IT DOES NOT DO: it does not read the prose. A phase with no relative dates in it gets the
+    note too, and a phase written twenty minutes before midnight gets it eight hours later. Both
+    are over-reports of a fact that is true — this text is from an earlier day — and the honest
+    alternative, guessing which words are time-relative, fails in the direction that matters by
+    staying quiet about a stale "today" it did not recognise.
+    """
+    since = (ph or {}).get("since")
+    if not since:
+        return ""
+    try:
+        wrote = datetime.datetime.fromisoformat(since)
+    except (TypeError, ValueError):
+        return ""
+    days = ((when or datetime.datetime.now()).date() - wrote.date()).days
+    if days < 1:
+        return ""
+    return (f"written {wrote.date().isoformat()} · {days} day{'s' if days != 1 else ''} ago — "
+            f'any "today" in it means THAT day')
 
 
 def main():

@@ -88,6 +88,17 @@
           }
         ],
         "matcher": "Write|Edit|NotebookEdit|Bash|TodoWrite"
+      },
+      {
+        "hooks": [
+          {
+            "command": "\"$CLAUDE_PROJECT_DIR\"/.showrunner/hooks/wake-gate.sh",
+            "statusMessage": "showrunner: can anything wake you back to a goal?",
+            "timeout": 15,
+            "type": "command"
+          }
+        ],
+        "matcher": "Bash"
       }
     ],
     "SessionStart": [

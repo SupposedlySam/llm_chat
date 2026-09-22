@@ -373,6 +373,11 @@ never silent — a hook whose verdict came back truncated has judged, and only t
 #   declare for itself is an off switch for its own watchdog, and this verb cannot tell a session
 #   from the orchestrator above it. Arm it in .game_loop/config.local.json — never config.json,
 #   which is a rule file byte-compared between a parent checkout and its worktrees.
+#   ITS BUDGET IS watchdog.waiting_probe_timeout_sec (default 15, env
+#   WATCHDOG_PROBE_TIMEOUT_SEC). The probe runs on EVERY tick, so the default is small on purpose —
+#   but a probe that is merely SLOW is killed and reads as FAILING, indistinguishable from broken
+#   until you raise this. If yours legitimately takes longer, say so here rather than letting every
+#   tick time out (#124).
 #   IT ALSO REPORTS THE STOP SEAM: whether this session is BLOCKED at a turn-end gate, since when,
 #   by which attachment, and how many consecutive. A blocked session looks exactly like a working
 #   one from outside — live pid, exit 0, artifacts on disk — which is why the state needed a reader.
@@ -511,7 +516,8 @@ SOURCE-CONTROLLED one. Both it and `.game_loop/` are tracked, so once committed,
 gets the payload and the gates. That is deliberate: the guardrail is the team's.
 
 For a machine-local install that reaches nobody else, use `--local`, which writes the hooks to
-`.claude/settings.local.json` and gitignores `.game_loop/`:
+`.claude/settings.local.json` and excludes both it and `.game_loop/` through `.git/info/exclude` —
+per-clone, so `git status` stays clean and no tracked file changes (#127):
 
 ```
 ./install.sh --local /path/to/this/project

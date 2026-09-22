@@ -38,7 +38,33 @@ fi
 # the call failed for ANY reason — and the first real failure was a self-vendored pin that
 # predated the verb, which that message would have sent somebody looking at whoami instead of at
 # the pin. A wrong subject in an error costs more than a vague one.
-if ! out="$("$SR" whoami 2>&1)"; then
+# THE SESSION ID, WITHOUT WHICH THE RE-SEAT CANNOT FIRE. `whoami` rebinds a seat whose session
+# matches and whose pid is gone — a window reload — and its own rule is that an EMPTY session id
+# matches nothing, because treating absent-as-equal would hand out unidentified seats. This hook
+# called `whoami` with no session at all, so that rule made the feature unreachable from the one
+# channel a reloaded session is guaranteed to read. Built and unfired is the shape this repo keeps
+# catching; it deserved catching here before an operator tested it and saw nothing.
+#
+# Read the same way every other hook here reads its payload. Empty or unparseable yields no flag
+# and the announcement proceeds exactly as before — this must never be the thing that breaks.
+payload="$(cat 2>/dev/null || true)"
+sess=""
+if [ -n "$payload" ]; then
+  sess="$(printf '%s' "$payload" | python3 -c '
+import json, sys
+try:
+    print((json.load(sys.stdin).get("session_id") or "").strip())
+except Exception:
+    pass
+' 2>/dev/null)" || sess=""
+fi
+[ -z "$sess" ] && sess="${CLAUDE_SESSION_ID:-}"
+[ -z "$sess" ] && sess="${SHOWRUNNER_SESSION:-}"
+
+set -- whoami
+[ -n "$sess" ] && set -- whoami --session "$sess"
+
+if ! out="$("$SR" "$@" 2>&1)"; then
   out="showrunner: COULD NOT SAY WHAT THIS SESSION IS — \`$SR whoami\` exited non-zero. This
 session was told nothing about what it is or what it may not do, which is the state in which 42
 raw dispatches went unnoticed in one real run. First line of what it said:

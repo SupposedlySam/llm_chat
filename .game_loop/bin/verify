@@ -122,6 +122,7 @@ UNCHECKED_SHOWN = 10
 
 
 DUPLICATE_KEYS = {}             # glob -> how many times the manifest declared it
+ESCAPED_LINES = []              # (lineno, text) for rules carrying a backslash — see escaped_tail()
 
 
 def load_map():
@@ -129,6 +130,7 @@ def load_map():
     global MAP_UNREADABLE
     out, key = {}, None
     DUPLICATE_KEYS.clear()
+    del ESCAPED_LINES[:]
     MAP_UNREADABLE = ""
     try:
         f = open(MAP_F)
@@ -144,11 +146,13 @@ def load_map():
         MAP_UNREADABLE = "%s: %s" % (exc.__class__.__name__, str(exc)[:70])
         return out
     with f:
-        for line in f:
+        for lineno, line in enumerate(f, 1):
             s = line.rstrip("\n")
             if not s.strip() or s.lstrip().startswith("#"):
                 continue
             if not s.startswith(" ") and s.rstrip().endswith(":"):
+                if "\\" in s:
+                    ESCAPED_LINES.append((lineno, s.strip()))
                 key = s.rstrip()[:-1].strip().strip('"')
                 # A REPEATED KEY USED TO RESET THE LIST, so the rule declared FIRST vanished with no
                 # output anywhere. This repo declared `.game_loop/bin/guard-writes-impl.sh` twice —
@@ -164,6 +168,25 @@ def load_map():
                     DUPLICATE_KEYS[key] = DUPLICATE_KEYS.get(key, 1) + 1
                 out.setdefault(key, [])
             elif key and s.lstrip().startswith("- "):
+                # REFUSED, NOT DECODED — reported by wcs, who ran it rather than reading it.
+                # This parser strips surrounding quotes and decodes NOTHING, so a YAML escape
+                # survives as literal bytes: `bash -n \\"$f\\"` reaches the shell with the
+                # backslashes still on, and it looks for a file called "$f" quotes included.
+                #
+                # THE VISIBLE FAILURE IS THE LUCKY MEMBER OF ITS FAMILY, which is wcs's point and
+                # the reason this refuses instead of warning. Their instance failed CLOSED: the
+                # mangled filename errored, `|| exit 1` fired, verify went red and somebody
+                # eventually looked. A backslash in a rule shaped to fail OPEN — anything ending
+                # `|| true`, a grep whose pattern merely stops matching, a test guarding an echo —
+                # prints green while the check never ran. Same defect, no symptom, nothing to
+                # spend a session on.
+                #
+                # Decoding was the other option and it is worse here. There is no yaml module to
+                # lean on (this payload carries no dependencies), and a hand-rolled decoder that
+                # handles most escapes and mis-executes the rest is exactly the 95/5 split wcs
+                # named. Refusing is the only answer that cannot be subtly wrong.
+                if "\\" in s:
+                    ESCAPED_LINES.append((lineno, s.strip()))
                 cmd = s.lstrip()[2:].strip().strip('"')
                 if cmd not in out[key]:      # a key repeated with the same command owes it once
                     out[key].append(cmd)
@@ -180,6 +203,32 @@ def duplicate_key_tail():
     for k, n in DUPLICATE_KEYS.items():
         lines.append(f"    {k}   declared {n}x")
     lines.append("  → give each path ONE entry that lists every command it owes.")
+    return "\n".join(lines)
+
+
+def escaped_tail():
+    """A backslash in a rule is REFUSED, because this reader decodes nothing and the shell will not.
+
+    Returns "" when the manifest is clean. Non-empty means verify must not run: every command in
+    the file is suspect, not only the offending line, because a reader that mis-handles one escape
+    has no claim to the rest.
+    """
+    if not ESCAPED_LINES:
+        return ""
+    lines = ["\nREFUSED — a rule in this manifest contains a BACKSLASH, and this reader does not "
+             "decode\nYAML escapes. The bytes reach the shell as written, so the command that runs "
+             "is not the\ncommand the file appears to say. NOTHING WAS CHECKED."]
+    for n, text in ESCAPED_LINES:
+        lines.append(f"    line {n}: {text[:100]}")
+    lines += ["  → write the command so it needs no escape: prefer single quotes inside a "
+              "double-quoted",
+              "    scalar, or a YAML block scalar (|) for anything with nested quoting.",
+              "  WHY THIS REFUSES RATHER THAN WARNS: the failure you can SEE is the lucky one. A "
+              "rule that",
+              "    fails closed goes red and gets looked at; the same escape in a rule ending "
+              "`|| true`, or a",
+              "    grep whose pattern merely stops matching, prints GREEN while the check never "
+              "ran."]
     return "\n".join(lines)
 
 
@@ -550,6 +599,8 @@ def report_coverage(staged=False, porcelain=False, scope=None):
     mapping, exclusions = load_manifest()
     if (_dup := duplicate_key_tail()):
         print(_dup)
+    if (_esc := escaped_tail()):
+        print(_esc)      # reported, never blocking: this function is a report (see the docstring)
     files = read_scope(scope) if scope is not None else (
         staged_files() if staged else changed_files())
     checked, excluded, unchecked = coverage(files, mapping, exclusions)
@@ -683,6 +734,13 @@ def main():
     mapping, exclusions = load_manifest()
     if (_dup := duplicate_key_tail()):
         print(_dup)
+    # REFUSES, and refuses HERE rather than in the coverage report: coverage is a REPORT and must
+    # never block a fresh install's first commit, but this path is the gate. A manifest this reader
+    # cannot faithfully execute means nothing was checked, and saying so loudly is the only honest
+    # exit — the alternative is a green verify over commands that never ran.
+    if (_esc := escaped_tail()):
+        print(_esc)
+        return 1
     # SCOPE. Absent --scope-from this is the tree, byte-for-byte what it always was. Present, it is
     # the set the caller says a commit carries, and `skipped` is what that narrowing did not look
     # at -- computed here, printed on the passing paths, because a scoped pass is a smaller claim

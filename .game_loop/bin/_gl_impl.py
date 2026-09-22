@@ -689,6 +689,114 @@ def _box(lines):
     return "\n".join([top] + body + [bot])
 
 
+def phase_head_note(ph, head=None, ahead=None):
+    """The phase line was written at a COMMIT; say so once the tree has moved past it.
+
+    THE DATE IS NOT THE SCOPE, and `phase_written_note` beside this says why in its own words:
+    "the decision was written to the record WITH the thing that scopes it, and the reader ignored
+    the scope. There the scope was a HEAD; here it is a date." It was right about the shape and
+    the date is only half of it.
+
+    OBSERVED, SAME DAY, TWICE IN ONE SESSION. A phase written at 00:22 was three commits stale by
+    00:47 — so `phase_written_note` was correctly silent (same day, nothing to correct about the
+    prose) while the phase itself claimed an open gap that had been closed two commits earlier.
+    The watchdog then quoted that line back as current state to argue the session was idle. A
+    banner is read as a description of the tree, and nothing compared it to the tree.
+
+    PURE, and the git calls live at the call site, because `phase_written_note` is a TWIN carried
+    separately in bin/watchdog and the lesson recorded there is that a copy which is hard to drive
+    is a copy that silently diverges. Both of these take their facts as arguments so both can be
+    driven against the same table.
+
+    THREE ANSWERS, AND "COULD NOT TELL" ONLY SPEAKS WHEN THERE IS SOMETHING TO COMPARE:
+      * no recorded head — a phase stamped before this existed. Silent: accusing a record that
+        never claimed a commit would be a false report, and every consumer upgrading has one.
+      * a recorded head and git could not answer — ONE line saying so. It is rare by construction
+        (it needs a stamped phase AND a git that will not respond) and it is exactly the case
+        where silence would read as agreement.
+      * moved — name both commits and the distance.
+    """
+    if not isinstance(ph, dict):
+        return ""
+    was = str(ph.get("head") or "").strip()
+    if not was:
+        return ""
+    if not head:
+        return ("  phase stamped at %s; COULD NOT READ HEAD to compare — this is not agreement, "
+                "nothing was compared" % was[:8])
+    if head.startswith(was) or was.startswith(head):
+        return ""
+    if ahead is None:
+        return ("  ⚠ phase was written at %s and HEAD is %s — the distance could not be counted, "
+                "but they are not the same commit" % (was[:8], head[:8]))
+    return ("  ⚠ phase was written at %s · HEAD is now %s, %d commit(s) later — anything it says "
+            "about the tree describes THAT commit" % (was[:8], head[:8], ahead))
+
+
+def phase_head_facts(ph):
+    """(current HEAD short sha or None, commits HEAD is past the phase's head or None).
+
+    The impure half, kept apart so the note above can be driven from a table. Never raises — `_git`
+    degrades to None on a missing binary, no repo, or a locked index, and both halves of this read
+    as "could not tell" rather than as zero.
+    """
+    head = _git("rev-parse", "--short", "HEAD")
+    was = str((ph or {}).get("head") or "").strip() if isinstance(ph, dict) else ""
+    if not (head and was):
+        return head, None
+    n = _git("rev-list", "--count", "%s..HEAD" % was)
+    try:
+        return head, int(n)
+    except (TypeError, ValueError):
+        return head, None
+
+
+def phase_written_note(ph, when=None):
+    """How old the phase line is, but ONLY once it is old enough to lie — "" on the same day.
+
+    THE TWIN of the function of the same name in bin/watchdog, and it has to stay one, for the
+    reason _config_merge's twin states there: the watchdog is standalone and imports nothing
+    from here, so a fix applied to one copy and not the other works where you test it and not
+    where it matters. `status` is the higher-traffic caller — CLAUDE.md tells every session to
+    run it first — and the watchdog is where the staleness was actually read.
+
+    `trans` has always stamped `phase["since"]`, and nothing has ever read it back. So a phase
+    written on one day keeps being re-printed on the next, and every relative date inside it —
+    "today", "this morning", "earlier" — silently re-points at whatever day the reader is having.
+    OBSERVED TWICE in one run: a banner saying "FOUR fixes today" about the previous day, and then
+    a banner saying "#125 ARRIVED TODAY" that went on saying it across a date rollover. Both were
+    repaired by hand, which is rung 0 and lasts until the next rollover.
+
+    This is behaviour 56's shape exactly, one file over: the decision was written to the record
+    WITH the thing that scopes it, and the reader ignored the scope. There the scope was a HEAD;
+    here it is a date.
+
+    SAME-DAY IS SILENT, deliberately. A note on every banner is a note nobody reads by the third
+    one, and on the day it was written the prose is simply true — there is nothing to correct.
+    Negative ages (a clock that moved backwards, a phase stamped in the future) are treated as
+    same-day rather than reported: this is a readability aid, and an aid that starts making
+    accusations about the clock has become a different feature.
+
+    WHAT IT DOES NOT DO: it does not read the prose. A phase with no relative dates in it gets the
+    note too, and a phase written twenty minutes before midnight gets it eight hours later. Both
+    are over-reports of a fact that is true — this text is from an earlier day — and the honest
+    alternative, guessing which words are time-relative, fails in the direction that matters by
+    staying quiet about a stale "today" it did not recognise.
+    """
+    since = (ph or {}).get("since")
+    if not since:
+        return ""
+    try:
+        wrote = datetime.datetime.fromisoformat(since)
+    except (TypeError, ValueError):
+        return ""
+    days = ((when or datetime.datetime.now()).date() - wrote.date()).days
+    if days < 1:
+        return ""
+    return (f"written {wrote.date().isoformat()} · {days} day{'s' if days != 1 else ''} ago — "
+            f'any "today" in it means THAT day')
+
+
 def render_banner(s, frm=None):
     ph = s.get("phase", {})
     name = config().get("project_name", "project").upper()
@@ -709,7 +817,8 @@ def render_banner(s, frm=None):
         head,
         f"{TIER_NAMES.get(tier, tier).split(' (')[0]} · claims {s.get('claim_count', 0)} · "
         f"hardened {s.get('hardened_count', 0)}",
-    ])
+    ] + ([note] if (note := phase_written_note(ph)) else [])
+      + ([hn] if (hn := phase_head_note(ph, *phase_head_facts(ph))) else []))
 
 
 def retro_overdue(s):
@@ -1020,6 +1129,29 @@ def wake_landed_lines(s):
     return L
 
 
+def grant_age_note(a, now_iso=None):
+    """" · granted N days ago" for a grant old enough that its age is the interesting fact, else "".
+
+    SILENT UNDER A DAY, because on the day it was granted the age says nothing anybody does not
+    already know, and a note that prints on every grant is a note that stops being read — the same
+    failure the bare live/spent count already demonstrated on a real reader.
+    """
+    at = str((a or {}).get("at") or "")[:19]
+    if len(at) < 19:
+        return ""
+    try:
+        then = datetime.datetime.fromisoformat(at)
+        cur = datetime.datetime.fromisoformat(str(now_iso or now())[:19])
+    except ValueError:
+        return ""
+    days = (cur - then).days
+    if days < 1:
+        return ""
+    exp = (a or {}).get("expires_at")
+    return " · granted %d day%s ago%s" % (days, "" if days == 1 else "s",
+                                          "" if exp else ", NO EXPIRY")
+
+
 def authorizations_report(s):
     """The `authorize` grants this session holds, and what is LEFT of each.
 
@@ -1040,11 +1172,28 @@ def authorizations_report(s):
     auth = [a for a in (s.get("authorized") or []) if isinstance(a, dict)]
     if not auth:
         return []
-    live = [a for a in auth if int(a.get("uses_left") or 0) > 0]
-    spent = len(auth) - len(live)
-    L = ["", f"authorize grants: {len(live)} live, {spent} spent"]
+    _n = now()
+    live = [a for a in auth if grant_live(a, _n)]
+    # AN EXPIRED GRANT IS NOT A SPENT ONE EITHER, and it is not revoked: nobody withdrew it and
+    # nobody used it, the clock closed it. Three ways to stop being live, three counts.
+    expired = [a for a in auth if grant_expired(a, _n) and int(a.get("uses_left") or 0) > 0]
+    # A REVOKED GRANT IS NOT A SPENT ONE. Folding them together would say a hatch was opened and
+    # used when it was withdrawn unused — the same conflation the `--revoke` refusal exists to
+    # prevent, one surface over. The extra clause appears only once something has been revoked, so
+    # no consumer's status line moves until they use the verb.
+    dead = [a for a in auth if int(a.get("uses_left") or 0) <= 0]
+    revoked = [a for a in dead if a.get("revoked_at")]
+    spent = len(dead) - len(revoked)
+    L = ["", "authorize grants: %d live, %d spent%s%s"
+         % (len(live), spent, (", %d revoked" % len(revoked)) if revoked else "",
+            (", %d lapsed" % len(expired)) if expired else "")]
     for a in live[:6]:
-        L.append(f"  {int(a.get('uses_left') or 0):>3} left · {a.get('path')}")
+        # THE AGE, BESIDE THE BALANCE. wcs read past "5 live, 6 spent" on every run of a long
+        # session and then reported that status did not surface grants at all — so the count alone
+        # is demonstrably not enough to make a stale grant look stale. An age is the one number
+        # that says which of these was a decision made for the work in front of you.
+        L.append("  %3d left · %s%s" % (int(a.get("uses_left") or 0), a.get("path"),
+                                        grant_age_note(a, _n)))
     if len(live) > 6:
         L.append(f"  ... and {len(live) - 6} more live")
     L.append("  A GRANT IS A CONSUMABLE, and running a guard SPENDS one — a probe decides and")
@@ -1974,11 +2123,257 @@ def _limitgate_verdict(s, payload, now_epoch):
         + tail)
 
 
+# ── the unbound mandate, said at the moment it matters ──────────────────────────────────────────
+#
+# THE BUG REPORT IS THE HUMAN'S OWN SENTENCE: "I have to tell them manually, none of them know."
+# Agents across this machine start long unattended runs with no mandate bound. The Stop gate is then
+# inert by construction, `doorbell` correctly answers that there is nothing to wake the run FOR, and
+# a wake that lands mid-run drops the agent into a prompt with a hole where the goal goes.
+#
+# THE INFORMATION WAS NEVER MISSING, which is the whole diagnosis and it is showrunner's, reported
+# after they built the workaround in their own layer and saw the debt: `game_loop status` prints
+# `MANDATE: none (Stop gate inert)`, `doorbell` explains the remedy in full to anyone who runs it,
+# and their own SessionStart banner repeats the mandate line. THREE SURFACES, ALL CORRECT, ALL
+# IGNORED. So this is a DELIVERY defect, and more documentation is the one fix guaranteed not to
+# work — session-start text is read once, before the agent knows whether the work ahead is long, and
+# by the time it is long the banner is thousands of tokens upstream. The human succeeds where all
+# three documents fail for one reason: he speaks AT THE MOMENT, and the moment is the start of the
+# long thing rather than the start of the session.
+#
+# WHY IT LIVES HERE RATHER THAN IN showrunner, whose version works today: the mandate and the
+# doorbell are this tool's, so their gate re-derives a conclusion this one is better placed to
+# state; and it reaches only repos that install showrunner, while balooga, llm_chat, wcs and every
+# other consumer has the identical gap. Nine installs, one covered. They offered to delete theirs
+# and were asked to keep it until this one has fired somewhere real, because a notice that has never
+# fired and a notice that CANNOT fire look identical from the inside.
+#
+# IT RIDES THE HOOK THAT IS ALREADY REGISTERED. `game_loop limitgate` is a PreToolUse hook on
+# Write|Edit|NotebookEdit|Bash in every install. A new hook would need nine settings.json files
+# updated by hand before the fix reached anybody, which is the same delivery failure one layer out.
+
+
+def mandate_binding(s):
+    """Whether a goal is bound here: "armed", "unarmed" or "unknown" — never a bare boolean.
+
+    "COULD NOT TELL" MUST NEVER READ AS ARMED. showrunner's constraint, and it is the load-bearing
+    half of their report: a check that folds unknown into armed goes quiet exactly when it has lost
+    the ability to speak, and from the inside that is indistinguishable from a run properly under
+    orders. Their `armed()` returns four answers for this reason.
+
+    This repo already made the same distinction one level down and paid for it there. `load()` used
+    to return pristine defaults for a state.json that EXISTED and would not parse, so a corrupt file
+    read as a brand new session: the mandate vanished and status printed "MANDATE: none" — the exact
+    sentence it prints for a session that never had one. Same rule, one layer up.
+
+    A PARKED mandate counts as armed. The human called that break, so somebody is by definition
+    there to notice; nudging them to bind a goal they have already bound and paused is the nag that
+    turns a true signal into scenery.
+    """
+    if STATE_UNREADABLE:
+        return "unknown"
+    m = s.get("mandate")
+    if m is None:
+        return "unarmed"                 # a genuinely fresh session, and that is fine
+    if not isinstance(m, dict):
+        return "unknown"                 # something is there and it is not what this reads
+    if m.get("active") and str(m.get("text") or "").strip():
+        return "armed"
+    if m.get("active"):
+        return "unknown"                 # active with no text: bound to what?
+    return "unarmed"
+
+
+# NOT A GUESS THIS TOOL INVENTED. Two of these three are the lists the deploy rail and the fan-out
+# brake already read, so a consumer who has tuned those gets this for free and has ONE place to
+# argue with rather than a second copy drifting from the first. The third is a built-in list of
+# suite and build runners, overridable at config.long_work_verbs, because "what starts a long run"
+# is genuinely per-project and a hard-coded list is how six repos end up with six forks of it.
+#
+# HONEST ABOUT WHAT IT IS (INV6): a command-shape guess, exactly like showrunner's. game_loop knows
+# a mandate is unbound and knows when the last checkpoint landed, but the moment work BECOMES long
+# is not something it observes either — it sees tool calls through the same hooks. The improvement
+# over their version is not accuracy, it is that this is one guess in one place.
+LONG_WORK_VERBS = [
+    "pytest", "npm test", "npm run build", "yarn build", "flutter test", "flutter build",
+    "cargo test", "cargo build", "go test", "make", "gradle", "./gradlew", "tox", "nox",
+    "bazel build", "bazel test", "docker build", "terraform apply", "claude -p",
+]
+
+
+def long_work_verbs():
+    """The configured long-work verbs, or the built-in list. A consumer's list REPLACES."""
+    v = config().get("long_work_verbs")
+    if isinstance(v, list) and v:
+        return [str(x) for x in v if str(x).strip()]
+    return list(LONG_WORK_VERBS)
+
+
+_QUOTED = re.compile(r"""'[^']*'|"[^"]*\"""", re.S)
+_CMD_SPLIT = re.compile(r"\|\||&&|[;|\n]")
+_LEADING_ENV = re.compile(r"^(?:[A-Za-z_][A-Za-z_0-9]*=\S*\s+)+")
+
+
+def _blank_quoted(cmd):
+    """Quoted CONTENTS replaced by spaces, quotes and length kept.
+
+    REPORTED TWICE IN ONE DAY, in two repos, in two alphabets. wcs hit it writing a knowledge-base
+    entry whose BODY quoted `git worktree add` as the example of the thing not to do, and the advice
+    fired on their prose about the advice; their own matcher had the identical bug with `Kansas`
+    matching "Kansas City" and pinning a Missouri buyer to Kansas. showrunner fixed the same class
+    in their own guard and this is their fix, not a reinvention of it.
+
+    A word boundary is not a semantic boundary. `dart run tool/kb.dart --body "... git worktree add
+    ..."` is not a git invocation and nothing in the text says otherwise except the substring.
+    """
+    return _QUOTED.sub(lambda mm: mm.group(0)[0] + " " * (len(mm.group(0)) - 2) + mm.group(0)[-1],
+                       cmd)
+
+
+def _verb_at_command_position(cmd, verbs):
+    """The verb this command line RUNS — at a command boundary, outside quotes — or None.
+
+    STRICTER THAN `_spawn_verb_hit`, DELIBERATELY, AND NOT A CORRECTION OF IT. That matcher's
+    boundary class includes quotes on purpose, so a verb nested in an interpreter argument still
+    trips the DENY rails; for an irreversible deploy, over-refusing is the cheap direction and its
+    docstring says so.
+
+    THIS RAIL'S ARITHMETIC IS THE OPPOSITE, and for a reason particular to it: the notice speaks
+    ONCE PER SESSION. So a false positive does not cost one spurious line — it SPENDS THE ONLY
+    NOTICE, and the real unattended run an hour later gets silence. The expensive direction here is
+    the false positive, which is the same conclusion showrunner reached for a channel whose only
+    value is being worth reading, by a different route.
+
+    THE COST, asserted rather than left to be discovered: `bash -c "pytest"` is now a miss. That
+    trade is taken knowingly. Every ordinary invocation still hits — bare, after `&&`, after `;`,
+    after a pipe, behind a path, behind leading environment assignments.
+    """
+    text = _blank_quoted(cmd)
+    for seg in _CMD_SPLIT.split(text):
+        seg = _LEADING_ENV.sub("", seg.strip())
+        if not seg:
+            continue
+        for v in verbs:
+            words = [w for w in str(v).split() if w]
+            if not words:
+                continue
+            # `(?:\S*/)?` on the FIRST word only: `./.showrunner/bin/showrunner spawn` is the form
+            # every install of that harness actually uses, and a rule anchored to a bare word would
+            # match nothing at all while looking completely correct — the #51 lesson, kept.
+            pat = (r"^(?:\S*/)?" + r"\s+".join(re.escape(w) for w in words) + r"(?:$|[\s;&|])")
+            if re.search(pat, seg):
+                return v
+    return None
+
+
+def long_work_hit(payload):
+    """What about this call says a long run is starting, or None. Bash only.
+
+    Backgrounding is checked separately from the verb list because it is the one shape that carries
+    no verb at all: `&` at the end says "this outlives the turn" whatever is in front of it. `&&` is
+    not backgrounding and the distinction is one character, so it is matched rather than searched —
+    and it is checked against the QUOTE-BLANKED text, or `echo "a & b"` reads as backgrounding.
+    """
+    if (payload or {}).get("tool_name") != "Bash":
+        return None
+    cmd = str(((payload or {}).get("tool_input") or {}).get("command") or "")
+    if not cmd.strip():
+        return None
+    if re.search(r"(?<!&)&\s*$", _blank_quoted(cmd).strip()):
+        return "a backgrounded command"
+    c = config()
+    for label, verbs in (("a fan-out verb", spawn_cfg_verbs()),
+                         ("a deploy verb", [str(x) for x in (c.get("deploy_verbs") or [])]),
+                         ("a long-running command", long_work_verbs())):
+        v = _verb_at_command_position(cmd, verbs)
+        if v:
+            return "%s (%s)" % (label, v)
+    return None
+
+
+def spawn_cfg_verbs():
+    """The fan-out brake's verb list, read WITHOUT its enabled flag.
+
+    The brake is off by default and this notice is not the brake: `showrunner spawn` starts a long
+    unattended run whether or not anybody configured a token threshold to refuse it at. Reading the
+    flag here would make the notice silent in exactly the installs that never configured limits,
+    which is most of them.
+    """
+    try:
+        return list((context_cfg() or {}).get("spawn_verbs") or [])
+    except Exception:
+        return ["showrunner spawn"]
+
+
+def unbound_mandate_notice(s, payload):
+    """The text to put in front of the agent, or "" — pure, and silent in four distinct cases.
+
+    SILENCE MUST BE CHEAP AND THE NOTICE MUST BE RARE. showrunner's other constraint, and they named
+    the failure mode this feature is most likely to die of: a nag on every long command is how a
+    true signal becomes scenery. Silent when a mandate is bound, silent when this call starts
+    nothing long, silent when it has already spoken once in this session, and silent on every tool
+    that is not Bash. It never refuses — the agent may have a perfectly good reason, and a gate that
+    blocks work it cannot judge is a gate that gets routed around.
+    """
+    if s.get("mandate_notice_said"):
+        return ""
+    state = mandate_binding(s)
+    if state == "armed":
+        return ""
+    hit = long_work_hit(payload)
+    if not hit:
+        return ""
+    if state == "unknown":
+        where = STATE_UNREADABLE or "(the mandate record is present but not in the shape this reads)"
+        return (
+            "COULD NOT TELL WHETHER A GOAL IS BOUND, and you are starting %s.\n\n"
+            "  state: UNREADABLE — set aside at %s\n\n"
+            "This is NOT 'no mandate' and it is NOT 'you are fine'. The record that says what this\n"
+            "run is for cannot be read, so the Stop gate's inertness here means nothing either way.\n"
+            "Check `game_loop status` before this goes unattended; if the mandate is genuinely gone,\n"
+            "the set-aside file above is where its text still is." % (hit, where))
+    # WHO THE SENTENCE IS ADDRESSED TO — balooga-owner's finding, relayed by showrunner, and the
+    # only result in that whole exchange that survived every refutation because it is not a rule
+    # about text. Across 35 measured mandates the finish condition is in the AGENT's half and
+    # never the human's: showrunner's 29 have no human half at all — the human said "work the
+    # issues" and what reached mandate_set was the agent's own summary of what it decided that
+    # meant. So a notice worded as though the goal were something the human should have supplied
+    # misattributes the gap every time, and the agent's natural response is to go ask for a better
+    # brief instead of writing down the boundary it had already chosen. The placeholder said
+    # "<what this run is for>", which reads as "what you were told", and that was the defect.
+    return (
+        "NO MANDATE IS BOUND, and you are starting %s.\n\n"
+        "Nothing is wrong yet. But the Stop gate is INERT while no goal is bound — so if this run\n"
+        "goes quiet, ends early, or gets woken mid-way, there is nothing recorded for it to be\n"
+        "woken FOR, and no gate will notice the stop. That is the shape behind a human having to\n"
+        "restart runs by hand, which is the report this notice exists for.\n\n"
+        "  game_loop mandate --set \"<the goal, and what finishing looks like>\" --wake-every <sec>\n\n"
+        "THIS IS YOURS TO WRITE, not something to go and ask for. Measured across 35 mandates in\n"
+        "five repos: the finish condition is in the AGENT's words every time it is there at all.\n"
+        "You already decided what this run is for when you started it — write that down.\n\n"
+        "If this is short, attended, or not the kind of work a mandate covers, ignore this — it\n"
+        "does not refuse anything and it will not ask again this session." % hit)
+
+
 def cmd_limitgate(s, a, payload):
     """PreToolUse entrypoint for the limit gate. Same output protocol as guard-writes.sh: a deny is
     JSON on stdout with permissionDecision=deny, always exit 0."""
     allow, reason = _limitgate_verdict(s, payload, time.time())
     if allow:
+        # THE NOTICE RIDES THE ALLOW PATH ONLY. A call that is being refused already has the
+        # agent's attention and a reason on screen; adding a second, unrelated paragraph to it is
+        # how the one that matters gets skimmed.
+        notice = unbound_mandate_notice(s, payload)
+        if notice:
+            # THE ONCE-PER-SESSION FLAG IS WRITTEN HERE, IN THE I/O LAYER, and not inside
+            # unbound_mandate_notice, which is documented pure. Same split `_stop_verdict` has and
+            # for the same reason it was moved there: a verdict function that writes state cannot
+            # be called twice by a test to check its answer is stable.
+            _binding, _hit = mandate_binding(s), long_work_hit(payload)
+            s["mandate_notice_said"] = now()
+            save(s)
+            logline({"kind": "mandate_notice", "binding": _binding, "trigger": _hit})
+            print(json.dumps({"hookSpecificOutput": {
+                "hookEventName": "PreToolUse", "additionalContext": notice}}))
         sys.exit(0)
     # WHICH trigger, in the log — three of them now. A block count that cannot separate "the
     # account ran dry" from "the cap is set too low" from "a fan-out was refused" cannot tell an
@@ -2566,6 +2961,130 @@ def cmd_claim(s, a):
     flair_out(s, "claim")
 
 
+# ── what a mandate SAID about its own finish line: facts, not a verdict ──────────────────────────
+#
+# THE SEQUENCING IS wcs's AND SO IS THE SHAPE, and it is the second time in one exchange their
+# measurement killed a design of mine that I was about to build.
+#
+# WHAT I WAS GOING TO BUILD: `mandate --set` nudges when the text carries no finish line, and
+# records `has_finish_line: false` so a later clear-side gate could be answerable. Both halves were
+# wrong, and they ran it against 42 real mandate_set records before I wrote a line of it:
+#
+#   IT FIRES ON 88%.  37 of 42 have no explicit marker. A nudge that speaks on seven of every eight
+#   mandates is not rare, it is the banner an agent learns to scroll past — the exact failure
+#   showrunner named as the one this class of feature dies of, and the one #4 already died of once.
+#
+#   THE FALSE NEGATIVES ARE THE BEST-SPECIFIED MANDATES IN THE LOG. Ten of theirs ENUMERATE their
+#   work — "(1) skip-trace API seam ... (2) ... (3) ..." — and carry no marker. Those have a finish
+#   line; it is the list. Nudging them teaches agents that enumerating the work is not good enough
+#   and that a magic phrase is, which is backwards.
+#
+#   AND THE FALSE POSITIVE READS GREEN, which is the direction that matters. Their live mandate
+#   matched on `until` — inside item (2), "re-run the neutral reviewer until READY". A condition on
+#   ONE ITEM, not a finish line for the mandate. Mention versus use, in the third place this
+#   exchange has found it, and recorded as `has_finish_line: true` it would be quietly wrong for
+#   exactly the mandates nobody re-checks.
+#
+# SO: RECORD THE FACTS, NOT THE CONCLUSION. Three things that cannot be wrong because they are not
+# judgements, plus the EVIDENCE for each — which is the half that answers wcs's false positive. A
+# bare `true` gives a later reader nothing to judge; `until` with the words either side of it lets
+# them see it sits inside item (2) and decide in a second. Storing the conclusion destroys the
+# information that would show the conclusion was wrong.
+#
+# AND NO NUDGE SHIPS YET, deliberately. Their 42 records and this repo's 7 are different
+# populations from the same tool and the same author — their shortest mandate is 198 characters and
+# this repo's log contains the literal string "ship it". A threshold tuned on either misfires on
+# the other, so the number is per-repo and there is no cross-repo measurement to set it from. The
+# facts are what make that measurement possible later; guessing the threshold now is what makes it
+# impossible to check.
+
+_FINISH_MARKERS = ("done when", "definition of done", "finished when", "complete when",
+                   "acceptance criteria", "success criteria", "exit criteria")
+_ENUM_ITEM_PAT = re.compile(r"(?:^|\s)(?:\(\d+\)|\d+[.)]|[-*•])\s+\S", re.M)
+
+
+def _typographic_at(text, i, marker):
+    """Was this marker TYPED AS A CONVENTION — upper case and followed by a colon?
+
+    wcs's rule, and it is the one that separates the two populations they measured: "prefer markers
+    that are TYPOGRAPHIC (caps, colon, line-initial) over markers that are lexical. A word can be
+    used in a sentence; a convention has to be typed on purpose."
+
+    They measured the difference rather than arguing it. Over 42 records their proposed marker set
+    hit 5 times at 40% precision, and every miss was a LEXICAL match — `until` three times, once
+    cautioning against trusting a source, once forbidding a re-run, once as a condition on item (2)
+    of four. Both true positives were `DONE WHEN:` — capitalised, colon, at a clause boundary.
+
+    So the flag rather than a shorter list: dropping the lexical forms would throw away the record
+    that they appeared, and this field is supposed to let a later reader judge rather than inherit
+    somebody's threshold. A marker with typographic False is not a false positive, it is a match
+    whose precision is known to be poor.
+    """
+    seg = text[i:i + len(marker)]
+    after = text[i + len(marker):i + len(marker) + 2]
+    return seg.isupper() and after.lstrip()[:1] == ":"
+
+
+def finish_line_facts(text, window=36):
+    """What a mandate's text SAYS about its own finish line, as facts with their evidence.
+
+    Returns markers_checked / labelled_markers / enumerated_items / text_len.
+
+    EVERY FIELD IS AN OBSERVATION, NOT A CLASSIFICATION. Nothing here says whether the mandate HAS
+    a finish line, because that judgement was measured and found wrong in both directions — and
+    because a reader in a month can ask questions of these that a boolean has already thrown away,
+    including the one that caught it: was the marker inside an enumerated item?
+
+    THE FIELD IS `labelled_markers` AND THE LIST IS RECORDED BESIDE IT, and that is showrunner's
+    finding rather than tidiness. They ran this over 29 of their own records and got 0 hits, and
+    were about to report "showrunner never writes a finish condition" — then read the records
+    instead of the count. Sixteen of the twenty-nine state a terminal state INLINE and label none
+    of it: "work issue #75 through to pushed and closed", "spawn a real Crawler ... and integrate
+    or reap the result". So `0 of 29` was a fact about the MARKER LIST, not about the mandates —
+    the instrument, not the measurement.
+
+    An empty list here therefore licenses exactly one sentence: no marker from `markers_checked`
+    was found. It does NOT say the mandate has no finish line, and the field is named for the
+    labelling rather than the finish so that a later gate cannot quietly read it as the second
+    thing. Carrying the list makes the record self-describing — the instrument travels with the
+    reading, which is the only thing that would have caught showrunner's near-miss from outside.
+
+    The context window is the point of each entry, not a nicety. `done when` alone is unjudgeable;
+    `done when` with the words either side of it is judgeable at a glance, which is the cheapest
+    guard against the mention-versus-use failure that produced all of this.
+    """
+    t = str(text or "")
+    low = t.lower()
+    markers = []
+    for mk in _FINISH_MARKERS:
+        start = 0
+        while True:
+            i = low.find(mk, start)
+            if i < 0:
+                break
+            markers.append({"marker": mk, "at": i,
+                            "typographic": _typographic_at(t, i, mk),
+                            "context": " ".join(t[max(0, i - window):i + len(mk) + window].split())})
+            start = i + len(mk)
+    # HOW MUCH OF THIS IS A QUOTED INSTRUCTION — balooga-owner's correction, and it invalidated a
+    # cross-repo comparison that five of us had already started making. Five of their six mandates
+    # embed TWO documents: a verbatim quote of the human, then the agent's plan. Raw median 722,
+    # agent's half alone 479. Nobody had asked whether the field was one document or two, so the
+    # length rows were silently comparing different objects. showrunner checked their own at the
+    # same instruction and found 0.7% quoted, all of it error strings — one-part, like-for-like.
+    #
+    # A LOWER BOUND AND IT SAYS SO: this counts characters inside '' and "" spans, so a human
+    # instruction pasted with no quotation marks at all measures zero. That is why the number is
+    # reported rather than a two-part/one-part verdict — the fact is countable, the conclusion is
+    # not, which is the same rule as every other field here.
+    _blanked = _blank_quoted(t)
+    return {"markers_checked": list(_FINISH_MARKERS),
+            "labelled_markers": markers,
+            "enumerated_items": len(_ENUM_ITEM_PAT.findall(t)),
+            "quoted_chars": sum(1 for a, b in zip(t, _blanked) if a != b),
+            "text_len": len(t)}
+
+
 def cmd_mandate(s, a):
     """Bind, park, resume, or release an autonomy mandate. While bound, the Stop gate is live.
 
@@ -2656,6 +3175,7 @@ def cmd_mandate(s, a):
         m["active"] = False
         m["cleared_at"] = now()
         s["stop_blocks"] = 0
+        s["stops_since_clear"] = 0     # each clear gets its own window; see cmd_stopgate
         save(s)
         logline({"kind": "mandate_clear", "text": m.get("text"), "notes": a.notes,
                  "was_parked": was_parked})
@@ -2797,7 +3317,30 @@ def cmd_mandate(s, a):
     # mandate with a permanently disarmed engine is the exact stall `handed_off` exists to avoid.
     s.pop("handed_off", None)
     save(s)
-    logline({"kind": "mandate_set", "text": a.set})
+    # THE FACTS ABOUT THE FINISH LINE RIDE THE SET RECORD, because the clear side cannot be made
+    # answerable for a promise the set side never wrote down — which is what every clear-side gate
+    # proposed in this exchange foundered on, mine included.
+    # THE INSTRUCTION THAT PROMPTED IT, IF THE AGENT WILL QUOTE ONE — showrunner's second
+    # instrument, offered explicitly as "not a request" and taken because it is cheap now and
+    # expensive to reconstruct later. Their measurement: 29 mandates, 0 with the triggering
+    # instruction recorded beside them. balooga-owner's handover hypothesis was testable on
+    # balooga's data and not on showrunner's for exactly one reason — balooga's mandate text
+    # EMBEDS the human quote and showrunner's does not. With this field the whole class of
+    # question is answerable from the log instead of from an agent's memory of its own sessions.
+    #
+    # NAMED `because_quote` AND NOT `reason`, and the distinction is the load-bearing part.
+    # showrunner's own argument for why `authorize --reason` is a better source than mandate_set
+    # is that it is REQUIRED VERBATIM, so it cannot drift into paraphrase the way a summary does.
+    # This field has no such protection: it is optional, and the agent is the one typing — the
+    # same honesty `authorize` already owes, where nothing can verify the human really said it.
+    # So it is recorded as a QUOTE the agent supplied, flagged unverified, and no consumer of the
+    # log may read it as established. A field that looked like the human's words and was not would
+    # be worse than the gap it fills.
+    _mrec = dict({"kind": "mandate_set", "text": a.set}, **finish_line_facts(a.set))
+    if getattr(a, "because", None):
+        _mrec["because_quote"] = a.because
+        _mrec["because_verified"] = False
+    logline(_mrec)
     out("✓ MANDATE bound. The Stop gate (protecting the human's attention) is now LIVE.",
         f"  {a.set}",
         "→ ending your turn now requires one of:",
@@ -2878,10 +3421,57 @@ _UP_OUTAGE_CAVEAT = (
 UPSTREAM_F = os.path.join(ROOT, "upstream.json")
 
 
+def is_repo_slug(r):
+    """`owner/name`, and nothing that is merely path-shaped (#129).
+
+    The old filter was `"/" in r`, which EVERY absolute path satisfies — so a config holding
+    `~/dev/game_loop` sailed through and reached `gh search --repo`, which answered with GitHub's
+    generic "the listed users and repositories cannot be searched either because the resources do
+    not exist or you do not have permission to view them". Four watched repos, every checkpoint,
+    and that sentence sends a reader to `gh auth status`, token scopes, repo visibility and the
+    search rate limit before it sends them to the value they typed.
+    """
+    if not isinstance(r, str):
+        return False
+    r = r.strip()
+    return (r.count("/") == 1 and not r.startswith(("~", "/", "."))
+            and " " not in r and all(part for part in r.split("/")))
+
+
 def upstream_repos():
-    """Repos to watch. EMPTY BY DEFAULT, so this is inert until somebody opts in."""
+    """Repos to watch. EMPTY BY DEFAULT, so this is inert until somebody opts in.
+
+    A value that is not a slug is DROPPED AND NAMED rather than silently passed to `gh` — see
+    `upstream_config_warning`, which is what makes the drop visible at the top of `status`.
+    """
     v = config().get("upstream_repos", [])
-    return [r for r in v if isinstance(r, str) and "/" in r] if isinstance(v, list) else []
+    return [r.strip() for r in v if is_repo_slug(r)] if isinstance(v, list) else []
+
+
+def upstream_rejected_repos():
+    """The entries `upstream_repos()` refused, so a caller can say WHICH value was wrong."""
+    v = config().get("upstream_repos", [])
+    if not isinstance(v, list):
+        return []
+    return [r for r in v if isinstance(r, str) and r.strip() and not is_repo_slug(r)]
+
+
+def upstream_config_warning():
+    """A loud, one-line complaint naming the offending value — or "" when the config is clean.
+
+    LOUD AND AT THE TOP, because the failure it replaces was a recurring runtime mystery: the check
+    reported four repos unreachable every checkpoint and the cause was one character class in a
+    filter. Naming the value turns a session of auth debugging into one read.
+    """
+    bad = upstream_rejected_repos()
+    if not bad:
+        return ""
+    return "\n".join(
+        ["⚠ upstream_repos HAS %d ENTRY(IES) THAT ARE NOT `owner/name` AND ARE BEING IGNORED:" % len(bad)]
+        + ["    %s" % b for b in bad]
+        + ["  `gh search --repo` takes a SLUG, not a path. A filesystem path reaches GitHub and comes",
+           "  back as \"the listed users and repositories cannot be searched ... or you do not have",
+           "  permission\", which is about the value, not your token. Fix them in .game_loop/config.json."])
 
 
 def _upstream_baseline():
@@ -2907,7 +3497,11 @@ def _upstream_fetch(repo, timeout=25):
     except (OSError, subprocess.TimeoutExpired) as exc:
         return None, None, f"search did not return ({type(exc).__name__})"
     if r.returncode != 0:
-        return None, None, (r.stderr or "").strip().split("\n")[-1][:120] or "search failed"
+        # NAME THE REPO BESIDE THE ERROR (#129). GitHub's message is generic and misdirects — "you
+        # do not have permission" reads as an auth problem when the real fault is the value being
+        # passed. The string is already in scope; not printing it cost a session of auth debugging.
+        why = (r.stderr or "").strip().split("\n")[-1][:120] or "search failed"
+        return None, None, "%s (asked for repo %r)" % (why, repo)
     try:
         items = json.loads(r.stdout or "[]")
     except ValueError:
@@ -2934,8 +3528,15 @@ def upstream_check(write=True):
     a checkpoint is a watcher that gets removed before it ever reports anything.
     """
     repos = upstream_repos()
+    # THE COMPLAINT COMES FIRST AND SURVIVES THE "off" PATH (#129). A config holding only paths
+    # yields NO usable repos, so returning "off" here would report the watcher as switched off
+    # when it is in fact misconfigured — the two look identical from outside and mean opposite
+    # things. Naming the values is the whole fix: the old failure was four repos "unreachable"
+    # every checkpoint with GitHub's permission error, which is about the value, not the token.
+    warn = upstream_config_warning()
+    pre = warn.split("\n") if warn else []
     if not repos:
-        return [], "off"
+        return (pre, "misconfigured") if pre else ([], "off")
     base = _upstream_baseline()
     first_run = not base.get("repos")
     stored = dict(base.get("repos") or {})
@@ -2977,7 +3578,7 @@ def upstream_check(write=True):
             pass
     n_iss = sum(len((stored.get(r) or {}).get("issues") or {}) for r in checked)
     if first_run and checked:
-        return ([f"upstream: baseline recorded — {n_iss} issue(s) involving you across "
+        return (pre + [f"upstream: baseline recorded — {n_iss} issue(s) involving you across "
                  f"{len(checked)} repo(s).",
                  "  Nothing is reported on a first run. Everything after this point is a CHANGE",
                  "  against this snapshot; if this gate had spoken now it would have handed you",
@@ -2987,11 +3588,12 @@ def upstream_check(write=True):
                     "baseline", "  and will record theirs on a later run."] if failed else []),
                 "first")
     if not checked:
-        return ([f"upstream: COULD NOT CHECK — {len(failed)} of {len(repos)} repo(s) failed.",
+        return (pre + [f"upstream: COULD NOT CHECK — {len(failed)} of {len(repos)} repo(s) failed.",
                  *[f"    {r}: {w}" for r, w in failed],
                  "  " + _UP_OUTAGE_CAVEAT], "outage")
     lines = []
     if moved:
+        lines = pre + lines
         lines.append(f"upstream: {len(moved)} item(s) moved since the last check —")
         for repo, num, what, title in moved[:12]:
             where = f"{repo}#{num}" if num else repo
@@ -2999,6 +3601,7 @@ def upstream_check(write=True):
         if len(moved) > 12:
             lines.append(f"    ... and {len(moved) - 12} more (all recorded; only 12 shown)")
     else:
+        lines = pre + lines
         lines.append("upstream: no movement in the index across "
                      f"{len(checked)} repo(s), {n_iss} issue(s).")
     if failed:
@@ -3143,24 +3746,56 @@ def release_distance():
     than against a branch: `stable`/`beta` are what this project tells consumers to install, and the
     gap that matters is between what exists and what they can get.
     """
-    tags = _git("tag", "-l", "stable-*", "beta-*") or ""
-    marked = [t for t in tags.split("\n") if t.strip()]
-    if not marked:
-        return 0, None, None          # never released: no distance is owed, and none is implied
-    best_n, best_sha, best_lvl = None, None, None
-    for t in marked:
-        sha = _git("rev-list", "-n", "1", t)
-        if not sha:
+    # TWO GIT PROCESSES PER TAG IS WHY A TURN-END TOOK SIXTEEN MINUTES. This loop ran
+    # `rev-list -n 1 <tag>` and `rev-list --count sha..HEAD` for EVERY marked tag: at 254 tags that
+    # is 508 subprocess spawns, measured at 263s inside one `checkpoint`, and a sample of the
+    # running process was almost entirely Python import/exec — the cost of starting processes, not
+    # of walking history.
+    #
+    # THE SHAPE WAS THE WORST AVAILABLE: the gate that guards RELEASING got slower every time you
+    # released, so the project punished exactly the thing it was built to encourage. Ten tags
+    # landed here in one day and each one made every future turn-end dearer.
+    #
+    # Three calls now, whatever the tag count. `for-each-ref` resolves every tag to its commit in
+    # one pass; walking `rev-list HEAD` once finds the NEAREST marked ancestor, which is by
+    # definition the smallest distance; and the exact count is then asked for that one tag only, so
+    # the number this returns is the same number the loop returned.
+    # `%(*objectname)` FIRST, AND THAT IS NOT A DETAIL. `confidence` writes ANNOTATED tags, so
+    # `%(objectname)` is the sha of the TAG OBJECT, not of the commit — it never appears in
+    # `rev-list HEAD`, so a lookup keyed on it matches nothing and this returns "nothing owed" for
+    # every input. That is a gate which can never fire, and the first version of this fix had it.
+    #
+    # It survived the equivalence check because the old and new code agreed on six sampled heads —
+    # both answering 0, for opposite reasons. Caught only by asking for a commit with no tag on it
+    # and finding the list was wrong. The deref field is empty for a lightweight tag, so taking it
+    # when present and falling back covers both kinds.
+    want = {}
+    for line in (_git("for-each-ref", "--format=%(*objectname) %(objectname) %(refname:short)",
+                      "refs/tags/stable-*", "refs/tags/beta-*") or "").split("\n"):
+        parts = line.split(None, 2)
+        if len(parts) == 3:
+            deref, direct, name = parts
+            want.setdefault(deref or direct, name)
+        elif len(parts) == 2:                       # lightweight: the deref field came back empty
+            want.setdefault(parts[0], parts[1])
+    if not want:
+        return 0, None, None
+    for sha in (_git("rev-list", "HEAD") or "").split("\n"):
+        sha = sha.strip()
+        if sha not in want:
             continue
         n = _git("rev-list", "--count", f"{sha}..HEAD")
         if n is None or not str(n).strip().isdigit():
-            continue
+            return 0, None, None
         n = int(n)
-        if best_n is None or n < best_n:
-            best_n, best_sha, best_lvl = n, sha, t.split("-")[0]
-    if not best_sha or not best_n:
-        return 0, None, None
-    return best_n, best_sha, best_lvl
+        if not n:
+            return 0, None, None       # HEAD is itself marked: nothing owed
+        return n, sha, want[sha].split("-")[0]
+    # NO MARKED TAG IS AN ANCESTOR OF HEAD — a branch nobody has released from. The old loop would
+    # have measured against a tag off to one side, which is a distance to a commit this history
+    # does not contain. Saying nothing is owed is the honest answer and the safe direction: this
+    # gate refuses handbacks, and refusing on an unanswerable question is how a gate gets removed.
+    return 0, None, None
 
 
 def newest_mark():
@@ -3250,6 +3885,108 @@ def publish_gap(s=None, mark=None, seen=None, attachments=None):
         "  early leaves the mark made and the release unmade, with nothing said either way.",
     ]
     return L
+
+
+def deferral_standing(head=None, log_lines=None):
+    """The reason a release was deferred FOR THIS HEAD, or None — read from the log, not remembered.
+
+    THE DECISION WAS ALREADY MADE AND WRITTEN DOWN, AND NOTHING READ IT BACK. `checkpoint
+    --release-deferred` logs the reason with the HEAD it was about, and then the very next
+    checkpoint refused again unless the whole sentence was retyped. That converts a decision into a
+    ritual, which is the failure the checkpoint's own ritual warning is about, three lines further
+    down the same function.
+
+    KEYED ON HEAD, deliberately. A deferral is a judgement about a specific set of finished
+    commits: "these do not reach a consumer". Move HEAD and that judgement has not been made about
+    the new work, so the gate fires again — which is the whole point of it firing at all.
+
+    An unreadable log returns None, so the gate refuses as it always did. That is the safe
+    direction here: the cost is retyping a sentence, and the cost of the other one is a release
+    nobody gets.
+    """
+    if head is None:
+        head = _git("rev-parse", "--short", "HEAD") or ""
+    if not head:
+        return None
+    def _scan(lines):
+        found = None
+        for ln in lines:
+            if '"release_deferred"' not in ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if r.get("kind") == "release_deferred" and r.get("head") == head:
+                found = r.get("reason") or ""     # the LAST one wins: a reason can be revised
+        return found
+    if log_lines is not None:
+        return _scan(log_lines)
+    try:
+        with open(LOG_F) as f:
+            return _scan(f)
+    except (OSError, ValueError):
+        return None
+
+
+def current_pin_sha():
+    """The sha this repo's own pinned checkout was cut from, or None — read, never remembered."""
+    return _pin_marker_sha(os.path.join(REPO_ROOT, PINNED_DIRNAME, ".game_loop"))
+
+
+def deferral_pin_note(head=None, log_lines=None, pin_now=None):
+    """"...and the pin has MOVED since that decision", or "" — because the prose cannot know.
+
+    A DEFERRAL'S REASON IS PROSE, AND PROSE GOES STALE WITHOUT ANYTHING TOUCHING IT. The reason is
+    keyed on HEAD, so it lapses when the commits change; nothing lapsed it when the PIN changed, and
+    the pin is what most of these reasons are actually about ("these commits are not dogfooded").
+
+    Observed twice on 2026-09-03. First a reason claimed the pin was four commits behind when the
+    stamp had matched HEAD for eight hours, and a release sat unmade. Then — after the verb that
+    reports the pin was fixed to print it in both directions — a reason recorded a pin sha copied
+    from the previous turn's message while the correct value sat in that same command's output. The
+    second one matters more: the reader was corrected and the WRITER still had nothing checking it.
+
+    AND THE PIN CAN MOVE WITH THIS SESSION DOING NOTHING. Session 2378d4b0 re-pinned this checkout
+    at 13:48:20 while another session was mid-flight — one log record, no other activity. So a
+    remembered pin value is not merely stale-able by its author; it is stale-able by somebody else.
+
+    Silent when the record carries no pin (every deferral written before this existed), when there
+    is no pin, and when they agree — this reports a CHANGE, and a note printed on every checkpoint
+    is a note nobody reads by the third one.
+    """
+    if head is None:
+        head = _git("rev-parse", "--short", "HEAD") or ""
+    if not head:
+        return ""
+    if pin_now is None:
+        pin_now = current_pin_sha()
+
+    def _scan(lines):
+        found = None
+        for ln in lines:
+            if '"release_deferred"' not in ln:
+                continue
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if r.get("kind") == "release_deferred" and r.get("head") == head:
+                found = r.get("pin")               # the LAST one wins, as with the reason
+        return found
+
+    if log_lines is not None:
+        was = _scan(log_lines)
+    else:
+        try:
+            with open(LOG_F) as f:
+                was = _scan(f)
+        except (OSError, ValueError):
+            return ""
+    if not was or not pin_now or was == pin_now:
+        return ""
+    return (f"the PIN has moved since that reason was written: {was[:8]} → {pin_now[:8]}. "
+            "If the reason is about dogfooding, re-read it before trusting it.")
 
 
 def release_owed():
@@ -3456,7 +4193,13 @@ def cmd_checkpoint(s, a):
     # both times, and was read past; the human then had to ASK, twice, whether the work was marked
     # and published. It was not. Informing is a thing a reader can decline, which is what rung 5
     # means — so the mechanism moves up rather than the wording getting louder.
-    if not getattr(a, "release_deferred", None):
+    _standing = None if getattr(a, "release_deferred", None) else deferral_standing()
+    # Error-swallowed: a note about a pin must never be the thing that stops a checkpoint.
+    try:
+        _pinmoved = deferral_pin_note() if _standing else ""
+    except Exception:  # noqa: BLE001
+        _pinmoved = ""
+    if not getattr(a, "release_deferred", None) and not _standing:
         _owed = release_owed()
         if _owed:
             _n, _sha, _lvl = _owed
@@ -3478,11 +4221,17 @@ def cmd_checkpoint(s, a):
     if notify:
         notify.send("checkpoint", f"📍 checkpoint — {a.notes}")  # default-off event; opt in to page
     if getattr(a, "release_deferred", None):
+        # THE PIN GOES IN THE RECORD, not only in the prose. A reason that talks about the pin
+        # is the common case, and prose is exactly what stops being true without anyone editing it.
         logline({"kind": "release_deferred", "reason": a.release_deferred,
-                 "head": _git("rev-parse", "--short", "HEAD")})
+                 "head": _git("rev-parse", "--short", "HEAD"), "pin": current_pin_sha()})
     _rit = ritual_checkpoints()
     out("✓ CHECKPOINT — one turn-end allowed (reporting, not asking).",
         f"  {a.notes}",
+        *([f"  release deferred for this HEAD, standing from an earlier checkpoint: {_standing}",
+           "  It lapses the moment HEAD moves — a deferral is a judgement about THESE commits."]
+          if _standing else []),
+        *([f"  ⚠ {_pinmoved}"] if _standing and _pinmoved else []),
         *([f"⚠ {_rit + 1} CHECKPOINTS SINCE ANY EVIDENCE WORK — no commit anywhere in this repo,",
            "  and no claim, harden, proof, phase or retro logged in between. That is not progress",
            "  reported N times; it is the",
@@ -4029,6 +4778,181 @@ def recurrence_lines(reason, real, raw_path):
     return lines
 
 
+# ── a grant that lapses ──────────────────────────────────────────────────────────────────────────
+#
+# "A GRANT THAT LAPSES IS NOT A REMINDER; IT IS THE GUARD CLOSING ITSELF." — wcs, who argued me out
+# of the cheaper version of this and was right.
+#
+# THE HATCH IS "LOUD, NARROW, SINGLE-USE". Narrow has always meant narrow in PATH and narrow in
+# COUNT, and unbounded in TIME — and time is the only one of the three that acts while nobody is
+# looking, which is exactly the condition under which a stale grant is dangerous. wcs measured five
+# live grants and thirteen unspent uses in their tree, one dated six weeks earlier with eight uses
+# left, covering a repo root, an app container data dir, ~/.config/showrunner and an MCP verb.
+#
+# I PROPOSED THE CHEAPER RUNG AND IT WAS ALREADY REFUTED. My argument was that a lapse only helps
+# where somebody remembers to set one, so status should name a grant's AGE instead. wcs's answer
+# was to point at themselves: `status` printed "authorize grants: 5 live, 6 spent" on every run of
+# a long session, they read past it every time, and then told the human it did not surface grants
+# at all. Asking that same line to argue harder is asking a channel to succeed where it has just
+# demonstrably failed, on the same reader. Both are built; neither is traded for the other.
+
+_DUR_PAT = re.compile(r"^\s*(\d+)\s*([mhdw])\s*$", re.I)
+_ISO_DATE_PAT = re.compile(r"^\s*(\d{4}-\d{2}-\d{2})\s*$")
+_ISO_FULL_PAT = re.compile(r"^\s*(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}(?::\d{2})?)\s*$")
+_DUR_SECONDS = {"m": 60, "h": 3600, "d": 86400, "w": 604800}
+
+
+def parse_expires(spec, base_epoch=None):
+    """An --expires value as an ISO instant, or None for "never". Raises ValueError on nonsense.
+
+    ACCEPTS A DURATION OR A DATE, and refuses a bare number in either direction. "2" is the one
+    input where a wrong guess is invisible: read as minutes it lapses during the call that set it,
+    read as days it covers a week of unattended runs, and nothing downstream can tell which the
+    human meant. `m` is MINUTES, deliberately, and months are not a unit here — a grant measured in
+    months is the thing this exists to prevent.
+
+    A DATE-ONLY VALUE MEANS THE END OF THAT DAY. Comparison downstream is lexicographic against
+    now()'s "%Y-%m-%dT%H:%M:%S", so a bare "2026-09-20" would otherwise mean one second past
+    midnight — a grant that lapses before the morning of the day the human named it for.
+    """
+    if spec is None:
+        return None
+    raw = str(spec).strip()
+    if not raw or raw.lower() in ("never", "none", "off"):
+        return None
+    m = _DUR_PAT.match(raw)
+    if m:
+        n = int(m.group(1))
+        if n <= 0:
+            raise ValueError("a duration of %r lapses before the grant is written down" % raw)
+        base = time.time() if base_epoch is None else base_epoch
+        return datetime.datetime.fromtimestamp(
+            base + n * _DUR_SECONDS[m.group(2).lower()]).isoformat(timespec="seconds")
+    m = _ISO_DATE_PAT.match(raw)
+    if m:
+        return m.group(1) + "T23:59:59"
+    m = _ISO_FULL_PAT.match(raw)
+    if m:
+        v = m.group(1).replace(" ", "T")
+        return v if len(v) > 16 else v + ":00"
+    raise ValueError(
+        "--expires %r is neither a duration nor a date.\n"
+        "  duration : 30m  2h  7d  1w   (m is MINUTES; months are not a unit here)\n"
+        "  date     : 2026-09-30   or   2026-09-30T17:00\n"
+        "  never    : --expires never\n"
+        "A bare number is refused on purpose: read as minutes it lapses during this call, read as\n"
+        "days it covers a week of unattended runs, and nothing downstream can tell which you meant."
+        % raw)
+
+
+def grant_expired(a, now_iso=None):
+    """Has this grant lapsed? False when it carries no expiry, which is the default and the old
+    behaviour exactly. Lexicographic on purpose: both sides are written by now()'s format."""
+    exp = (a or {}).get("expires_at")
+    if not exp:
+        return False
+    return str(now_iso or now()) >= str(exp)
+
+
+def grant_live(a, now_iso=None):
+    """The one definition of live, so status and the three guards cannot drift apart.
+
+    THEY ALREADY COULD. Before this the gate was `uses_left > 0` written out by hand in four places
+    — status, the write guard, the gh guard and the MCP guard — and adding a second condition to
+    three of four is how a grant comes to be refused by one rail and honoured by another.
+    """
+    return int((a or {}).get("uses_left") or 0) > 0 and not grant_expired(a, now_iso)
+
+
+def grant_matches(a, target):
+    """Does grant `a` name `target`? Asked three ways, because `authorize` does not store what was
+    typed: it realpaths `--path`, so a verb grant lands as `<cwd>/gh issue close` and the gh guard
+    reads it back by BASENAME. A revoke that compared only the stored form would silently miss
+    exactly the grants a human is most likely to name by hand.
+
+    The basename form is accepted ONLY for a `gh ` verb. Matching any grant by basename would let
+    `--revoke game_loop` disarm a grant on `/Users/x/dev/game_loop`, which is a different act than
+    the one asked for.
+    """
+    stored = (a.get("path") or "").strip()
+    t = (target or "").strip()
+    if not stored or not t:
+        return False
+    if stored == t:
+        return True
+    base = os.path.basename(stored)
+    if base.startswith("gh ") and base == t:
+        return True
+    return stored == os.path.realpath(os.path.expanduser(t))
+
+
+def authorize_revoke(s, a):
+    """Withdraw a live grant. DISARMED, NOT DELETED — and loud when it matched nothing.
+
+    Reported by wcs, who had no verb for this and hand-edited state.json, which is the working-
+    around this repo asks consumers to report instead of absorb. What they found when they looked
+    properly: five live grants and thirteen unspent uses across two state files, one dated six
+    weeks earlier with eight uses left. A grant is armed until something spends it, and nothing
+    spends the ones nobody needed.
+
+    Two decisions here are theirs, and both are right. DISARM rather than delete, because deleting
+    takes with it the evidence that the hatch was ever opened, and "logged forever" is the entire
+    value of the hatch. And record WHY and HOW MANY uses were withdrawn, because a grant zeroed
+    with no other mark is indistinguishable afterwards from one somebody actually spent — the
+    record would read as a bypass that happened.
+
+    REFUSES WHEN NOTHING MATCHED. That is the load-bearing half. A revoke that prints success over
+    an empty match set is this repo's recurring defect sitting in the worst available place: the
+    human reads "revoked", the grant is still armed, and the next write through it is the one
+    nobody is watching for. Silence here would be worse than having no verb at all.
+    """
+    target = a.revoke
+    auth = [x for x in (s.get("authorized") or []) if isinstance(x, dict)]
+    matched = [x for x in auth if grant_matches(x, target)]
+    live_all = [x for x in auth if int(x.get("uses_left") or 0) > 0]
+    if not matched:
+        if live_all:
+            have = ["  live grants, named as you must name them:"]
+            have += ["    %3d left · %s" % (int(x.get("uses_left") or 0), x.get("path"))
+                     for x in live_all[:8]]
+            if len(live_all) > 8:
+                have.append("    ... and %d more live" % (len(live_all) - 8))
+        else:
+            have = ["  This checkout holds no live grants at all."]
+        die("REFUSED — no grant here names %r, so NOTHING WAS REVOKED.\n%s\n\n"
+            "Said this loudly on purpose: a revoke that reported success over an empty match set\n"
+            "would leave the hatch armed while the record said it was closed, and the write that\n"
+            "went through it later would be the one nobody was watching for."
+            % (target, "\n".join(have)))
+    live = [x for x in matched if int(x.get("uses_left") or 0) > 0]
+    if not live:
+        out("✓ ALREADY DISARMED — %d grant(s) name that path and none has a use left."
+            % len(matched),
+            "  Nothing changed, and nothing needed to. A spent grant and a revoked one are both",
+            "  harmless; the record keeps them either way so the hatch stays readable later.")
+        return
+    reason = a.reason or "revoked; no reason given"
+    for x in live:
+        n = int(x.get("uses_left") or 0)
+        x["uses_left"] = 0
+        x["revoked_at"] = now()
+        x["revoked_reason"] = reason
+        x["uses_revoked"] = n
+    save(s)
+    for x in live:
+        logline({"kind": "authorize_revoke", "path": x.get("path"), "reason": reason,
+                 "granted_reason": x.get("reason"), "granted_at": x.get("at"),
+                 "uses_revoked": x.get("uses_revoked")})
+    withdrawn = sum(int(x.get("uses_revoked") or 0) for x in live)
+    out("✓ REVOKED — %d grant(s), %d unspent use(s) withdrawn." % (len(live), withdrawn),
+        *["  %s (granted %s, %d use(s) left)"
+          % (x.get("path"), (x.get("at") or "?")[:16], int(x.get("uses_revoked") or 0))
+          for x in live],
+        "  reason: %s" % reason,
+        "→ disarmed, not deleted. The grant stays in state.json and in log.jsonl carrying the",
+        "  human's original words, because the record that a hatch was opened outlives the hatch.")
+
+
 def cmd_authorize(s, a):
     """Record ONE human-authorized mutation outside this repo. Consumed on use, logged forever.
 
@@ -4041,6 +4965,8 @@ def cmd_authorize(s, a):
     typing. It does not make a bypass impossible; it makes a bypass LOUD, NARROW, SINGLE-USE and
     permanently attributable. That is the most a guard on this side of the keyboard can do.
     """
+    if getattr(a, "revoke", None):
+        return authorize_revoke(s, a)
     if not a.path or not a.reason:
         die("authorize needs --path <prefix> and --reason \"<the human's own words>\".\n"
             "This is a HUMAN escape hatch, not a convenience. Quote them, don't paraphrase.")
@@ -4072,6 +4998,10 @@ def cmd_authorize(s, a):
             "  * if you are dispatched and no human is reachable, the orchestrator that briefed you\n"
             "    is the one that must ask. Report the refusal upward; do not spend the hatch for it.\n\n"
             "The guard you hit will still be there. That is the point of it.")
+    try:
+        expires_at = parse_expires(getattr(a, "expires", None))
+    except ValueError as e:
+        die("REFUSED — %s" % e)
     real = os.path.realpath(os.path.expanduser(a.path))
     # BEFORE the append and the logline below, or this grant counts itself as its own precedent.
     recur = recurrence_lines(a.reason, real, a.path)
@@ -4081,6 +5011,7 @@ def cmd_authorize(s, a):
     # "a human was asked here" and "nobody was" stops being invisible in the record.
     _armed = s.get("t3_armed") or {}
     auth = {"path": real, "reason": a.reason, "at": now(), "uses_left": int(a.uses or 1),
+            "expires_at": expires_at,
             "asked_via_arm": bool(_armed.get("question")),
             # A SPENT question is recorded SEPARATELY from a live one rather than folded into the
             # same flag. "This exact question is open" and "some question was put to the human
@@ -4097,6 +5028,14 @@ def cmd_authorize(s, a):
         f"  path  : {real}",
         f"  reason: {a.reason}",
         f"  uses  : {auth['uses_left']}",
+        # SAID EITHER WAY. "no expiry" printed beside a grant is the one line that makes an
+        # unbounded one a decision somebody saw rather than a default they inherited — which is
+        # how a grant comes to sit armed for six weeks with nobody having chosen that.
+        ("  lapses: %s — after this the guard refuses it, spending nothing" % expires_at
+         if expires_at else
+         "  lapses: NEVER — this stays armed until it is spent or `authorize --revoke`d.\n"
+         "          `--expires 2h` / `7d` / `2026-09-30` bounds it. Time is the one dimension\n"
+         "          of this hatch that acts while nobody is looking."),
         # NAME THE LIVE QUESTION TOO. The spent branch below was fixed to print WHICH question,
         # because "some question was asked earlier" would let an unrelated hatch inherit its
         # diligence — and this branch still had exactly that defect, one step over. Observed while
@@ -4182,6 +5121,21 @@ def merge_files(tree, ref):
     The set is `git diff --name-only $(git merge-base HEAD <ref>)..<ref>` — the files that ref brings
     that HEAD does not already have. Paths come back REPO-relative, the one space edited.txt and the
     blast-radius check both speak, so a worktree's paths carry the worktree's prefix.
+
+    WHAT THIS MISSES, and it is an over-report in the widening direction: "HEAD does not already
+    have" is answered from ANCESTRY, and a squash-merge rewrites the commit — so a ref whose work is
+    already in HEAD is never an ancestor of it, and this replays the ENTIRE branch forever. The set
+    is therefore too big, not too small, and it feeds `attribute`, which uses it to widen what the
+    blast-radius check accepts. So the error excuses files rather than nagging about them.
+
+    Three things bound that, none of them this function: an own-edited file is matched as an own
+    edit BEFORE the attributed set is consulted, so nothing this session touched can be laundered
+    through a stale ref; the declaration is spent by one commit; and it carries a required reason
+    into log.jsonl permanently. What is left is files this session did not edit, that something else
+    wrote, that also fall inside an over-broad ref diff — inside one commit, with a reason on the
+    record. Observed as a BLOCKING failure in another harness (#125), where the same ancestry test
+    demanded review of code that had already shipped; not observed here, so it is written down
+    rather than gated (INV4).
     """
     if not _git_out(tree, "rev-parse", "--git-dir"):
         return None, "%s is not a git tree, so there is no ref to recompute anything from" % tree
@@ -5654,16 +6608,69 @@ _ASK_MARKERS = [
     "want me to", "should i ", "shall i ", "would you like", "do you want",
     "let me know", "your call", "which would you", "would you rather",
     "prefer that i", "happy to either", "or should we", "thoughts?",
+    # ADDED AFTER THE GATE MISSED ONE, reported by the human in the turn after it fired on a
+    # DIFFERENT sentence and I complied. The miss: "I'll pick it up next unless you'd rather I
+    # leave it session-scoped." No question mark, so the tail test could not see it, and
+    # "you'd rather" is not "would you rather" — a contraction and a different word order.
+    "you would rather", "unless you", "if you would prefer", "if you prefer",
+    "say the word", "up to you", "your preference", "or i can ", "or i could ",
 ]
+
+# CONTRACTIONS ARE WHY THE LIST MISSED IT, and expanding them is worth more than the two strings
+# it would have taken to patch that one sentence. Every marker here is written expanded, so
+# "you'd"/"you would" and "i'll"/"i will" are one entry rather than two, and the next contraction
+# nobody thought of is already covered.
+_CONTRACTIONS = (
+    ("won't", "will not"), ("can't", "cannot"), ("n't", " not"),
+    ("i'll", "i will"), ("we'll", "we will"), ("you'll", "you will"),
+    ("i'd", "i would"), ("you'd", "you would"), ("we'd", "we would"),
+    ("let's", "let us"), ("i'm", "i am"), ("you're", "you are"),
+)
+
+# A WORD INSERTED BETWEEN VERB AND PARTICLE also slipped past: the list had "i'll pick up" and the
+# sentence said "I'll pick it up". Substring matching cannot see that, so the verb-particle forms
+# are patterns rather than strings. Narrow on purpose — a first-person future verb about WORK.
+_CONTINUE_PATTERNS = (
+    r"\bi will (?:pick|take|carry|move|push|pull) (?:it|this|that|them|those|these) (?:up|on|over|forward|through)\b",
+    r"\bi will (?:get|set) (?:it|this|that) (?:done|going|started)\b",
+)
+
+
+# EVERY ALTERNATIVE BELOW NAMES A META-VERB OF STARTING — start, begin, do, tackle, pick up, moving
+# on — and that is the flaw wcs measured rather than argued. "Next I'm REBUILDING the artifact" uses
+# a WORK verb, and the set of work verbs is open: pulling, wiring, drafting, checking, running. An
+# alternation over them loses by construction, because the announcement just picks one nobody listed.
+#
+# They also found the narrow bug inside the broad one: `next\s+i\s` wants whitespace after the "i",
+# so the branch that looks like it covers "next i ..." only covers a bare pronoun and "Next I'm"
+# walks past it on the apostrophe. Reproduced here verbatim — 4 of their 7 shapes escaped this
+# pattern, and 5 of 7 escaped `_promised_to_continue`, which is a second detector with the same hole.
+#
+# So match the SHAPE and leave the verb free: a signpost to future work with a first person behind
+# it. Their patterns, kept as they wrote them, including the end-of-line anchor on the last — which
+# is what keeps "I'm reading the record now, and it says X" a REPORT rather than a promise.
+_FUTURE_WORK_PAT = re.compile(
+    r"^(?:and |so |then )?next\b[^.!?\n]{0,40}\b(?:i'?m|i'?ll|i am|i will)\b|"
+    r"\bnext,?\s+(?:i'?m|i'?ll|i am|i will)\b|"
+    r"\bi'?m (?:going|about) to \w+|"
+    r"\bi'?m \w+ing\b[^.!?\n]{0,60}\b(?:now|next)\b\s*[.!]?$", re.I | re.M)
+
+
+def _normalise(text):
+    """Lowercased, contractions expanded, whitespace collapsed — so one marker covers both spellings."""
+    t = (text or "").lower()
+    for a, b in _CONTRACTIONS:
+        t = t.replace(a, b)
+    return re.sub(r"\s+", " ", t)
 
 
 def _asked_the_user(text):
     if not text:
         return False
-    t = text.lower()
-    if any(mk in t for mk in _ASK_MARKERS):
+    t = _normalise(text)
+    if any(_normalise(mk) in t for mk in _ASK_MARKERS):
         return True
-    tail = [ln.strip() for ln in t.strip().splitlines() if ln.strip()][-3:]
+    tail = [ln.strip() for ln in (text or "").lower().strip().splitlines() if ln.strip()][-3:]
     return any(ln.endswith("?") for ln in tail)
 
 
@@ -5721,7 +6728,21 @@ def _closing(text, lines=4):
 
 
 def _promised_to_continue(text):
-    return any(mk in _closing(text) for mk in _CONTINUE_MARKERS)
+    # Normalised for the same reason the ask-check is: "i'll" and "i will" are one rule, and the
+    # verb-particle patterns catch a word inserted between the two halves ("pick IT up").
+    tail = _normalise(_closing(text))
+    if any(_normalise(mk) in tail for mk in _CONTINUE_MARKERS):
+        return True
+    if any(re.search(pat, tail) for pat in _CONTINUE_PATTERNS):
+        return True
+    # THE SHAPE PATTERN RUNS ON THE RAW TAIL, NOT THE NORMALISED ONE, and that is not a detail:
+    # `_normalise` expands "i'm" to "i am" for the marker list, and the shape pattern's `i'?m`
+    # cannot match "i am" — so normalising first silently disarmed two of the four shapes. Caught by
+    # the two-direction fixture, which is the only reason it is not shipped.
+    #
+    # Quotation immunity is preserved because `_closing` has already blanked quoted spans, which is
+    # what lets a postmortem name these markers without tripping the guard it is about.
+    return bool(_FUTURE_WORK_PAT.search(_closing(text)))
 
 
 _TRANSCRIPT_TAIL = 250              # records kept from the end — a tail in LINES, never in bytes
@@ -5914,14 +6935,17 @@ def deferral_in_checkpoint(notes):
         return None
     if _BLOCKED_PAT.search(notes):
         return None
-    m = _NEXT_ACTION_PAT.search(notes)
+    m = _NEXT_ACTION_PAT.search(notes) or _FUTURE_WORK_PAT.search(notes)
     if not m:
         m = _DEFERS_WORK_PAT.search(notes)
         if not m:
             return None
         tail = notes[m.start():m.start() + 140].strip()
         return tail.split("\n")[0]
-    start = m.start(1)
+    # `_FUTURE_WORK_PAT` has no capturing group — it matches a SHAPE, not a named opener — so
+    # group 1 exists only for the older alternation. Asking for it unconditionally raised
+    # IndexError on every shape match, which the two-direction fixture caught immediately.
+    start = m.start(1) if m.lastindex else m.start()
     tail = notes[start:start + 140].strip()
     return tail.split("\n")[0]
 
@@ -5977,8 +7001,38 @@ def _stop_verdict(s, payload):
     """
     m = s.get("mandate") or {}
     if not m.get("active"):
-        # With no mandate bound, this gate is INERT. It must never sit between the human and a normal
-        # conversation, or it earns its own removal.
+        # WITH ONE EXCEPTION, ADDED BECAUSE THE INERTNESS HAD A HOLE EXACTLY WHERE IT HURT. Clearing
+        # a mandate switches this gate off, and the turn-end most likely to be a stall is the one
+        # right after that: clear, say "I'll start on that now", and stop. The announce-then-stop
+        # detector for that exact sentence lives 80 lines below and was unreachable, because the
+        # clear had already returned here.
+        #
+        # Reported by the human across SEVERAL agents, not one. Measured here afterwards: 4 of this
+        # repo's 7 clears are followed within ONE MINUTE by the watchdog going quiet, which is the
+        # log's shape for "cleared it and stopped".
+        #
+        # ARMED FOR THREE TURN-ENDS, NOT FOREVER. The docstring above is right that blocking every
+        # turn-end equally decays into a nag that gets ignored — so this is not "the gate is always
+        # on". It is the one detector that is about a FALSE STATEMENT rather than about asking, kept
+        # alive across the moment it was written for. After three turn-ends it goes quiet again.
+        # READ ONLY HERE. This function's docstring promises a pure decision so a suite can drive
+        # every branch, and the first version of this counted the turn-end and saved state inside
+        # it — which would have made the branch untestable without a real state file, in the
+        # function whose whole design note is that it is testable.
+        if m.get("cleared_at") and s.get("stops_since_clear", 0) < 3:
+            _t, _ = _last_assistant_text(payload)
+            if _promised_to_continue(_t):
+                return False, "cleared-then-announced", (
+                    "STOP GATE — you cleared the mandate and then said you were carrying on.\n\n"
+                    "  cleared: %s\n\n"
+                    "Those two cannot both be true at a turn-end. Clearing says the work is done;\n"
+                    "announcing says it is not, and stopping says neither. This is the stall the\n"
+                    "gate stays armed for — three turn-ends after a clear and no longer.\n\n"
+                    "Either DO the thing you just named, or end with what is actually true:\n"
+                    "the work is finished and you are waiting for them."
+                    % (m.get("cleared_at") or "?"))
+        # With no mandate bound, this gate is otherwise INERT. It must never sit between the human
+        # and a normal conversation, or it earns its own removal.
         return True, "no mandate bound — gate inert", None
 
     if payload.get("stop_hook_active"):
@@ -6306,6 +7360,43 @@ def stop_trigger_block(s, payload, notices):
     return "\n".join(lines)
 
 
+def record_session_activity(s, now_iso=None):
+    """One monotonic counter per session, written whether or not a mandate is bound.
+
+    REPORTED BY wcs, AND IT IS THE SAME STRUCTURAL GAP AS THE MANDATE SUBSTRATE, one level up.
+    They went to sample the population the unbound-mandate notice exists FOR — sessions that ran
+    without binding anything — and found that game_loop's own state cannot describe it. Every
+    unbound session in their tree recorded exactly one thing, that it oriented, and the nine were
+    byte-identical at 666 bytes. No claims, no pins, no checkpoints, no stop-gate blocks, because
+    with no mandate the gate is inert, so there is nothing to block and nothing to record.
+
+    MEASURED HERE TOO, at larger scale: 161 of 163 sessions in this repo never bound a mandate,
+    and 158 of them hold `oriented`, `version` and `transcript_path` and nothing else. So a SHORT
+    session that rightly needed no mandate and a LONG unattended run that should have bound one
+    are the same 650 bytes. "90% never bound one" is a true rate that supports no conclusion at
+    all about whether any of them warranted one.
+
+    THE TRANSCRIPT IS NOT THE WAY OUT, which I checked before accepting the argument rather than
+    after: 159 of those 161 transcripts are gone from disk here. Asking how many unbound sessions
+    exceeded a megabyte returns 0 over a denominator of TWO — the short-denominator failure this
+    repo keeps finding, and it would have read as "the gap is small".
+
+    NOTHING READS THIS. It is the substrate, recorded so that "unbound AND long" becomes an
+    answerable question next month, exactly as `finish_line_facts` was recorded so a clear-side
+    gate could become answerable later. The sessions most worth seeing are currently the ones the
+    tool writes least about, and that is backwards for a structural reason: the recording hangs
+    off the mandate, and these are the sessions with no mandate.
+
+    Three facts and no verdict. `turns` is monotonic; the two stamps give DURATION, which is the
+    other half of "long" and is not derivable from a count.
+    """
+    n = now_iso or now()
+    s["turns"] = int(s.get("turns") or 0) + 1
+    s.setdefault("first_turn_at", n)
+    s["last_turn_at"] = n
+    return s
+
+
 def cmd_stopgate(s, a, payload):
     """Stop-hook entrypoint. exit 0 = may stop · exit 2 = blocked, stderr goes back to the model.
 
@@ -6342,6 +7433,16 @@ def cmd_stopgate(s, a, payload):
         s["_tpath"] = payload["transcript_path"]
 
     allow, reason, rec = _stop_verdict(s, payload)
+    # BEFORE the mandate branch below and outside it, which is the entire point: this counter must
+    # be written for the sessions that never bind anything, because those are the ones nothing else
+    # here describes. Placing it under any mandate condition would reproduce the gap it closes.
+    record_session_activity(s)
+    # The post-clear window is counted HERE, not in the verdict: that function is documented as a
+    # pure decision so the suite can drive it, and a counter that writes state would end that.
+    _mand = s.get("mandate") or {}
+    if not _mand.get("active") and _mand.get("cleared_at"):
+        s["stops_since_clear"] = s.get("stops_since_clear", 0) + 1
+    save(s)
     if rec:
         logline(rec)
     if allow:
@@ -6526,6 +7627,12 @@ def cmd_trans(s, a):
     if a.doing is not None:
         ph["doing"] = a.doing
     ph["since"] = now()
+    # STAMP THE COMMIT, NOT ONLY THE DATE. `since` has been recorded since the beginning and the
+    # date alone cannot catch a phase that went stale within the hour it was written — measured
+    # here, a phase written at 00:22 was three commits behind by 00:47 and the date note was
+    # correctly silent the whole time. None when git cannot answer, which phase_head_note reads
+    # as "nothing to compare" rather than as agreement.
+    ph["head"] = _git("rev-parse", "--short", "HEAD")
     # A task-only update (just --doing) refreshes the current task without counting as a phase move,
     # so naming every task doesn't spam the retro nudge into being ignored.
     is_move = bool(a.tier or a.milestone)
@@ -10671,6 +11778,13 @@ def pin_wiring_lines(code, w):
             L.append(f"  ✓ all {len(have)} are byte-identical to the wiring this verb prints, so "
                      "the tracked file")
             L.append("    and the instructions have not drifted apart.")
+        # AGREEMENT USED TO BE SILENT HERE, and that is the whole defect (INV8: a pass that is
+        # silence proves nothing). Divergence has always been loud; a pin that MATCHES printed
+        # nothing at all, so this report named no commit and a reader carrying a stale belief about
+        # the pin met nothing that contradicted it. Observed 2026-09-03: a release was held for
+        # hours on a written claim that the pin was `4a4a114` while HEAD was `170f506`, when the
+        # stamp had said `170f5064` since 08:00 that morning — and running this verb was the thing
+        # that was supposed to settle it. It could not: it printed the wiring and no sha.
         pin_sha = _pin_marker_sha(code)
         head = _git_sha(REPO_ROOT)
         if pin_sha and head and not (pin_sha.startswith(head) or head.startswith(pin_sha)):
@@ -10680,6 +11794,16 @@ def pin_wiring_lines(code, w):
                   "    this tree. Edits here are inert until `self --pin <sha>`, which is both the "
                   "protection",
                   "    and how a shipped fix sits unused. Re-pinning takes effect immediately."]
+        elif pin_sha and head:
+            _at = (_pin_marker(code).get("at") or "").replace("T", " ")
+            L += [f"  ✓ the pin names {pin_sha[:8]} and so does HEAD"
+                  + (f", stamped {_at}" if _at else ""),
+                  "    — the gates ARE this tree, so an edit to .game_loop/bin/ is live for them."]
+        elif not pin_sha:
+            L.append(f"  ⚠ the {PINNED_MARK} stamp is unreadable, so WHICH commit is pinned is "
+                     "unknown — which is not the same answer as \"it matches\".")
+        elif not head:
+            L.append("  ⚠ git could not name HEAD here, so the pin was not compared to anything.")
         L += ["",
               f"  (this invocation ran {CODE_ROOT}, because that is the path you typed. That fact "
               "is about",
@@ -10698,13 +11822,24 @@ def pin_wiring_lines(code, w):
     return L
 
 
-def _pin_marker_sha(code):
-    """The commit a pinned checkout was cut from, per its own PINNED marker, or None."""
+def _pin_marker(code):
+    """A pinned checkout's PINNED stamp as a dict, or {} — the pin's own record of what it is.
+
+    Split out of `_pin_marker_sha` because the stamp carries `at` as well as `sha`, and WHEN a pin
+    was cut is half of what a reader needs: "the pin matches HEAD" and "the pin has matched HEAD
+    since this morning" answer different questions, and only the second one contradicts a written
+    claim that it does not.
+    """
     try:
         with open(os.path.join(code, PINNED_MARK), encoding="utf-8") as fh:
-            return (json.load(fh) or {}).get("sha") or None
+            return json.load(fh) or {}
     except (OSError, ValueError, AttributeError):
-        return None
+        return {}
+
+
+def _pin_marker_sha(code):
+    """The commit a pinned checkout was cut from, per its own PINNED marker, or None."""
+    return _pin_marker(code).get("sha") or None
 
 
 def cmd_self(s, a):
@@ -12030,6 +13165,10 @@ def main():
     az.add_argument("--path", help="path prefix the human authorized")
     az.add_argument("--reason", help="the human's own words")
     az.add_argument("--uses", help="how many mutations (default 1)")
+    az.add_argument("--expires", metavar="WHEN",
+                    help="when this grant lapses: 30m / 2h / 7d / 1w / 2026-09-30 / never")
+    az.add_argument("--revoke", metavar="PATH",
+                    help="withdraw live grants on PATH: uses_left to 0, kept in the record")
 
     at = sub.add_parser("attribute")  # a commit's merges, named by REF and recomputed here (#29)
     at.add_argument("--merge", action="append",
@@ -12046,6 +13185,9 @@ def main():
                          "STOPPED delivering becomes visible from inside: one missed wake proves "
                          "nothing, a cadence gone silent proves the path is dead")
     md.add_argument("--set", help="the mandate, in the human's words")
+    md.add_argument("--because", metavar="QUOTE",
+                    help="the instruction that PROMPTED this mandate, verbatim. Optional, "
+                         "unverified, and recorded as a quote rather than as the reason")
     md.add_argument("--clear", action="store_true", help="release it (work genuinely done)")
     md.add_argument("--notes", help="why it's satisfied")
     md.add_argument("--park", action="store_true",

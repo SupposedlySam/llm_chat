@@ -511,6 +511,12 @@ except (OSError, ValueError):
 for a in st.get("authorized", []):
     if a.get("uses_left", 0) <= 0:
         continue
+    # LAPSED IS ITS OWN ANSWER, and it is checked HERE rather than only in `status` because
+    # a grant the report calls dead while the guard still honours it is worse than no expiry
+    # at all. All three consumers carry the identical two lines for that reason.
+    _exp = a.get("expires_at")
+    if _exp and datetime.datetime.now().isoformat(timespec="seconds") >= str(_exp):
+        continue          # the clock closed this hatch; it spends nothing
     root = a.get("path", "")
     if off == root or off.startswith(root + os.sep):
         a["uses_left"] -= 1
@@ -2025,6 +2031,12 @@ except (OSError, ValueError):
 for a in st.get("authorized", []):
     if a.get("uses_left", 0) <= 0:
         continue
+    # LAPSED IS ITS OWN ANSWER, and it is checked HERE rather than only in `status` because
+    # a grant the report calls dead while the guard still honours it is worse than no expiry
+    # at all. All three consumers carry the identical two lines for that reason.
+    _exp = a.get("expires_at")
+    if _exp and datetime.datetime.now().isoformat(timespec="seconds") >= str(_exp):
+        continue          # the clock closed this hatch; it spends nothing
     for cand in (a.get("path", "") or "", os.path.basename(a.get("path", "") or "")):
         if not cand.startswith("gh "):
             continue

@@ -24,4 +24,14 @@ import _gl_impl                                          # noqa: E402 — after 
 # `if __name__ == "__main__"` guard, so a normal return exits 0 and every refusal path still exits
 # through its own die(). Wrapping it in sys.exit would change the exit code of any path that
 # returns a value, which is the kind of difference a stub has no business introducing.
-_gl_impl.main()
+#
+# THE GUARD IS BACK, AND ITS ABSENCE HAD A COST. The note above says the original ran main() under
+# an `if __name__ == "__main__"` guard; the split to a stub kept the bare call and dropped the
+# guard, so IMPORTING this file ran the CLI — argparse saw no subcommand, printed a usage error and
+# exited 2. `test/trigger_fixtures.py` imports it exactly this way to read `log_kinds()`, so the
+# harness that exercises every shipped trigger example has been dead, and nothing said so: that
+# file is named by no rule in verify.yaml and run by neither the suite nor CI.
+#
+# Executing the file as a script is unchanged — that is what the guard is for.
+if __name__ == "__main__":
+    _gl_impl.main()
