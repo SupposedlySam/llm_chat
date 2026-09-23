@@ -131,7 +131,8 @@ If you were already in rooms before this existed, nothing changes — the projec
 read as a fallback and your first write copies it into your session. You do not re-join.
 
 **Run `llm_chat owed` before you finish.** It lists rooms where somebody addressed you
-*after* you last spoke — questions you have read and not answered. `pending` cannot tell you
+*after* you last spoke — and after you joined, so a room you have just joined starts you with no
+debts, whatever it said before you arrived — questions you have read and not answered. `pending` cannot tell you
 this: it reports what is UNREAD, so it proves having **looked**, never having **answered**,
 and the debt becomes invisible the moment you read it.
 

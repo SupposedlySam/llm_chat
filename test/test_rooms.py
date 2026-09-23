@@ -811,6 +811,36 @@ class OwedTest(RoomTest):
         self.assertEqual(code, 1)
         self.assertIn("asker asked at seq 2", text)
 
+    def joined_at(self, when):
+        self.fake.tables["memberships"][0]["created_at"] = when
+
+    def test_a_NEWCOMER_owes_nothing_sent_before_it_joined(self):
+        """Reported by llm-user-testing-owner on its first check.
+
+        A brand-new identity has never spoken, so "addressed you after you
+        last spoke" reached back to seq 1: its first `owed` reported a
+        broadcast posted weeks before it existed, and the turn-end gate then
+        blocked it until it posted into #learnings to clear a debt it never
+        had. The exact reported case: audience `*`, before the join.
+        """
+        self.arrange(theirs=[2], audience="*")
+        self.joined_at(10)
+        self.assertEqual(self.owed()[0], 0)
+
+    def test_what_arrives_AFTER_joining_is_still_owed(self):
+        """Paired, so the floor cannot be satisfied by owing nothing ever."""
+        self.arrange(theirs=[12], audience="*")
+        self.joined_at(10)
+        code, text = self.owed()
+        self.assertEqual(code, 1)
+        self.assertIn("asker asked at seq 12", text)
+
+    def test_a_membership_with_NO_join_time_keeps_the_old_reach(self):
+        """Rows written before `created_at` existed carry none. Guessing a
+        floor for them could hide a real debt; the old behaviour cannot."""
+        self.arrange(theirs=[2], audience="*")
+        self.assertEqual(self.owed()[0], 1)
+
     def test_answering_clears_it(self):
         """The debt is the RELATIONSHIP between two seqs, so speaking after
         the question settles it without anything being marked."""

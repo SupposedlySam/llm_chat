@@ -2660,9 +2660,22 @@ def owed_in(server, name, entry, identity, store=None):
                 else rows(server, "messages", eq("channel", name)))
     mine = [m["seq"] for m in messages if m["from_identity"] == identity]
     last_spoke = max(mine) if mine else 0
+    # NOTHING SENT BEFORE YOU JOINED IS A DEBT. "Owed" is "addressed you after
+    # you last spoke", and for somebody who has never spoken that reached back
+    # to seq 1 — so a brand-new identity's FIRST `owed` reported a broadcast
+    # posted weeks before it existed, and `answer-when-asked` then blocked its
+    # turn until it posted into #learnings to clear a debt it never had.
+    # Reported by llm-user-testing-owner on its first check.
+    #
+    # It can never be a real one: `--to` refuses a name that is not a member,
+    # so nothing sent before somebody joined can have been addressed to them.
+    # Membership rows written before `created_at` existed carry none, and keep
+    # the old reach-back rather than guessing a floor.
+    joined_at = member.get("created_at") or 0
     asks = [m for m in messages
             if m["from_identity"] != identity
             and m["seq"] > last_spoke
+            and (m.get("created_at") or 0) >= joined_at
             and wakes(m, identity, chan)]
     if not asks:
         return None
