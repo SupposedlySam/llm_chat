@@ -125,6 +125,92 @@ class WakeLoopTest(unittest.TestCase):
         finally:
             sys.stdin = stdin
 
+    # ── #39: SessionStart must never become a listener ──────────────────────
+
+    def test_SESSIONSTART_in_a_room_exits_without_listening(self):
+        """#39. Every headless session in a chat room never took its first turn.
+
+        Under `claude -p` the host waits on this hook's stdout and stderr
+        before the first turn, and a waker in a room is a long-lived poller —
+        so a showrunner Crawler sat at 0% CPU with no transcript for up to the
+        hook's seven-day timeout. Reproduced twice, independently: killing only
+        the waker brought the transcript up within seconds.
+
+        NOTHING TESTED THIS IN EITHER DIRECTION before now. The 185 waker tests
+        all passed against the fix unchanged, because every one of them drove
+        `Stop` — so the behaviour that hung every Crawler was invisible to the
+        suite. This setUp joins a room, which is the half that made it hang.
+        """
+        for source in ("startup", "compact", "clear", "fork", None):
+            with self.subTest(source=source):
+                polled = []
+                self.rings = []
+                self.mod.claim_pidfile = (
+                    lambda: polled.append("claim") or True)
+                # STUBBED FOR THE DAY THIS REGRESSES, which is the only day it
+                # matters. If the guard is lost, main() walks into the real
+                # loop, and the real `addressed` shells out to the CLI — a
+                # mutation probe of exactly that HUNG instead of failing. The
+                # harness's own rule: nothing here may reach a real
+                # subprocess. `superseded` ends the loop at once, so a
+                # regression shows up as `polled` being non-empty.
+                self.mod.addressed = lambda channel, entry: None
+                self.mod.superseded = lambda: True
+                payload = {"hook_event_name": "SessionStart"}
+                if source:
+                    payload["source"] = source
+                # The DEFAULT catch_fuse, deliberately. Written first with
+                # catch_fuse=False, and a mutation probe showed the cost: the
+                # fuse's KeyboardInterrupt is a BaseException, so a regression
+                # aborted the whole runner instead of failing this test by
+                # name. Caught, it returns None and the assertions disagree.
+                code = self.run_main(json.dumps(payload))
+                self.assertEqual(code, 0,
+                                 "SessionStart(%s) did not return — it "
+                                 "listened" % source)
+                self.assertEqual(polled, [])
+                self.assertEqual(self.rings, [])
+        reasons = [r["reason"] for r in self.exit_records()]
+        self.assertTrue(any("SessionStart" in r for r in reasons),
+                        "the exit did not say why: %r" % reasons)
+
+    def test_SESSIONSTART_on_RESUME_still_listens(self):
+        """The half that must survive #39, and nearly did not.
+
+        The first draft of the fix stopped SessionStart listening entirely,
+        passed every test here, and would have shipped — until the README was
+        read. It proves the reload path end to end: after a window reload the
+        SessionStart waker was the ONLY listener, and it woke the session
+        minutes later, the harness naming the hook `SessionStart:resume`.
+        `llm_chat reload` refuses to run without it. A reload arrives as
+        `source: resume`; a headless Crawler is a fresh `startup`.
+        """
+        polled = []
+        self.mod.claim_pidfile = lambda: polled.append("claim") or False
+        self.run_main('{"hook_event_name": "SessionStart", "source": "resume"}')
+        self.assertEqual(polled, ["claim"],
+                         "a RESUMED session no longer listens, so a window "
+                         "reload strands it")
+
+    def test_STOP_in_a_room_still_listens(self):
+        """Paired, so #39 cannot be satisfied by never listening at all. The
+        Stop registration is the one `asyncRewake` is documented for, and it
+        is what now arms the listener at the first turn end."""
+        polled = []
+        self.mod.claim_pidfile = lambda: polled.append("claim") or False
+        self.run_main('{"hook_event_name": "Stop"}')
+        self.assertEqual(polled, ["claim"], "Stop no longer tries to listen")
+
+    def test_SESSIONSTART_still_leaves_its_probe_mark(self):
+        """The registration is kept for this: the mark is how `doctor` proves
+        the project's hooks load at session start at all (#38). Exiting early
+        must not skip it."""
+        self.run_main('{"hook_event_name": "SessionStart"}')
+        mark =os.path.join(self.project, ".llm_chat", "probe",
+                            "wake-SessionStart")
+        self.assertTrue(os.path.exists(mark),
+                        "SessionStart exited before leaving its probe mark")
+
     def test_a_waiting_message_wakes_the_session(self):
         """The whole point: exit 2 with the text on stderr, which asyncRewake
         converts into a wake-up in the same session."""

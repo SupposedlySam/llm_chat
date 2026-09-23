@@ -659,6 +659,19 @@ superseded — **no `Stop` waker existed in that session at all** — and when a
 3.7 minutes later the session was woken unprompted, the harness naming the delivering hook
 `SessionStart:resume`.
 
+**On `SessionStart` the waker listens only when the session is being RESUMED** — a reload
+arrives as `source: "resume"`, and that is the path measured above. A session that is
+*starting fresh* (`startup`, and also `clear`, `compact`, `fork`) records that the hook fired
+and exits, and its listener arms at the first turn end instead. That is #39: under `claude -p`
+the host waits on the SessionStart hook's output before the first turn, so a waker that began
+polling there held every headless session in a chat room at 0% CPU, with no transcript, for up
+to the hook's seven-day timeout. Every showrunner Crawler is exactly that. Two independent
+reproductions: killing only the waker brought the transcript up within seconds.
+
+Headless cannot be detected any other way from inside the hook. `CLAUDE_CODE_ENTRYPOINT` is
+inherited from whatever launched the session, so a Crawler started by an orchestrator running
+in VS Code reports `claude-vscode`.
+
 **A missed wake can reload the window for you, and it is off until you turn it on.**
 
 ```

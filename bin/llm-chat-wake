@@ -907,9 +907,16 @@ def main() -> int:
     # mattered after a reload — did SessionStart fire at all, or only Stop? A
     # diagnostic that cannot separate its own two callers cannot diagnose them.
     event = "unknown"
+    source = None
     try:
-        event = (json.loads(sys.stdin.read() or "{}")
-                 .get("hook_event_name") or "unknown")
+        payload = json.loads(sys.stdin.read() or "{}") or {}
+        event = payload.get("hook_event_name") or "unknown"
+        # WHY THE SESSION STARTED, and the key was MEASURED, not assumed: the
+        # published hook docs list the values but never name the field. The
+        # installed Claude Code builds it as
+        #   hook_event_name:"SessionStart", source:n, ..., matchQuery:n
+        # so it is `source`, and it is the same value the matcher filters on.
+        source = payload.get("source")
     except Exception:
         pass
 
@@ -934,6 +941,48 @@ def main() -> int:
     # the grace window of any pending rewake and be recorded as a receipt for
     # something that never happened.
     wake_landing(event)
+
+    # SESSIONSTART LISTENS ONLY ON RESUME (#39). Under `claude -p` the host
+    # waits on this hook's stdout and stderr before the session's first turn,
+    # and a waker in a room is a long-lived poller — so every headless session
+    # in a chat room sat at 0% CPU with no transcript, for up to the hook's
+    # seven-day timeout. Every showrunner Crawler is exactly that. Reproduced
+    # twice, independently: killing only this process brought the transcript
+    # up within seconds. (The published docs say headless mode does NOT wait
+    # on SessionStart hooks. Two measurements say it does.)
+    #
+    # NOT "NEVER", which is what this said first, and that would have broken
+    # something measured. The README proves the reload path end to end: after
+    # a window reload THIS invocation was the only listener — no Stop waker
+    # existed in that session — and it woke the session 3.7 minutes later,
+    # the harness naming the hook `SessionStart:resume`. `llm_chat reload`
+    # refuses to run without it for exactly that reason. The fix was drafted,
+    # tested and nearly committed before that paragraph was read.
+    #
+    # NOT GATED ON "IS THIS HEADLESS", because that cannot be told from here.
+    # CLAUDE_CODE_ENTRYPOINT is inherited from whatever launched the session:
+    # a showrunner Crawler is `claude -p` and reports `claude-vscode`, because
+    # its orchestrator was started from an editor.
+    #
+    # `source` separates the two cases without guessing at the host: a reload
+    # is `resume`; a Crawler is a fresh `startup`. Everything else exits too —
+    # `compact` included, since a headless run that auto-compacts mid-work
+    # must not hang either. A payload with no `source` exits, because a silent
+    # seven-day hang is far worse than a listener that arms at the first turn
+    # end instead.
+    #
+    # WHAT THIS GIVES UP: a freshly STARTED interactive session that sits idle
+    # without ever finishing a turn is not listening. Its human is about to
+    # type, the PostToolUse hook delivers on the first tool call, and the Stop
+    # registration arms the listener at the first turn end.
+    #
+    # The registration is kept either way: the probe mark written above is
+    # how `doctor` proves the project's hooks load at session start (#38).
+    if event == "SessionStart" and source != "resume":
+        record_exit("SessionStart(%s): not listening — only a resume does; "
+                    "the Stop hook arms the listener at the first turn end "
+                    "(#39)" % (source or "no source"))
+        return 0
 
     rooms = joined_rooms()
     if not rooms:

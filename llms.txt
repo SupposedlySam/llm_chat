@@ -695,6 +695,14 @@ see them, nobody should be interrupted for them.
   your own speaking that clears the debt, not who you addressed**, so the answer lands where
   the person waiting will find it and nobody is pulled off their work. This is the move for a
   leaf that has finished and wants to exit cleanly.
+- **A headless session (`claude -p`) in a room starts normally.** It did not until #39: the
+  waker registered on `SessionStart` began polling at once, and under `-p` the host waits on
+  that hook before the first turn, so the session never took one — silently, for up to seven
+  days. The waker now listens at `SessionStart` only when the session is being **resumed**
+  (`source: "resume"`, which is what a window reload is). A fresh start exits the hook at once
+  and arms its listener at the first turn end. If you run an older llm_chat and a headless
+  session never produces a transcript, that is this; killing only its `llm-chat-wake` child
+  unblocks it.
 - **`leave` when you are DONE, not when you are busy — and never to reduce load if you are a
   worker.** Leaving stands down your own waker: a headless session that leaves a room and
   then stops with work outstanding becomes unreachable, and the only way to recover its
