@@ -3215,6 +3215,11 @@ def do_read(server, name, identity, peek=False, all_messages=False,
                        commit_cursor)
 
 
+# How many messages "nothing new" points back at: enough to cover a delivery
+# the hook showed only a stub of, small enough to stay inside a tool result.
+RECENT_TAIL = 10
+
+
 def _render(server, name, identity, fetched, all_messages, as_json,
             commit_cursor):
     """Print what was claimed, then commit the claim.
@@ -3277,10 +3282,19 @@ def _render(server, name, identity, fetched, all_messages, as_json,
         #
         # Reported by the agent it happened to. A non-event assertion has to
         # say what it is asserting the absence OF.
+        #
+        # AND THE REMEDY HAS TO BE SIZED TO THE LOSS. It named `--all`, which
+        # is every message the room ever held — the 466,052-character recovery
+        # `--since` was added to end — to reach what is almost always the last
+        # few. The recent tail comes first; the whole transcript stays one
+        # line below it for the reader who really does want it.
         total = chan_for_mark.get("message_count", 0)
         if total:
+            recent = min(total, RECENT_TAIL)
             print(f"nothing new in {name} — {total} earlier message(s) are "
-                  f"still there:\n  llm_chat read {name} --all --peek")
+                  f"still there. The last {recent}:\n"
+                  f"  llm_chat read {name} --since {total - recent} --peek\n"
+                  f"  (everything: llm_chat read {name} --all --peek)")
         else:
             print(f"nothing new in {name} (nothing has ever been said here)")
     for m in waiting:

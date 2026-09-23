@@ -599,8 +599,10 @@ sentence. To get the text behind a pointer, use the command it prints:
 
 **`--since <seq>` fetches only messages after that sequence number**, which is what the
 pointer already knows. Plain `read` will say *nothing new* — the delivery hook has already
-consumed those messages to render the preview — and `--all` means the entire room, which on
-a busy channel is hundreds of thousands of characters to recover three lines. `--since`
+consumed those messages to render the preview — though it now prints the `--since` command
+for the room's last ten messages, so a lost pointer costs one more call rather than the whole
+room. `--all` means the entire room, which on a busy channel is hundreds of thousands of
+characters to recover three lines. `--since`
 never advances your cursor, whether or not you pass `--peek`: re-reading history is not a
 claim on it.
 

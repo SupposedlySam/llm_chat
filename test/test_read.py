@@ -477,6 +477,21 @@ class NothingNewTest(unittest.TestCase):
         self.assertNotIn("nothing new in room\n  llm_chat read room\n", out)
         self.assertIn("--peek", out)
 
+    def test_the_FIRST_remedy_is_the_recent_tail_not_the_whole_room(self):
+        """`--all` on a long room was a 466,052-character recovery for three
+        lines. The first command offered must be bounded to the tail."""
+        self.server.channel("room", message_count=600)
+        out = self.read()
+        first = next(l for l in out.splitlines() if "llm_chat read" in l)
+        self.assertIn("--since %d --peek" % (600 - cli.RECENT_TAIL), first)
+        self.assertIn("--all --peek", out)
+
+    def test_a_SHORT_room_is_never_pointed_below_zero(self):
+        self.server.channel("room", message_count=3)
+        out = self.read()
+        self.assertIn("The last 3:", out)
+        self.assertIn("--since 0 --peek", out)
+
 
 class ExitContractTest(unittest.TestCase):
     """THREE OUTCOMES, never two. Asked for by a consumer whose retro trigger
