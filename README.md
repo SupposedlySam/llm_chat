@@ -930,7 +930,7 @@ discovered through a dead server.
 A bare `./zonai compile && ./zonai serve` gets none of this. Export `DART_SDK` yourself, or
 go through `setup`.
 
-**The binary and `zonai.yaml` move together.** `version:` there (`0.8.5`) must match the
+**The binary and `zonai.yaml` move together.** `version:` there (`0.9.1`) must match the
 binary, and `pubspec.yaml` pins `zonai_schema` to the same tag — the CLI refuses to compile
 against a schema that crosses a breaking-change boundary from its own version. Bump all
 three in one commit or none.

@@ -11,6 +11,7 @@ import json
 import os
 import sys
 import tempfile
+import time
 import unittest
 import urllib.error
 from contextlib import redirect_stdout, redirect_stderr
@@ -96,7 +97,8 @@ class CallTest(unittest.TestCase):
         self.assertEqual(result["error"], "HTTP 500")
         self.assertIn("details", result["body"])
 
-    def throttle(self, times, retry_after=None, then=b'{"data": {"ok": true}}'):
+    def throttle(self, times, retry_after=None, then=b'{"data": {"ok": true}}',
+                 refusal=b"Rate limit exceeded", extra_headers=None):
         """A server that 429s `times` times and then answers."""
         state = {"n": 0}
         self.slept = []
@@ -124,8 +126,9 @@ class CallTest(unittest.TestCase):
         def maybe(*a, **kw):
             state["n"] += 1
             if state["n"] <= times:
-                body = io.BytesIO(b"Rate limit exceeded")
+                body = io.BytesIO(refusal)
                 headers = {"Retry-After": retry_after} if retry_after else {}
+                headers.update(extra_headers or {})
                 error = urllib.error.HTTPError("u", 429, "slow down", headers,
                                                body)
                 made.append((error, body))
@@ -160,6 +163,41 @@ class CallTest(unittest.TestCase):
         self.throttle(times=99)
         found = cli.call("http://127.0.0.1:1", "GET", "/p")
         self.assertTrue(found.get("rate_limited"))
+
+    def test_a_0_9_1_refusal_NAMES_THE_BUCKET_and_when_it_reopens(self):
+        """A `say` is mostly reads, so the verb typed is usually not the
+        request refused. zonai 0.9.1 says which it was; this kept only
+        Retry-After and threw the rest away."""
+        reset = 1788307242
+        self.throttle(times=99, retry_after="42", refusal=(
+            b'{"error":"Rate limit exceeded","collection":"memberships",'
+            b'"operation":"list","retryAfter":42}'),
+            extra_headers={"X-RateLimit-Limit": "100",
+                           "X-RateLimit-Reset": str(reset)})
+        found = cli.call("http://127.0.0.1:1", "GET", "/p")
+        with self.assertRaises(cli.Throttled) as raised:
+            cli.refuse(found)
+        text = str(raised.exception)
+        self.assertIn("memberships/list limit", text)
+        self.assertIn("100 per minute", text)
+        self.assertIn(time.strftime("%H:%M:%S", time.localtime(reset)), text)
+
+    def test_a_PRE_0_9_1_refusal_claims_no_bucket(self):
+        """The plain-string body names nothing, so nothing is named."""
+        self.throttle(times=99)
+        found = cli.call("http://127.0.0.1:1", "GET", "/p")
+        self.assertIsNone(found["bucket"])
+        with self.assertRaises(cli.Throttled) as raised:
+            cli.refuse(found)
+        self.assertNotIn("limit (", str(raised.exception))
+
+    def test_a_bucket_WITHOUT_the_headers_still_names_the_bucket(self):
+        self.throttle(times=99, refusal=(
+            b'{"collection":"messages","operation":"create"}'))
+        found = cli.call("http://127.0.0.1:1", "GET", "/p")
+        line = cli.throttled_which(found)
+        self.assertIn("messages/create limit", line)
+        self.assertNotIn("reopens", line)
 
     def in_hook(self, yes):
         real = os.environ.get(cli.HOOK_ENV)

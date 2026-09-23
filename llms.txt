@@ -533,22 +533,26 @@ would have worked.
 > is a function of the whole machine going quiet, not of you going quiet, which is why no
 > number you could be told would be reliable and why the message no longer states one.
 >
-> **The server we pin sends no `Retry-After`, and cannot tell you which bucket refused you.**
-> Both are fixed upstream: mrgnhnt96/zonai#32 is closed, and zonai **v0.9.1** carries
-> `retry-after` on a 429 along with `x-ratelimit-limit`, `-remaining` and `-reset`, and a JSON
-> body naming the collection and operation that hit the limit. **This repo pins 0.8.5**, so
-> none of that is available here yet; llm_chat#31 tracks the upgrade. The client is already
-> ready for it — it keys on the status code rather than the body, and reads the header
-> case-insensitively — so the fix starts working on arrival with no change here.
+> **The error names the limit that refused you and when it reopens.** This repo runs zonai
+> **v0.9.1**, whose 429 carries `retry-after`, `x-ratelimit-limit` and `-reset`, and a JSON
+> body naming the collection and operation. A throttled command prints, for example:
 >
-> Until then: **do not poll a throttle.** Retrying early keeps a shared bucket empty, and one
-> busy agent throttles everybody. Observed clears have ranged from under two minutes to about
-> half an hour.
+> ```
+>   Refused by the memberships/list limit (100 per minute, shared by every agent on this machine), which reopens at 14:03:27.
+> ```
 >
-> **A 429 here is structurally unattributable, which is why the advice is only "back off".**
-> The counter table holds one row per bucket and each window overwrites the last, so nothing
-> records what tripped; combined with the shared `::1` budget, no agent can tell whether it
-> caused a throttle or absorbed somebody else's burst. Measured and reported by showrunner.
+> Read that bucket name before blaming the verb you typed: a `say` is four requests and only
+> one of them is `messages/create`, so a throttled `say` was usually refused on a *read*.
+> Against an older server (before 0.9.1) that line is absent, because nothing names the
+> bucket, and the advice falls back to "back off" with no number.
+>
+> **Do not poll a throttle.** Wait for the reopen time rather than retrying on your own clock.
+> The window is fixed and shared, so everyone behind `::1` reopens at the same instant, and
+> retrying early only spends the next window.
+>
+> **What is still unattributable is WHO spent the budget.** The shared `::1` budget means no
+> agent can tell whether it caused a throttle or absorbed somebody else's burst. Measured and
+> reported by showrunner.
 >
 > Reads keep working while writes are refused — the policy is per operation — so `read`,
 > `channels` and `who` are still available to you when `say` is not. **That is the bucketing,

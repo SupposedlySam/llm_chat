@@ -654,8 +654,8 @@ def and_(*conditions):
 # a 429 there is no way to ask what tripped — and every agent on this machine
 # shares `::1`, so a throttle is not attributable to whoever caused it.
 # zonai v0.9.1 puts the collection and operation into the 429 body, which
-# answers it; this repo pins 0.8.5 and does not have that yet. Note what that
-# still will not do: an agent told `memberships/list` tripped cannot simply
+# answers it, and this repo now runs 0.9.1: `refuse` names the bucket and when
+# it reopens (`throttled_which`). Note what that still will not do: an agent told `memberships/list` tripped cannot simply
 # stop reading, because the reads are inside its sends.
 #
 # The same report measured the WINDOW: from a first 429 on a direct `say` to a
@@ -770,6 +770,50 @@ def throttled_advice(seconds=None):
             "before assuming\n  nothing happened.")
 
 
+def throttled_bucket(body):
+    """`collection/operation` from a zonai 0.9.1+ 429 body, or None.
+
+    Through 0.9.0 the body was the plain string "Rate limit exceeded", so
+    anything that is not the JSON shape is None rather than a guess.
+    """
+    try:
+        found = json.loads(body)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(found, dict):
+        return None
+    collection, operation = found.get("collection"), found.get("operation")
+    if not (isinstance(collection, str) and isinstance(operation, str)):
+        return None
+    return "%s/%s" % (collection, operation)
+
+
+def throttled_which(res):
+    """One line naming the limit that refused this request, or None.
+
+    Says it is SHARED because it is: zonai keys the bucket by client address,
+    and every agent here is `::1`, so the throttle is rarely the reader's own
+    doing and waiting for the reset beats each agent retrying on its own clock
+    (zonai's docs/rate-limiting.md says the same).
+    """
+    bucket = res.get("bucket")
+    if not bucket:
+        return None
+    line = "  Refused by the %s limit" % bucket
+    try:
+        line += " (%d per minute" % int(res.get("limit"))
+        line += ", shared by every agent on this machine)"
+    except (TypeError, ValueError):
+        line += " (shared by every agent on this machine)"
+    try:
+        reset = int(res.get("reset_at"))
+        line += ", which reopens at %s" % time.strftime(
+            "%H:%M:%S", time.localtime(reset))
+    except (TypeError, ValueError, OverflowError, OSError):
+        pass
+    return line + "."
+
+
 def human_wait(seconds):
     """A retry delay a person reads, or None when the header said nothing.
 
@@ -821,6 +865,13 @@ def call(server, method, path, body=None, query=None, timeout=10):
                 # #15 is that they were reported identically.
                 found["rate_limited"] = True
                 found["retry_after"] = e.headers.get("Retry-After")
+                # WHICH BUCKET, AND WHEN IT OPENS. zonai 0.9.1 names both and
+                # this discarded them, so an agent could only report the verb
+                # it TYPED — and a `say` is mostly reads, so that verb was
+                # usually not the request refused. See the SCOPE note.
+                found["bucket"] = throttled_bucket(found["body"])
+                found["reset_at"] = e.headers.get("X-RateLimit-Reset")
+                found["limit"] = e.headers.get("X-RateLimit-Limit")
                 # WHAT TO DO NOW, which differs by caller and was missing
                 # entirely. A bare "HTTP 429 Rate limit exceeded" leaves a
                 # direct caller unable to tell whether the write landed — and
@@ -999,6 +1050,10 @@ def refuse(res):
     so a caller cannot get the error without getting the remedy.
     """
     problem = res["error"] + "  " + res.get("body", "")
+    if res.get("rate_limited"):
+        which = throttled_which(res)
+        if which:
+            problem += "\n" + which
     if res.get("advice"):
         problem += "\n" + res["advice"]
     # UNREACHABLE FIRST. A host that never answered cannot also have said 429,

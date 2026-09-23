@@ -3020,6 +3020,13 @@ NOT_SWEPT = {
         "end to end on an open stdin. A mutation back to a blocking read "
         "would HANG a plain timing assertion rather than fail it, so each "
         "test runs under SIGALRM and a block becomes a failure with a reason",
+    "bin/llm_chat:throttled_bucket": "asserted through call() against a real "
+        "0.9.1-shaped body and the pre-0.9.1 plain string, which must name "
+        "nothing; a wrong bucket only mislabels an error that still raises "
+        "Throttled with its exit code, so no outcome depends on it",
+    "bin/llm_chat:throttled_which": "asserted with and without the "
+        "X-RateLimit-* headers; it only adds a line to an error message, and "
+        "the exit code and advice it sits beside are swept through refuse",
     "bin/llm_chat:pinned_zonai_version": "asserted directly against the real "
         "zonai.yaml and against a fabricated cache — and its FAILURE mode is "
         "covered too: returning None must give 'cannot check' rather than a "
