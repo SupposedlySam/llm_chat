@@ -107,14 +107,36 @@ def project_dir() -> str:
     if env:
         return os.path.abspath(env)
     here = probe = os.path.abspath(os.getcwd())
+    roots = []
     while True:
         if (os.path.isdir(os.path.join(probe, ".llm_chat"))
                 or os.path.isdir(os.path.join(probe, ".git"))):
-            return probe
+            roots.append(probe)
         parent = os.path.dirname(probe)
         if parent == probe:
-            return here      # no marker anywhere; cwd is genuinely all there is
+            break
         probe = parent
+    if not roots:
+        return here          # no marker anywhere; cwd is genuinely all there is
+    # THE NEAREST ROOT IS NOT ALWAYS THIS SESSION'S (#40). A Crawler's worktree
+    # sits INSIDE its lead's repo and carries its own `.llm_chat/`, so a lead
+    # whose shell stood in one resolved to the worktree, found no identity for
+    # itself there, and posted and joined under a worktree-derived default —
+    # a Crawler's name, with the lead's own session suffix on it. The hooks
+    # never did this: the harness hands them CLAUDE_PROJECT_DIR. Only the CLI
+    # guesses, because Bash does not export it.
+    #
+    # So prefer the nearest root that ALREADY HOLDS STATE FOR THIS SESSION:
+    # that directory is the session's own record of where it lives, not a
+    # guess from where it happens to stand. With no such record anywhere, the
+    # nearest root, exactly as before. What this does not cover: a worktree
+    # OUTSIDE the lead's tree, which no walk up from it can find.
+    sid = session_id()
+    if sid:
+        for root in roots:
+            if os.path.isdir(os.path.join(root, ".llm_chat", "sessions", sid)):
+                return root
+    return roots[0]
 
 
 def identity_path(shared=False) -> str:

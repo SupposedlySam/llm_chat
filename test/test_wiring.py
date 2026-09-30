@@ -66,6 +66,60 @@ class ProjectDirTest(unittest.TestCase):
         self.assertEqual(os.path.realpath(cli.project_dir()),
                          os.path.realpath(deep))
 
+    def in_session(self, sid):
+        saved = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        os.environ["CLAUDE_CODE_SESSION_ID"] = sid
+        self.addCleanup(lambda: (
+            os.environ.__setitem__("CLAUDE_CODE_SESSION_ID", saved)
+            if saved is not None
+            else os.environ.pop("CLAUDE_CODE_SESSION_ID", None)))
+
+    def worktree_inside_lead(self):
+        """A lead's repo with a Crawler worktree nested in it, both wired."""
+        os.makedirs(os.path.join(self.root, ".git"))
+        os.makedirs(os.path.join(self.root, ".llm_chat", "sessions", "lead"))
+        tree = os.path.join(self.root, ".worktrees", "s28-c")
+        os.makedirs(os.path.join(tree, ".llm_chat"))
+        with open(os.path.join(tree, ".git"), "w") as f:
+            f.write("gitdir: elsewhere\n")    # a worktree's .git is a FILE
+        os.makedirs(os.path.join(tree, "src"))
+        return tree
+
+    def test_a_LEAD_standing_in_a_crawler_worktree_stays_the_lead(self):
+        """#40: the lead's `say` from inside a Crawler worktree went out under
+        a worktree-derived name. Its own session state is in the outer repo,
+        and that is where it lives."""
+        tree = self.worktree_inside_lead()
+        self.in_session("lead")
+        os.chdir(os.path.join(tree, "src"))
+        self.assertEqual(os.path.realpath(cli.project_dir()), self.root)
+
+    def test_the_CRAWLER_itself_still_resolves_to_its_worktree(self):
+        """Paired: the crawler has no state in the outer repo, so nearest
+        wins, exactly as before."""
+        tree = self.worktree_inside_lead()
+        self.in_session("crawler")
+        os.makedirs(os.path.join(tree, ".llm_chat", "sessions", "crawler"))
+        os.chdir(tree)
+        self.assertEqual(os.path.realpath(cli.project_dir()),
+                         os.path.realpath(tree))
+
+    def test_a_session_with_NO_state_anywhere_takes_the_nearest_root(self):
+        tree = self.worktree_inside_lead()
+        self.in_session("brand-new")
+        os.chdir(tree)
+        self.assertEqual(os.path.realpath(cli.project_dir()),
+                         os.path.realpath(tree))
+
+    def test_state_in_BOTH_prefers_the_nearer(self):
+        """A session already living in the inner tree is not moved out."""
+        tree = self.worktree_inside_lead()
+        self.in_session("lead")
+        os.makedirs(os.path.join(tree, ".llm_chat", "sessions", "lead"))
+        os.chdir(tree)
+        self.assertEqual(os.path.realpath(cli.project_dir()),
+                         os.path.realpath(tree))
+
     def test_joined_path_hangs_off_the_resolved_root(self):
         """Both scopes hang off the same resolved root — that is the claim.
         Stated for each explicitly, because the answer now depends on whether

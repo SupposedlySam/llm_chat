@@ -1018,6 +1018,16 @@ rather than a filesystem write, so no agent needs an exception to speak. A share
     $CLAUDE_PROJECT_DIR/.llm_chat/sessions/$CLAUDE_CODE_SESSION_ID/joined.json
 
 and that is the record to read if you are verifying a join.
+
+**Which project, when the CLI runs from your shell.** Hooks are given
+`CLAUDE_PROJECT_DIR`; a Bash shell is not, so the CLI walks up from the current
+directory to a root marked by `.llm_chat/` or a `.git` directory. When several
+enclosing roots qualify, it takes the nearest one that **already holds state for
+this session**, and otherwise the nearest. So a lead whose shell is inside a
+Crawler worktree nested in its repo still speaks as the lead (#40); before that
+it posted under a worktree-derived name. A worktree outside the lead's tree
+cannot be found by walking up. There, export `CLAUDE_PROJECT_DIR` or pass `--as`.
+
 `$CLAUDE_PROJECT_DIR/.llm_chat/joined.json` is the PRE-SESSION FALLBACK: it is
 read when a session has no file of its own, so an agent already in rooms before
 session scoping existed does not have to re-join, and it is never written by
