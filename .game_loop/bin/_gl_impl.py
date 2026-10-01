@@ -1052,12 +1052,36 @@ def fire_triggers(s, event, payload):
     moment whose exit code is a VERDICT needs the opposite shape, so it runs the same attachments
     through the same runner and decides for itself: see stop_trigger_block.
     """
+    todo = triggers_for(event)
+    if not todo:
+        return []
+    # A LOST UPDATE, OBSERVED. This used to run every trigger and then save(s), which writes back
+    # the WHOLE state dict the verb loaded when it started. Triggers can be slow: lamp's publish
+    # gate took ~8 minutes on 2026-09-23. Any state written during that window was silently erased,
+    # and it was. A `trans` at 18:36:51 vanished when `confidence --mark` (loaded 18:34:57) saved at
+    # the end of its publish trigger, and the phase line reverted to one the watchdog then quoted
+    # back as current. The watchdog's own ring counters live in the same file.
+    #
+    # So: persist the verb's own changes BEFORE the slow part, run the triggers, then RELOAD and
+    # merge in only what this function owns (its trigger records). The caller's `s` is refreshed IN
+    # PLACE, because cmd_fix and cmd_stepback call save(s) again afterwards and would otherwise
+    # write the stale copy one line later. If the reload cannot read the state, this falls back to
+    # the old behaviour rather than swapping defaults in over real state.
+    save(s)
     fired = []
-    for t in triggers_for(event):
+    for t in todo:
         name, ran, code, body, err = _run_trigger(s, t, event, payload)
         fired.append((name, ran and code == 0, body, err))
-    if not fired:
-        return []
+    mine = {n: (s.get("triggers") or {}).get(n) for n, _ok, _b, _e in fired}
+    global STATE_UNREADABLE
+    _was_unreadable = STATE_UNREADABLE
+    STATE_UNREADABLE = None
+    fresh = load()
+    if STATE_UNREADABLE is None and os.path.exists(STATE_F):
+        fresh.setdefault("triggers", {}).update({n: r for n, r in mine.items() if r is not None})
+        s.clear()
+        s.update(fresh)
+    STATE_UNREADABLE = STATE_UNREADABLE or _was_unreadable
     save(s)
     lines = [f"— triggers · {event} ——————————————————————————"]
     for name, ok, body, err in fired:
@@ -4075,7 +4099,11 @@ def _python_trees(text):
     trees, lines, i = [], text.split("\n"), 0
     op = chr(60) + chr(60)
     while i < len(lines):
-        m = re.search(re.escape(op) + r"-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", lines[i])
+        # A COMMENT CANNOT OPEN A HERE-DOC. Bash ignores it, and this scanner did not: one SCOPE line
+        # quoting `python3 - <<EOF` as an example found no closing EOF and swallowed the rest of
+        # guard-writes-impl.sh, so every record kind the guard writes vanished from the schema.
+        m = (None if lines[i].lstrip().startswith("#") else
+             re.search(re.escape(op) + r"-?\s*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)\1", lines[i]))
         if m:
             delim, body, i = m.group(2), [], i + 1
             while i < len(lines) and lines[i].strip() != delim:
@@ -10072,6 +10100,34 @@ def cmd_confidence(s, a):
             "`self --pin` followed immediately by this verb satisfies it; that has happened here,\n"
             "27 seconds apart, which is why this paragraph exists (#104).\n"
             "Dogfooding is still the evidence — the pin is how you DECLARE it, not proof you did it.")
+    # IS THIS COMMIT ACTUALLY ON THE BRANCH CONSUMERS TRACK? Checked BEFORE the tag exists and before
+    # any trigger fires, because a mark's whole purpose is what it CAUSES, and every one of those
+    # effects needs the commit on the remote first.
+    #
+    # NOT HYPOTHETICAL, TWICE. First: another agent pushed to main while I worked, my `git push origin
+    # main` was rejected as non-fast-forward, and I pushed the tag and the channel anyway because
+    # they were separate commands; for several minutes `stable` named a commit my own rebase then
+    # orphaned. Second, 2026-09-30: stable-00cab6c4 was marked before its push, the lamp-publish
+    # trigger answered "not publishing: HEAD is not pushed yet" with ok:true, and the warning this
+    # used to print sat in the middle of the output. The tag and channel were pushed and read back,
+    # every signal said released, and lamp served the previous wish until a consumer noticed.
+    # A warning printed after the fact is rung 5; the order is load-bearing, so it is refused here.
+    upstream = subprocess.run(["git", "rev-parse", "--abbrev-ref", "@{upstream}"], cwd=REPO_ROOT,
+                              capture_output=True, text=True)
+    on_upstream = None
+    if upstream.returncode == 0 and upstream.stdout.strip():
+        anc = subprocess.run(["git", "merge-base", "--is-ancestor", sha, upstream.stdout.strip()],
+                             cwd=REPO_ROOT, capture_output=True, text=True)
+        on_upstream = anc.returncode == 0
+    if on_upstream is False:
+        die(f"THIS COMMIT IS NOT ON YOUR UPSTREAM BRANCH ({upstream.stdout.strip()}) YET.\n"
+            "A mark exists for what it causes — the channel consumers install from, and any publish\n"
+            "trigger — and none of that can work for a commit the remote does not have: a publish\n"
+            "trigger declines (and says ok), and a pushed channel pointer would name a commit no\n"
+            "branch contains. Push first, then mark:\n"
+            "    git push origin HEAD          # if this is rejected, STOP: rebase, re-verify, re-pin\n"
+            f"    game_loop confidence --mark {a.mark} ...\n"
+            "(Your local view of the upstream is what this reads; `git fetch` first if it is stale.)")
     tag = f"{a.mark}-{sha[:8]}"
     lines = [f"{a.mark} — marked {now()}",
              "",
@@ -10134,33 +10190,12 @@ def cmd_confidence(s, a):
         f"was already made;\n  what is being retried is everything the mark CAUSES, below.",
         *["  " + l for l in lines],
         "")
-    # IS THIS COMMIT ACTUALLY ON THE BRANCH CONSUMERS TRACK? Pushing the channel pointer at a commit
-    # that is not on main hands every consumer a tree reachable only by that tag — and if the commit
-    # is later rebased away, the pointer names something no branch contains.
-    #
-    # NOT HYPOTHETICAL. I did it today, to this repo: another agent pushed to main while I worked,
-    # my `git push origin main` was REJECTED as non-fast-forward, and I pushed the tag and the
-    # channel anyway because they were separate commands and the failure was three lines up. For
-    # several minutes `stable` named a commit missing that agent's work, which my own rebase then
-    # orphaned. A consumer installing in that window would have got it, and nothing would have said so.
-    upstream = subprocess.run(["git", "rev-parse", "--abbrev-ref", "@{upstream}"], cwd=REPO_ROOT,
-                              capture_output=True, text=True)
-    on_upstream = None
-    if upstream.returncode == 0 and upstream.stdout.strip():
-        anc = subprocess.run(["git", "merge-base", "--is-ancestor", sha, upstream.stdout.strip()],
-                             cwd=REPO_ROOT, capture_output=True, text=True)
-        on_upstream = anc.returncode == 0
-    if moved and on_upstream is False:
-        out("⚠ THIS COMMIT IS NOT ON YOUR UPSTREAM BRANCH YET, so pushing the channel pointer now",
-            "  would aim every consumer at a commit no branch contains — and a rebase would orphan",
-            "  it entirely. PUSH THE BRANCH FIRST and only push the pointer once that SUCCEEDS:",
-            f"    git push origin HEAD          # if this is rejected, STOP — do not push below",
-            f"    git push origin {tag}",
-            f"    git push origin --force {a.mark}",
-            "  The order is load-bearing, not tidiness.")
-    elif moved:
+    # The branch is already on the upstream (refused above otherwise), so what is left is the record
+    # and the channel pointer. HEAD stays first in the list: pushing it again is a no-op, and a
+    # checklist that starts somewhere other than the branch is how the order got lost once.
+    if moved:
         out(f"→ push these IN ORDER, and stop if one is rejected:",
-            f"    git push origin HEAD                  # the branch consumers track — FIRST",
+            f"    git push origin HEAD                  # the branch consumers track — already there",
             f"    git push origin {tag}",
             f"    git push origin --force {a.mark}      # the channel pointer consumers install from",
             f"  `{a.mark}` now names this commit, so `GAME_LOOP_CHANNEL={a.mark} ./install.sh <dir>`",
@@ -12195,6 +12230,20 @@ def cmd_status(s, a):
                          "    Recover the mandate from there and re-bind it, or clear it on the "
                          "record if it is done —\n"
                          "    then delete that copy, which is what stops this warning.")
+    # WHAT THIS SESSION LEFT WHERE A REBOOT WILL TAKE IT (#132). The write guard records every temp
+    # path a Write/Edit/Bash put a file at; under a mandate that is the exposure worth seeing BEFORE a
+    # restart, because the run that would have to recover it is the unattended one.
+    if m.get("active"):
+        try:
+            with open(os.path.join(os.path.dirname(STATE_F), "temp-writes")) as _f:
+                _tw = [l for l in _f.read().split("\n") if l]
+        except OSError:
+            _tw = []
+        if _tw:
+            mandate_line += (f"\n  ⚠ {len(_tw)} file(s) this session wrote under /tmp, /var/folders or "
+                             "$TMPDIR are cleared on reboot — e.g. " + _tw[-1] + "\n"
+                             "    anything that must outlive a restart belongs in .game_loop/ or "
+                             "your memory directory (#132)")
     session_line = (f"session: {SESSION[:8]} (state: .game_loop/sessions/…)" if SESSION
                     else "session: none detected — repo-global state (.game_loop/state.json)")
     others, active = _sibling_sessions()

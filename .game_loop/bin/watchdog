@@ -301,6 +301,42 @@ def transcript_size(path):
         return None
 
 
+def acted_since(path, offset):
+    """Did the session DO anything since byte `offset` of its transcript? True / False / None.
+
+    True means an assistant turn with a TOOL CALL appears after the offset. False means the tail was
+    read and holds none. None means it could not be read, and the caller keeps its old behaviour.
+
+    WHY THIS EXISTS: the ring cap never fired. It counts "consecutive UNPRODUCTIVE rings", and
+    "productive" was measured as "the transcript grew", but a one-line reply ("nothing has changed")
+    grows the transcript too. So any answer to a ring, however empty, re-armed the cap. Measured on
+    2026-09-23: 70 rings and 70 rearms in one afternoon, 1780 rings over the session's life, against
+    a cap of 3, and zero stand-downs. A cap that any reply resets is unreachable for every session
+    that answers its rings, which is every live one.
+
+    A tool call is the honest proxy for "the ring got the session moving": text alone is a reply,
+    not work. PARSED, never grepped, because the agent's own prose can contain the words "tool_use"
+    and a text search would count a paragraph about this very function as work.
+    """
+    try:
+        with open(path, "rb") as f:
+            f.seek(max(0, int(offset or 0)))
+            tail = f.read()
+    except (OSError, TypeError, ValueError):
+        return None
+    for raw in tail.splitlines():
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue          # the offset can land mid-line; a partial first line is not a verdict
+        msg = rec.get("message") if isinstance(rec, dict) else None
+        content = msg.get("content") if isinstance(msg, dict) else None
+        if rec.get("type") == "assistant" and isinstance(content, list) and any(
+                isinstance(b, dict) and b.get("type") == "tool_use" for b in content):
+            return True
+    return False
+
+
 def quiet(why):
     """Exit 0: no wake-up — and SAY WHY.
 
@@ -1013,13 +1049,30 @@ def main():
     refresh_limits_if_due()
     park_until_limit_resets(state)  # returns immediately when no window is exhausted
 
+    # RE-READ AFTER THE SLOW PART: the watchdog's half of 348453d. The refresh above can spawn a
+    # limit probe (~75s, and unbounded across a laptop sleep, which stops the clocks), and nothing
+    # supersedes a watchdog before it claims the pidfile below. So `state` can be minutes old here.
+    # Observed 2026-09-24, every 30-min cycle: a watchdog launched before the Mac slept came back
+    # after a newer one had rearmed AND rung, then decided from its launch snapshot (rings=3, the
+    # old ring offset), found the old tool calls "since the last ring", and rearmed again. The cap
+    # then spent one extra ring per cycle. Decide from the file as it is now; the one key this
+    # process owns in the dict is the transcript path.
+    state = load_state()
+    state["_tpath"] = tpath
+
     # RESET BEFORE THE CAP. The cap means CONSECUTIVE UNPRODUCTIVE rings — stand down only if ringing
     # is not getting the session working. If the transcript has grown since the last ring, the ring
     # WORKED, so the budget is spent honestly rather than burned once and never recovered.
     rings = state.get("watchdog_rings", 0)
     if rings:
         now_size = transcript_size(tpath) or 0
-        if now_size > state.get("watchdog_last_ring_size", 0):
+        # "WORK HAPPENED" MEANS A TOOL CALL, not a longer transcript. Growth alone re-armed the cap
+        # on every reply, so it never fired; see acted_since. When the transcript cannot be read,
+        # growth is still the fallback, so a read failure leaves the old behaviour rather than
+        # silencing anything.
+        _acted = acted_since(tpath, state.get("watchdog_last_ring_size", 0))
+        _worked = _acted if _acted is not None else (now_size > state.get("watchdog_last_ring_size", 0))
+        if _worked:
             st = load_state()
             st["watchdog_rings"] = 0
             st["watchdog_exhausted_paged"] = False

@@ -578,6 +578,51 @@
       "change": "A new refusal: `--expires` rejects a value that is neither a duration (30m/2h/7d/1w), a date, nor `never` — a bare number most notably, because read as minutes it lapses during the call that set it and read as days it covers a week of unattended runs.",
       "why_it_qualifies": "NOTICE FALSE, and the reason is the whole of it: this refusal is reachable ONLY by passing a flag that did not exist before this commit. Nobody who changes nothing about how they call `authorize` can meet it — an existing invocation has no --expires, parse_expires returns None for absent, and the grant is unbounded exactly as it was. The other half of the same change is additive in the same way: grants without an expires_at are honoured by all three guards byte for byte as before, so a consumer's live grants do not start lapsing because they upgraded.",
       "consequence": "Nothing changes for an existing caller. A caller who OPTS IN gets a grant the guard closes on its own, and a mistyped duration is refused at grant time rather than silently becoming 'never' — which is the failure this entry exists to say was considered rather than overlooked."
+    },
+    {
+      "seq": 61,
+      "sha": "(this commit)",
+      "notice": true,
+      "verb": "watchdog (the ring cap)",
+      "change": "The ring cap now counts a ring as productive only when the session made a TOOL CALL since it. A text-only reply (\"nothing has changed\") no longer re-arms the cap, so after ring_cap consecutive rings answered only in text, the watchdog stands down and pages the human once, as its own comments always said it would.",
+      "why_it_qualifies": "Somebody who changed nothing WILL notice: a session idling under a standing mandate used to be rung forever and now stops after three rings and pages once. The old rule measured 'productive' as 'the transcript grew', which any reply satisfies, so the cap was unreachable for every session that answered its rings. Measured here: 70 rings / 70 rearms in one afternoon, 1780 over one session, against a cap of 3, zero stand-downs.",
+      "consequence": "An idle session under a standing mandate is paged ONCE after three empty replies instead of being woken indefinitely. A session that actually works between rings (any tool call) keeps its budget, as before. If the transcript cannot be read, the old growth rule still applies, so a read failure never silences the watchdog."
+    },
+    {
+      "seq": 62,
+      "sha": "(this commit)",
+      "notice": false,
+      "verb": "watchdog (the ring cap)",
+      "change": "A watchdog that was held up in the usage-limit probe now re-reads the session state before deciding whether work happened since the last ring. It used to decide from the state it read at launch, which can be minutes old: the probe takes ~75s, and a laptop sleep stretches it.",
+      "why_it_qualifies": "Recorded, not announced: the visible effect is one ring fewer per idle cycle on a machine that sleeps. Before this, a delayed watchdog came back after a newer one had rearmed and rung, read its stale ring count and ring offset, counted old tool calls as new work, and rearmed the cap. Observed here every 30-min cycle on 2026-09-24.",
+      "consequence": "The ring cap stands down after ring_cap consecutive text-only replies even when an older watchdog was still inside the probe. Nothing else in the decision changes: a tool call since the last ring still re-arms it."
+    },
+    {
+      "seq": 63,
+      "sha": "(this commit)",
+      "notice": true,
+      "verb": "bash (in-place sed / perl / ruby)",
+      "change": "The write guard now parses in-place editors instead of matching the one spelling `-i`, and it checks only the FILES they rewrite. Two effects. ALLOWED NOW: a sed or perl script is no longer read as a path, so `sed -i '' '/^  x: /d' pubspec.yaml`, any `-e '/addr/d'`, and `sed -i -f /outside/edit.sed <in-repo file>` run. REFUSED NOW: in-place spellings that used to slip past unchecked -- `sed -i.bak`, `--in-place[=SUF]`, clustered `-Ei`/`-ni`, BSD `-I`, `perl -pi -e`, `perl -pi.bak`, `ruby -pi` -- are refused when the file they rewrite is outside the repo.",
+      "why_it_qualifies": "It changes what is refused in both directions. Reported by gravity-brew-owner (game_loop_owner, 2026-09-28) as a false refusal of a sed address script; probing the same rule found the larger half, a fail-open on the spelling people actually type (`perl -pi -e`).",
+      "consequence": "If you work around the old false refusal (routing a sed through a script, or re-spelling it to dodge the guard), you can stop. If your agent rewrites files outside the repo with `perl -pi -e` or `sed -i.bak`, those calls are refused now, where before they ran unchecked. Grant one with `game_loop authorize --path <prefix> --reason \"<the human's words>\"`, the same as any other outside write."
+    },
+    {
+      "seq": 64,
+      "sha": "(this commit)",
+      "notice": true,
+      "verb": "confidence --mark",
+      "change": "Marking a commit that is not yet on its upstream branch is now REFUSED, before the tag is created and before any confidence trigger fires. It used to create the tag, move the channel, fire the triggers, and print a warning to push the branch first. Projects with no upstream branch are unaffected.",
+      "why_it_qualifies": "A new refusal on a release verb. 2026-09-30: stable-00cab6c4 was marked before its push; the lamp publish trigger declined ('HEAD is not pushed yet') while reporting ok, the warning scrolled past, and the release never reached lamp until a consumer (gravity-brew-owner) asked why their upgrade found nothing new.",
+      "consequence": "Release in the order push, then mark: `git push origin HEAD`, then `game_loop confidence --mark <level>`, then push the tag and channel. A script that marks first and pushes after now stops at the mark with that order printed. Run `git fetch` first if your local view of the upstream is stale."
+    },
+    {
+      "seq": 65,
+      "sha": "(this commit)",
+      "notice": true,
+      "verb": "write guard (Write / Edit / Bash into a temp path)",
+      "change": "A write into /tmp, /private/tmp, /var/folders or $TMPDIR is still ALLOWED, but now carries a one-time note: the location is cleared on reboot, and anything that must outlive a restart belongs in the repo's local-only state or the memory directory. Noted once per path per session; never for paths inside the repo itself. Under an active mandate, `game_loop status` says how many files this session wrote there.",
+      "why_it_qualifies": "New output on ordinary calls, so a consumer will see it. Asked for in #132 after a 2026-10-01 reboot emptied /private/tmp and took a campaign's house rules, a build patch, briefs and a published page's source; the harness scratchpad lives there too, so it is the natural place to put things.",
+      "consequence": "Nothing is refused. The first write to each temp path in a session gets a short note; repeats are silent. If you keep durable state (rules other sessions read, patches, page sources) under a temp path, move it into .game_loop/ or another gitignored directory in the repo."
     }
   ],
   "schema": 1

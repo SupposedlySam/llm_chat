@@ -22,7 +22,9 @@
 #         five redirect forms and nine verbs, and a guessed name that never arrives is a test
 #         asserting a belief about someone else's roadmap.
 #   DOES: Bash mutators whose resolved target is outside the allow roots. NAMED, not elided: rm,
-#         rmdir, touch, mkdir, chmod, chown, ln, dd, truncate, tee, cp, mv; sed -i and perl -i;
+#         rmdir, touch, mkdir, chmod, chown, ln, dd, truncate, tee, cp, mv; in-place sed, perl and
+#         ruby in every flag spelling (-i, -i.bak, -I, --in-place[=], clustered -Ei/-ni/-pi), where
+#         only the FILES are checked, never the script or an -e value;
 #         curl -o, wget -O, tar -C, unzip -d, patch -o (destination read off the FLAG); install,
 #         rsync, split (destination is the last path, as with cp); the git writes, also NAMED —
 #         clone, commit, push, reset, rebase, checkout, clean, apply, restore, mv; and
@@ -35,8 +37,9 @@
 #         segments, every offending path collected (not just the first).
 #   DOES: Bash invoking a configured deploy/publish verb, anywhere (config.json -> deploy_verbs).
 #   DOES NOT: catch mutations made via MCP tools, an interpreter one-liner (`python3 -c 'os.remove(..)'`),
-#             a path built from a shell variable (`rm $TARGET/x`), or a script that mutates without
-#             naming the path on the command line. Those need tool-level matching this does not do.
+#             an interpreter fed a heredoc (`python3 -` reading a here-doc body that calls
+#             open('/abs/x','w'), and node/ruby/perl the same), a path built from a shell variable (`rm $TARGET/x`), or a
+#             script that mutates without naming the path on the command line. Those need tool-level matching this does not do.
 #             Do not read silence here as safety.
 #   DOES: at `git commit`, NAME the staged files this session never wrote — a warning about a
 #         commit widened past the work (a directory-wide formatter, a codemod, `git add -A`). It is
@@ -466,6 +469,56 @@ except OSError:
 PY
 }
 
+# A TEMP PATH IS CLEARED ON REBOOT, AND NOTHING SAID SO (#132). On 2026-10-01 a host restart emptied
+# /private/tmp and took a campaign's house rules, a build patch, a lead's briefs and the source of a
+# published page with it. The scratchpad the harness hands an agent lives there too, so it is the
+# natural place to put things -- which is exactly why a note at the moment of writing is worth more
+# than a rule somebody has to remember. Takes newline-separated candidate paths; prints the note iff
+# at least one of them is under a temp root and was not already noted this session, and records it
+# so the same path is never noted twice. Silence is the common answer, and it costs one python start.
+temp_note() {
+  TEMP_LIST="$1" TW_F="${STATE_F%/*}/temp-writes" REPO_REAL="$REPO_REAL" python3 <<'PYTMP' 2>/dev/null
+import os
+# THE REPO ITSELF IS NOT WHAT THIS IS ABOUT. A checkout that happens to live under /tmp (every test
+# sandbox, any scratch clone) would otherwise note on every in-repo write, and its advice -- move it
+# into .game_loop/ -- would point back into the same temp directory.
+repo = os.path.realpath(os.environ.get("REPO_REAL") or "/nonexistent-repo")
+roots = ["/tmp", "/private/tmp", "/var/folders"]
+if os.environ.get("TMPDIR"):
+    roots.append(os.environ["TMPDIR"])
+roots = sorted({os.path.realpath(r) for r in roots})
+f = os.environ["TW_F"]
+try:
+    with open(f) as fh:
+        seen = {l for l in fh.read().split("\n") if l}
+except OSError:
+    seen = set()
+new = []
+for p in os.environ["TEMP_LIST"].split("\n"):
+    real = os.path.realpath(p) if p else ""
+    if not real or real in seen or real in new or real == repo or real.startswith(repo + os.sep):
+        continue
+    if any(real == r or real.startswith(r + os.sep) for r in roots):
+        new.append(real)
+if not new:
+    raise SystemExit(0)
+try:
+    os.makedirs(os.path.dirname(f), exist_ok=True)
+    with open(f, "a") as fh:                  # append: concurrent hooks interleave, never clobber
+        fh.write("".join(p + "\n" for p in new))
+except OSError:
+    pass
+total = len(seen) + len(new)
+print("⚠ TEMP PATH, CLEARED ON REBOOT: " + ", ".join(new) + "\n"
+      "/tmp, /private/tmp, /var/folders and $TMPDIR are emptied when the machine restarts, and the\n"
+      "scratchpad the harness hands you lives there too. Fine for throwaway work. Anything that must\n"
+      "outlive a restart -- rules other sessions read, patches, the source of a published page,\n"
+      "recovery notes -- belongs in this repo's local-only state (.game_loop/, or another gitignored\n"
+      "dir) or in your memory directory.\n"
+      "(Noted once per path per session; %d temp path(s) written this session. #132)" % total)
+PYTMP
+}
+
 # A human-authorized, single-use exception (`game_loop authorize`). Takes the offending realpath;
 # prints "yes" iff a live authorization covers it, in which case the authorization is CONSUMED and
 # the spend logged — one authorization buys one mutation, whichever tool performs it. Shared by the
@@ -818,6 +871,11 @@ PYMEM
           note "$MEM_NOTE"
         fi
       fi
+      case "$fp" in                            # cheap prefix test first: most writes are in-repo
+        /tmp/*|/private/tmp/*|/var/folders/*|"${TMPDIR:-/nonexistent-tmpdir}"*)
+          tnote=$(temp_note "$fp")
+          [ -n "$tnote" ] && note "$tnote" ;;
+      esac
       exit 0
     fi
     if [ -n "$verdict" ]; then
@@ -2127,6 +2185,59 @@ _DEST_FLAG = {"curl": ("-o", "--output"), "wget": ("-O", "--output-document"),
               "tar": ("-C", "--directory"), "unzip": ("-d",), "patch": ("-o", "--output")}
 _DEST_LAST = {"install", "rsync", "split"}
 GIT_WRITES = {"clone", "commit", "push", "reset", "rebase", "checkout", "clean", "apply", "restore", "mv"}
+# IN-PLACE EDITORS ARE PARSED, NOT MATCHED ON ONE SPELLING. The rule was `"-i" in args` for sed and
+# `startswith("-i")` for perl/ruby, and it then checked EVERY non-flag token. Both halves were wrong,
+# measured 2026-09-30 from a consumer report (gravity-brew-owner, in game_loop_owner):
+#   - it MISSED ordinary spellings -- `sed -i.bak`, `--in-place`, `-Ei`, `-ni`, BSD `-I`, and
+#     `perl -pi -e`, the one everybody types -- so each wrote outside the repo unchecked;
+#   - it REFUSED ordinary work, because a sed script is not a path: `sed -i '' '/^  x: /d' f` was
+#     blocked naming "/^  x: /d" as its target, and so was the value of every -e.
+# So the in-place letter is found anywhere in a short-flag cluster, the script (an -e value, an -f
+# script file that is only READ, or the first operand when neither was given) is dropped, and what
+# is left -- the files the tool rewrites -- is checked. Only flags that REQUIRE a value consume the
+# next argument; guessing that some other flag takes one would drop a file and fail open, while
+# guessing it does not only checks one token too many.
+# verb: (in-place letters, script letters, long in-place options, long script options)
+_INPLACE = {"sed": ("iI", "ef", ("--in-place",), ("--expression", "--file")), "perl": ("i", "eE", (), ()), "ruby": ("i", "e", (), ())}
+
+
+def inplace_targets(verb, args):
+    """The files an in-place sed/perl/ruby REWRITES, or None when it is not editing in place."""
+    ip, script_letters, long_ip, long_script = _INPLACE[verb]
+    inplace, scripted, ops, i = False, False, [], 0
+    while i < len(args):
+        a = args[i]
+        i += 1
+        if a == "--":
+            ops.extend(args[i:])
+            break
+        if a.startswith("--"):
+            name = a.split("=", 1)[0]
+            if name in long_ip:
+                inplace = True
+            elif name in long_script:
+                scripted = True
+                if "=" not in a:
+                    i += 1
+            continue
+        if a.startswith("-") and len(a) > 1:
+            for k, ch in enumerate(a[1:]):
+                if ch in ip:
+                    # The rest of the token is an optional glued suffix (`-i.bak`), never more flags.
+                    inplace = True
+                    break
+                if ch in script_letters:
+                    scripted = True
+                    if not a[k + 2:]:
+                        i += 1                     # `-e SCRIPT`: the value is the next argument
+                    break
+            continue
+        ops.append(a)
+    if not inplace:
+        return None
+    # An empty operand is BSD's `-i ''` suffix, which names no file.
+    ops = [o for o in ops if o != ""]
+    return ops if scripted else ops[1:]
 
 
 def under(path, root):
@@ -2351,6 +2462,10 @@ def redirect_targets(seg):
 offenders = []
 policy_hits = []
 unresolved = []
+temp_hits = []
+_TEMP_ROOTS = sorted({os.path.realpath(r) for r in
+                      ["/tmp", "/private/tmp", "/var/folders"]
+                      + ([os.environ["TMPDIR"]] if os.environ.get("TMPDIR") else [])})
 
 
 def unexpandable(raw, cwd):
@@ -2499,10 +2614,8 @@ for seg in shell_segments(cmd):
         # arguments and write the final one. Checking all of them would deny `install /etc/hosts
         # <in-repo>` for reading /etc/hosts, which is exactly the false refusal cp's rule avoids.
         check = pathish[-1:]
-    elif verb in ("perl", "ruby") and any(a.startswith("-i") for a in args):
-        check = pathish                            # -i is in-place, the same shape as sed -i
-    elif verb == "sed" and "-i" in args:
-        check = pathish
+    elif verb in _INPLACE:
+        check = inplace_targets(verb, args) or []  # the FILES rewritten, never the script
     elif verb == "git" and any(a in GIT_WRITES for a in args):
         check = pathish                            # catches `git -C <path> commit`
     check.extend(redirect_targets(seg))            # redirects mutate regardless of the verb
@@ -2519,6 +2632,12 @@ for seg in shell_segments(cmd):
                 unresolved.append(raw + chr(9) + fab)
             else:
                 offenders.append(bad)
+        # A WRITE INTO A TEMP ROOT (#132) is allowed, and cleared on reboot; bash decides whether it
+        # was already noted this session. A variable or substitution is skipped: unexpandable here.
+        if "$" not in raw and chr(96) not in raw:   # chr(96): a lone backquote breaks bash 3.2 here
+            _tp = os.path.realpath(os.path.join(cwd, os.path.expanduser(raw)))
+            if any(_tp == r or _tp.startswith(r + os.sep) for r in _TEMP_ROOTS):
+                temp_hits.append(_tp)
         # THE POLICY FILES, ON THE BASH PATH TOO (#86). Registered on Write/Edit only, the gate that
         # bounds the session was a suggestion against `>>` — and because nothing was refused,
         # nothing was logged either, which removes the very evidence #65 exists to preserve.
@@ -2534,12 +2653,16 @@ for p_ in dict.fromkeys(policy_hits):
     print("POLICY\t" + p_)
 for u_ in dict.fromkeys(unresolved):
     print("UNRESOLVED\t" + u_)
+for t_ in dict.fromkeys(temp_hits):
+    print("TEMP\t" + t_)
 PY
 )
 
     pol_line=$(printf '%s' "$offender" | grep '^POLICY\t' | head -1)
     unres_line=$(printf '%s' "$offender" | grep '^UNRESOLVED\t' | head -1)
-    offender=$(printf '%s' "$offender" | grep -v '^POLICY\t' | grep -v '^UNRESOLVED\t' | head -1)
+    temp_lines=$(printf '%s' "$offender" | grep '^TEMP\t' | cut -f2)
+    offender=$(printf '%s' "$offender" | grep -v '^POLICY\t' | grep -v '^UNRESOLVED\t' \
+               | grep -v '^TEMP\t' | head -1)
     if [ -n "$pol_line" ]; then
       pol_name=$(printf '%s' "$pol_line" | cut -f2)
       pol_real=$(printf '%s' "$pol_line" | cut -f3)
@@ -2718,6 +2841,14 @@ edit as its own call, then commit, and the gate sees the change it is meant to s
       [ -n "$commit_note" ] && commit_note="$commit_note
 "
       commit_note="$commit_note$cov_note"
+    fi
+    if [ -n "${temp_lines:-}" ]; then
+      tmp_note=$(temp_note "$temp_lines")
+      if [ -n "$tmp_note" ]; then
+        [ -n "$commit_note" ] && commit_note="$commit_note
+"
+        commit_note="$commit_note$tmp_note"
+      fi
     fi
     [ -n "$commit_note" ] && note "$commit_note"
     ;;
