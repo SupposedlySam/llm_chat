@@ -5172,6 +5172,21 @@ def do_doctor(server):
               "or not this machine.")
     else:
         print("  server bind         loopback")
+    store = machine_store(port_of(server))
+    serving = serving_store(server)
+    if serving is None:
+        print("  server store        CANNOT TELL — no lsof, nothing listening, "
+              "or not this machine.")
+    elif serving == os.path.realpath(store):
+        print("  server store        the machine store (%s)" % store)
+    else:
+        print("  SERVER STORE        NOT THE MACHINE STORE — it serves %s" % serving)
+        print("                      Every copy on this machine should serve "
+              "%s, so this" % store)
+        print("                      server's rooms are not the ones other "
+              "agents' copies would bring")
+        print("                      back. Stop it and run `llm_chat setup` "
+              "from an upgraded copy.")
     print()
     print(install_report(project) + stale_skill_report(project)
           + divergent_skill_report() + "\n")
@@ -6154,6 +6169,115 @@ def matching_dart_sdk():
     return None
 
 
+# ONE STORE PER ADDRESS, NOT PER COPY. zonai keeps its database in the copy it
+# serves from (`.zonai/data`), and every lamp consumer vendors a whole copy of
+# this repo. So whichever copy happened to run `setup` while the server was
+# down decided what every agent on the machine could see. On 2026-09-28 that
+# was gravity_brew's vendored copy: an empty store came up on :7717, and for
+# three days every agent already in a room received nothing and was told it
+# had "not joined", while newcomers built rooms nobody else could reach. The
+# original store sat intact in another directory the whole time.
+#
+# KEYED BY PORT, because the port is what agents actually share: they all talk
+# to localhost:7717. Two clones deliberately run as separate workspaces on
+# separate ports keep separate stores, as `doctor` has always described.
+STORE_ENV = "LLM_CHAT_STORE"
+
+
+def machine_store(port):
+    """The one data directory every copy serves `port` from."""
+    base = os.environ.get(STORE_ENV) or os.path.join(
+        os.path.expanduser("~"), ".local", "share", "llm_chat")
+    return os.path.join(base, "port-%d" % port)
+
+
+def serve_lock_holder(data):
+    """The pid of a LIVE server holding `data`, or None."""
+    try:
+        with open(os.path.join(data, ".serve.lock")) as f:
+            pid = int(f.read().strip())
+        os.kill(pid, 0)
+    except PermissionError:
+        return pid               # alive, just not ours to signal
+    except (OSError, ValueError):
+        return None
+    return pid
+
+
+def adopt_machine_store(root, port):
+    """Make `root/.zonai/data` a link to the machine store. Returns notes.
+
+    Called only on the way to starting a server, so nothing is serving from
+    the directory being moved. A copy's own store is never deleted:
+      - no machine store yet: this copy's store BECOMES it (moved, then linked);
+      - a machine store already exists: this copy's store is set aside beside
+        itself, because it is a fork of the real one or an empty bootstrap,
+        and serving it is the defect this exists for.
+    """
+    data = os.path.join(root, ".zonai", "data")
+    store = machine_store(port)
+    notes = []
+    # NEVER FROM UNDER A LIVE SERVER. "Nothing answered on this port" is not
+    # "nothing is serving this directory": a server on another port can hold
+    # it, and the first test run of this function — ROOT left pointing at the
+    # real checkout — set the live store aside while it was being written.
+    # zonai writes its pid into `.serve.lock`, so ask that pid.
+    holder = serve_lock_holder(data)
+    if holder and not os.path.islink(data):
+        raise SystemExit(
+            "%s is held by a running server (pid %d). Refusing to move a "
+            "store out from under it;\n  stop that server first." % (data, holder))
+    if os.path.islink(data):
+        if os.path.realpath(data) == os.path.realpath(store):
+            return notes
+        os.remove(data)
+        notes.append("re-pointed %s at the machine store" % data)
+    elif os.path.isdir(data):
+        if not os.path.exists(store):
+            os.makedirs(os.path.dirname(store), exist_ok=True)
+            shutil.move(data, store)
+            notes.append("moved this copy's store to %s" % store)
+        else:
+            aside = "%s.set-aside-%s" % (data, time.strftime("%Y%m%d%H%M%S"))
+            os.rename(data, aside)
+            notes.append(
+                "this copy had its own store; it is set aside at %s, NOT "
+                "merged — the machine store at %s is what serves" % (aside, store))
+    os.makedirs(store, exist_ok=True)
+    os.makedirs(os.path.dirname(data), exist_ok=True)
+    os.symlink(store, data)
+    return notes
+
+
+def serving_store(server):
+    """The data directory the server on `server`'s port really uses, or None.
+
+    Read from the LISTENING PROCESS — its working directory is the copy it
+    serves from — because every other answer is a fact about configuration,
+    and the failure this exists for had all of those correct.
+    """
+    if not shutil.which("lsof"):
+        return None
+    host = (urllib.parse.urlparse(server).hostname or "").lower()
+    if host not in LOCAL_HOSTS:
+        return None
+    try:
+        pids = subprocess.run(
+            ["lsof", "-t", "-nP", "-iTCP:%d" % port_of(server), "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=10).stdout.split()
+        if not pids:
+            return None
+        cwd = subprocess.run(
+            ["lsof", "-a", "-p", pids[0], "-d", "cwd", "-Fn"],
+            capture_output=True, text=True, timeout=10).stdout
+    except Exception:
+        return None
+    for line in cwd.splitlines():
+        if line.startswith("n/"):
+            return os.path.realpath(os.path.join(line[1:], ".zonai", "data"))
+    return None
+
+
 def start_server(server) -> None:
     """Bootstrap the checkout if needed, then leave a server running.
 
@@ -6161,6 +6285,8 @@ def start_server(server) -> None:
     the compiled workers or the database — all three are gitignored, so all
     three have to be produced before anything can serve.
     """
+    for note in adopt_machine_store(ROOT, port_of(server)):
+        print("  " + note, flush=True)
     steps = []
     if not os.path.isdir(os.path.join(ROOT, ".dart_tool")):
         steps.append(["dart", "pub", "get"])

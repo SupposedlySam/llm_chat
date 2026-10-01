@@ -142,8 +142,13 @@ class SetupTest(unittest.TestCase):
 class StartServerTest(unittest.TestCase):
     def setUp(self):
         self.saved = {"subprocess": cli.subprocess, "server_up": cli.server_up,
-                      "time": cli.time}
+                      "time": cli.time, "ROOT": cli.ROOT}
         self.tmp = tempfile.TemporaryDirectory()
+        # NEVER THE REAL CHECKOUT. Stubbing subprocess made these look inert,
+        # but `start_server` also links ROOT's data directory to the machine
+        # store — and with ROOT left real, the first run of that change set
+        # the LIVE server's store aside under it.
+        cli.ROOT = self.tmp.name
 
     def tearDown(self):
         for name, value in self.saved.items():

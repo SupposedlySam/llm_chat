@@ -3020,7 +3020,18 @@ NOT_SWEPT = {
         "end to end on an open stdin. A mutation back to a blocking read "
         "would HANG a plain timing assertion rather than fail it, so each "
         "test runs under SIGALRM and a block becomes a failure with a reason",
-    "bin/llm_chat:throttled_bucket": "asserted through call() against a real "
+    "bin/llm_chat:adopt_machine_store": "SHOULD BE SWEPT — every branch is "
+        "asserted (first copy moves, second sets aside, fresh links, linked "
+        "is a no-op), but a mutant that deletes instead of setting aside "
+        "loses a store, and only a sweep proves the tests would catch it",
+    "bin/llm_chat:serve_lock_holder": "asserted through adopt_machine_store "
+        "with a live pid (refuses, touches nothing) and a dead one (proceeds)",
+    "bin/llm_chat:machine_store":"asserted directly: per port, under the "
+        "override; a wrong path is caught by every adoption test",
+    "bin/llm_chat:serving_store": "reads lsof against a live listener, which "
+        "the suite must not depend on; it only chooses a doctor line, and "
+        "None is reported as CANNOT TELL rather than as healthy",
+    "bin/llm_chat:throttled_bucket":"asserted through call() against a real "
         "0.9.1-shaped body and the pre-0.9.1 plain string, which must name "
         "nothing; a wrong bucket only mislabels an error that still raises "
         "Throttled with its exit code, so no outcome depends on it",

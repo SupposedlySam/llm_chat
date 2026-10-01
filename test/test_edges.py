@@ -213,6 +213,110 @@ class CliEdgeTest(unittest.TestCase):
         self.assertIn("500", str(caught.exception))
 
 
+class MachineStoreTest(unittest.TestCase):
+    """One store per address, whichever copy starts the server. On 09-28 a
+    vendored copy started :7717 on its own empty store, and every agent
+    already in a room heard nothing for three days."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        saved = os.environ.get(cli.STORE_ENV)
+        os.environ[cli.STORE_ENV] = os.path.join(self.tmp.name, "machine")
+        self.addCleanup(lambda: os.environ.__setitem__(cli.STORE_ENV, saved)
+                        if saved is not None
+                        else os.environ.pop(cli.STORE_ENV, None))
+        self.store = cli.machine_store(7717)
+
+    def copy(self, name, rows=None):
+        root = os.path.join(self.tmp.name, name)
+        data = os.path.join(root, ".zonai", "data")
+        os.makedirs(data)
+        if rows is not None:
+            with open(os.path.join(data, "zonai.sqlite"), "w") as f:
+                f.write(rows)
+        return root
+
+    def data(self, root):
+        return os.path.join(root, ".zonai", "data")
+
+    def test_the_FIRST_copy_s_store_BECOMES_the_machine_store(self):
+        root = self.copy("checkout", rows="the real rooms")
+        cli.adopt_machine_store(root, 7717)
+        self.assertTrue(os.path.islink(self.data(root)))
+        with open(os.path.join(self.store, "zonai.sqlite")) as f:
+            self.assertEqual(f.read(), "the real rooms")
+
+    def test_a_SECOND_copy_serves_the_same_store_not_its_own(self):
+        """The 09-28 failure, exactly: a vendored copy with its own (empty)
+        store starts the server."""
+        first = self.copy("checkout", rows="the real rooms")
+        cli.adopt_machine_store(first, 7717)
+        vendored = self.copy("vendored", rows="empty bootstrap")
+        notes = cli.adopt_machine_store(vendored, 7717)
+        with open(os.path.join(self.data(vendored), "zonai.sqlite")) as f:
+            self.assertEqual(f.read(), "the real rooms")
+        self.assertIn("set aside", notes[0])
+
+    def test_a_copy_s_own_store_is_SET_ASIDE_never_deleted(self):
+        cli.adopt_machine_store(self.copy("checkout", rows="real"), 7717)
+        vendored = self.copy("vendored", rows="a fork somebody wrote to")
+        cli.adopt_machine_store(vendored, 7717)
+        aside = [n for n in os.listdir(os.path.join(vendored, ".zonai"))
+                 if n.startswith("data.set-aside-")]
+        self.assertEqual(len(aside), 1)
+        with open(os.path.join(vendored, ".zonai", aside[0],
+                               "zonai.sqlite")) as f:
+            self.assertEqual(f.read(), "a fork somebody wrote to")
+
+    def test_a_FRESH_clone_gets_a_link_to_a_new_store(self):
+        root = os.path.join(self.tmp.name, "fresh")
+        os.makedirs(root)
+        cli.adopt_machine_store(root, 7717)
+        self.assertEqual(os.path.realpath(self.data(root)),
+                         os.path.realpath(self.store))
+
+    def test_a_link_to_ANOTHER_store_is_re_pointed_not_followed(self):
+        root = os.path.join(self.tmp.name, "moved")
+        os.makedirs(os.path.join(root, ".zonai"))
+        elsewhere = os.path.join(self.tmp.name, "old-store")
+        os.makedirs(elsewhere)
+        os.symlink(elsewhere, self.data(root))
+        cli.adopt_machine_store(root, 7717)
+        self.assertEqual(os.path.realpath(self.data(root)),
+                         os.path.realpath(self.store))
+        self.assertTrue(os.path.isdir(elsewhere))    # its target is untouched
+
+    def test_already_linked_is_a_no_op(self):
+        root = self.copy("checkout", rows="real")
+        cli.adopt_machine_store(root, 7717)
+        self.assertEqual(cli.adopt_machine_store(root, 7717), [])
+
+    def test_a_store_a_LIVE_server_holds_is_never_moved(self):
+        """The first run of this change set the live store aside, because a
+        test left ROOT real. zonai's lock names the pid; a live one stops it."""
+        root = self.copy("serving", rows="live rooms")
+        with open(os.path.join(self.data(root), ".serve.lock"), "w") as f:
+            f.write("%d\n" % os.getpid())
+        with self.assertRaises(SystemExit) as caught:
+            cli.adopt_machine_store(root, 7717)
+        self.assertIn("held by a running server", str(caught.exception))
+        self.assertFalse(os.path.islink(self.data(root)))
+        self.assertFalse(os.path.exists(self.store))
+
+    def test_a_STALE_lock_does_not_block(self):
+        root = self.copy("crashed", rows="rooms")
+        with open(os.path.join(self.data(root), ".serve.lock"), "w") as f:
+            f.write("999999\n")
+        cli.adopt_machine_store(root, 7717)
+        self.assertTrue(os.path.islink(self.data(root)))
+
+    def test_ANOTHER_PORT_is_another_workspace(self):
+        """Clones run as separate workspaces on separate ports keep separate
+        stores, as doctor has always described."""
+        self.assertNotEqual(cli.machine_store(7717), cli.machine_store(7718))
+
+
 class DeliverEdgeTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

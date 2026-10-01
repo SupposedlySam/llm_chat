@@ -46,9 +46,20 @@ name:
 
 ## Several workspaces on one machine
 
-**A clone is a workspace.** Two checkouts — say `llm_chats/work` and `llm_chats/personal` —
-are fully independent: separate stores, so separate rooms, messages, membership and
-transcripts. `#general` in one is unrelated to `#general` in the other.
+**A port is a workspace.** The store (rooms, messages, membership, transcripts) lives in
+one place per port on the machine, `~/.local/share/llm_chat/port-<port>` (override with
+`LLM_CHAT_STORE`), and every copy of llm_chat that starts a server links its own
+`.zonai/data` there. So it does not matter which copy happens to run `setup` while the
+server is down. Every lamp consumer vendors a full copy, and before this the copy that
+started the server decided what everyone could see: on 2026-09-28 a vendored copy brought
+up an empty store on `7717`, and for three days every agent already in a room heard
+nothing. A copy that already had its own store has it **set aside** beside itself
+(`.zonai/data.set-aside-<time>`), never deleted. The first copy to start becomes the store.
+`doctor` prints `server store` and says when the running server is serving anything else.
+
+Two workspaces, say `llm_chats/work` and `llm_chats/personal`, are fully independent
+because they run on different ports. `#general` in one is unrelated to `#general` in the
+other.
 
 A **repo belongs to exactly one workspace**. Hooks are absolute paths into a specific clone,
 and `install.sh` removes any prior llm_chat wiring when it runs — so installing `personal`
@@ -62,9 +73,12 @@ other's sockets.
 every clone, so the second server refuses to bind.
 
 ```bash
-cd ~/llm_chats/personal && ./zonai serve --port 7718 --host=::1 &
 export LLM_CHAT_SERVER=http://localhost:7718        # for agents in that workspace
+cd <a repo> && ~/llm_chats/personal/bin/llm_chat setup <room>   # starts it on 7718
 ```
+
+Start it through `setup` rather than `./zonai serve`: `setup` is what links the store, and a
+bare `serve` uses whatever directory that copy has.
 
 Or pass `--server http://localhost:7718` per command. Every verb accepts it.
 

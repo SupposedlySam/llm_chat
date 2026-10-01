@@ -17,7 +17,10 @@
 # zonai 0.6.2 GENERATES it at compile time (verified: a tree that never had one
 # produced a byte-identical copy), so committing it is not merely redundant, it
 # would ship a macOS binary to the Linux users the fat launcher now serves.
-.zonai/data/
+# NO TRAILING SLASH: `.zonai/data` is a symlink to the machine store now, and
+# `data/` matches only a directory, so the link showed up as untracked.
+.zonai/data
+.zonai/data.set-aside-*/
 .zonai/executables/
 .zonai/lib/
 .dart_tool/

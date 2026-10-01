@@ -30,6 +30,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 
+import run  # noqa: E402
 import support  # noqa: E402
 
 # `$.text('created_by', ...)`, `$.id('id', ...)`, `$.createdAt('created_at', ...)`
@@ -67,6 +68,11 @@ def observed_columns():
 
 
 def main():
+    # THE SAME SANDBOX AS run.py. This runs the whole suite too, and without
+    # it a test that starts a server under a temporary ROOT created the REAL
+    # machine store during a verify — empty, and a live server was then
+    # pointed at it. One function, so the two entry points cannot drift.
+    run.hermetic()
     declared = schema_columns()
     used = observed_columns()
 
