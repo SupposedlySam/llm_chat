@@ -456,14 +456,23 @@ def doorbell_dir(server=None):
     return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells-%s" % tag)
 
 
-def doorbell_name(channel, identity):
+SOCKET_PATH_MAX = 103      # MIRRORED in bin/llm_chat; macOS sun_path
+
+
+def doorbell_name(channel, identity, server=None):
     """MIRRORED in bin/llm_chat. One doorbell per MEMBERSHIP, not per identity.
 
     Identity is not unique on this machine: four projects answer to `owner` and
     three hold two identities each. Keying by identity meant one waker bound
     the socket and the rest silently did not, then heard nothing addressed to
-    them — indistinguishable from a quiet room."""
-    return "%s__%s.sock" % (channel, identity)
+    them — indistinguishable from a quiet room.
+
+    Hashed only when the plain path would not fit in a Unix socket path, which
+    silently cost every long room name its doorbell; see the CLI's copy."""
+    name = "%s__%s.sock" % (channel, identity)
+    if len(os.path.join(doorbell_dir(server), name).encode()) <= SOCKET_PATH_MAX:
+        return name
+    return "h-%s.sock" % hashlib.sha256(name.encode()).hexdigest()[:16]
 
 
 def open_doorbells(rooms):
@@ -507,7 +516,8 @@ def open_doorbell(channel, identity, server=None):
         os.makedirs(doorbell_dir(server), exist_ok=True)
     except OSError:
         return None      # no doorbell; the loop still runs on its heartbeat
-    path = os.path.join(doorbell_dir(server), doorbell_name(channel, identity))
+    path = os.path.join(doorbell_dir(server),
+                        doorbell_name(channel, identity, server))
     if os.path.exists(path):
         probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         probe.settimeout(1)

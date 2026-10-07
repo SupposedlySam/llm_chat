@@ -45,6 +45,48 @@ class ConventionTest(unittest.TestCase):
         self.assertEqual(cli.doorbell_name("room", "me"),
                          waker.doorbell_name("room", "me"))
 
+    # ── a name that cannot be bound is no doorbell at all ───────────────────
+    # A Unix socket path is at most 103 bytes on macOS. Under /var/folders/.../T
+    # the doorbell directory alone is about 80, so `llm_chat_owner__rubric-
+    # owner.sock` (112 bytes of path) never bound, and that room was heard only
+    # on the waker's 300 s heartbeat. Found when rubric-owner's retest of #52
+    # still landed exactly one heartbeat late.
+
+    LONG = ("a-room-name-long-enough-to-overflow-any-socket-path",
+            "an-identity-that-makes-it-worse")
+
+    def test_a_name_that_FITS_is_unchanged_so_old_and_new_copies_agree(self):
+        self.assertEqual(cli.doorbell_name("room", "me"), "room__me.sock")
+        self.assertEqual(waker.doorbell_name("room", "me"), "room__me.sock")
+
+    def test_a_name_that_would_not_fit_is_SHORTENED_until_it_does(self):
+        for server in (None, "http://localhost:7717"):
+            path = os.path.join(cli.doorbell_dir(server),
+                                cli.doorbell_name(*self.LONG, server))
+            self.assertLessEqual(len(path.encode()), cli.SOCKET_PATH_MAX)
+
+    def test_both_sides_agree_on_a_SHORTENED_name_too(self):
+        self.assertEqual(cli.doorbell_name(*self.LONG, "http://localhost:7717"),
+                         waker.doorbell_name(*self.LONG, "http://localhost:7717"))
+        self.assertEqual(cli.SOCKET_PATH_MAX, waker.SOCKET_PATH_MAX)
+
+    def test_shortened_names_stay_one_per_MEMBERSHIP(self):
+        a = cli.doorbell_name(self.LONG[0], "one" + self.LONG[1])
+        b = cli.doorbell_name(self.LONG[0], "two" + self.LONG[1])
+        self.assertNotEqual(a, b)
+
+    def test_a_LONG_room_really_binds_and_really_rings(self):
+        """End to end, in the real doorbell directory: the bug was a bind
+        that failed silently, so only a real bind proves it gone."""
+        server = "http://long-bell-test-%d" % os.getpid()
+        self.addCleanup(__import__("shutil").rmtree,
+                        cli.doorbell_dir(server), True)
+        bell = waker.open_doorbell(*self.LONG, server)
+        self.assertIsNotNone(bell, "the waker could not bind the doorbell")
+        self.addCleanup(bell.close)
+        self.assertTrue(cli.ring(*self.LONG, server=server),
+                        "the sender could not find the doorbell")
+
     def test_A_TEMP_FILE_IS_NAMED_AFTER_ITS_WRITER(self):
         """`path + ".tmp"` is named after the DESTINATION, so two processes
         writing the same state file do not make two temps — they make ONE, and
@@ -294,7 +336,24 @@ class DoorbellTest(unittest.TestCase):
             os.unlink = real
 
     def test_a_bind_failure_is_None_rather_than_a_crash(self):
-        self.assertIsNone(waker.open_doorbell("room", "x" * 400))
+        # A long NAME no longer fails the bind — that was the bug — so fail
+        # it the way it still can: the socket itself refuses.
+        real = waker.socket.socket
+
+        class Refusing:
+            def __init__(self, *a):
+                pass
+
+            def bind(self, path):
+                raise OSError("refused")
+
+            def close(self):
+                pass
+        waker.socket.socket = Refusing
+        try:
+            self.assertIsNone(waker.open_doorbell("room", "me-bind-fails"))
+        finally:
+            waker.socket.socket = real
 
 
 class ManyBellsTest(unittest.TestCase):

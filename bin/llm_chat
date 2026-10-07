@@ -2923,7 +2923,12 @@ def doorbell_dir(server=None):
     return os.path.join(tempfile.gettempdir(), "llm_chat-doorbells-%s" % tag)
 
 
-def doorbell_name(channel, identity):
+# The longest Unix socket path that binds everywhere this runs: macOS's
+# sun_path is 104 bytes including the terminating NUL (Linux allows 107).
+SOCKET_PATH_MAX = 103
+
+
+def doorbell_name(channel, identity, server=None):
     """One doorbell per MEMBERSHIP, not per identity.
 
     Identity is not unique on this machine. Four projects here answer to
@@ -2938,8 +2943,23 @@ def doorbell_name(channel, identity):
 
     Safe as a filename without escaping because both are validated against
     NAME_OK — [a-z0-9._-] only, so neither can contain a separator or traverse.
+
+    AND IT HAS TO FIT. A Unix socket path is at most 103 bytes on macOS, and
+    under a `/var/folders/.../T/` temp directory the doorbell directory alone
+    is about 80, so `llm_chat_owner__rubric-owner.sock` (112) and even
+    `balooga_owner__owner.sock` (104) could never be bound. The bind failed,
+    `open_doorbell` returned None by design, and those rooms were heard only
+    on the waker's 300-second heartbeat, while every check said listening.
+    Found when rubric-owner's #52 test was still one heartbeat late.
+
+    The plain name is kept whenever it fits, which is every bell that worked
+    before this, so a sender and a waker on different versions still agree on
+    all of those. Only a path that could never have worked is hashed.
     """
-    return "%s__%s.sock" % (channel, identity)
+    name = "%s__%s.sock" % (channel, identity)
+    if len(os.path.join(doorbell_dir(server), name).encode()) <= SOCKET_PATH_MAX:
+        return name
+    return "h-%s.sock" % hashlib.sha256(name.encode()).hexdigest()[:16]
 
 
 def ring(channel, identity, server=None):
@@ -2956,7 +2976,8 @@ def ring(channel, identity, server=None):
     here is silent by design — but it is the only silent path in the send, so
     it returns whether it reached anyone and `say` reports the count.
     """
-    path = os.path.join(doorbell_dir(server), doorbell_name(channel, identity))
+    path = os.path.join(doorbell_dir(server),
+                        doorbell_name(channel, identity, server))
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(2)
     try:
