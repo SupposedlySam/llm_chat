@@ -567,6 +567,43 @@ def joined_rooms():
         return {}
 
 
+BELL_HANDOVER_SEC = 3
+
+
+def wait_for_exit(pid, seconds):
+    """Wait up to `seconds` for `pid` to be gone. True if it went."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False          # alive but not ours to signal
+        time.sleep(0.05)
+    return False
+
+
+def open_missing_doorbells(rooms, bells):
+    """Bind a bell for every joined room that has none. Returns the new ones.
+
+    The handover wait above narrows the race; this closes it. A bell skipped
+    because its old holder still answered is retried on the next pass, by
+    which time that holder is gone — so a lost race costs one heartbeat at
+    most, once, instead of every message in that room until the next waker.
+    """
+    held = set(bells.values())
+    found = {}
+    for channel, entry in rooms.items():
+        identity = entry.get("identity")
+        if not identity or channel in held:
+            continue
+        bell = open_doorbell(channel, identity, entry.get("server"))
+        if bell is not None:
+            found[bell] = channel
+    return found
+
+
 def claim_pidfile() -> bool:
     """Newest waker wins.
 
@@ -579,6 +616,14 @@ def claim_pidfile() -> bool:
             old = int(f.read().strip())
         if old != os.getpid():
             os.kill(old, signal.SIGTERM)
+            # WAIT FOR IT TO GO, because it is still holding the doorbells.
+            # `open_doorbell` leaves a bell to a holder that answers, and a
+            # waker that has been sent SIGTERM still answers for a moment —
+            # so the replacement bound no bell for any room the old one held,
+            # and heard those rooms only on its 300-second heartbeat.
+            # Measured by rubric-owner on #51: listener up 13:27:09, message
+            # stored 13:28:40, wake 13:32:14, one heartbeat after the start.
+            wait_for_exit(old, BELL_HANDOVER_SEC)
     except (OSError, ValueError, ProcessLookupError):
         pass
     try:
@@ -1293,6 +1338,7 @@ def listen(rooms, box):
         # I woke, I looked, there was nothing — rather than only recording
         # that something once started.
         record_alive(_polling_server())
+        bells.update(open_missing_doorbells(joined_rooms(), bells))
         wait_for_ring(bells, HEARTBEAT_SEC)
         # DEFERRED WORK GOES HERE AND NOWHERE ELSE. This is the only process
         # that exists precisely BECAUSE nothing is happening — it is asleep on

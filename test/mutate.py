@@ -350,8 +350,8 @@ MUTATIONS = [
 
     ("the waker's liveness mark is a HEARTBEAT", "bin/llm-chat-wake",
      "        record_alive(_polling_server())\n"
-     "        wait_for_ring(bells, HEARTBEAT_SEC)",
-     "        wait_for_ring(bells, HEARTBEAT_SEC)",
+     "        bells.update(open_missing_doorbells(joined_rooms(), bells))\n",
+     "        bells.update(open_missing_doorbells(joined_rooms(), bells))\n",
      "the mark is written once before the loop, so a waker that armed and then "
      "died — killed, crashed, or wedged after the machine slept — leaves a "
      "file identical to a healthy one, and a dead waker becomes "
@@ -2349,7 +2349,16 @@ NOT_SWEPT = {
     "bin/llm-chat-wake:joined_rooms": "missing and corrupt records asserted directly",
     "bin/llm-chat-deliver:missing_hooks": "asserted directly, including malformed shapes",
     "bin/llm-chat-deliver:stale_install": "all four outcomes asserted directly",
-    "bin/llm-chat-wake:announce": "SHOULD BE SWEPT — changed for the inbox "
+    "bin/llm-chat-wake:wait_for_exit": "asserted through claim_pidfile with a "
+        "real old waker that takes time to exit: the claim returns after it is "
+        "gone and before the wait runs out (fails on the code without it)",
+    "bin/llm-chat-wake:open_missing_doorbells": "asserted with real sockets: "
+        "a held room is left, an unheld one is bound, and a bell skipped for a "
+        "live holder is bound once that holder dies leaving its file",
+    "bin/llm-chat-wake:claim_pidfile": "SHOULD BE SWEPT — it now waits for "
+        "the old waker to exit, which is asserted with a real process; the "
+        "kill and write it already did are asserted in test_hooks",
+    "bin/llm-chat-wake:announce":"SHOULD BE SWEPT — changed for the inbox "
         "path. Both branches asserted (exit 2 without a box; post, healthy "
         "record and watcher order with one; a failed post keeps the text), "
         "but this is the wake itself and deserves a sweep",

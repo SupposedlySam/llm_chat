@@ -336,5 +336,93 @@ class InboxTest(unittest.TestCase):
         self.assertTrue(self.mod.inbox_orphaned(box))
 
 
+def _kill_quietly(pid):
+    try:
+        os.kill(pid, 9)
+    except OSError:
+        pass
+
+
+class BellHandoverTest(unittest.TestCase):
+    """A new waker must end up holding every room's doorbell.
+
+    rubric-owner measured a #51 wake landing exactly one heartbeat after its
+    listener started: the replacement sent SIGTERM to the old waker and bound
+    its bells while the old one still answered, so it was skipped as "a
+    healthy holder" and heard that room only on its 300-second heartbeat.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        saved = os.environ.get("CLAUDE_PROJECT_DIR")
+        self.addCleanup(lambda: os.environ.__setitem__("CLAUDE_PROJECT_DIR", saved)
+                        if saved is not None
+                        else os.environ.pop("CLAUDE_PROJECT_DIR", None))
+        os.environ["CLAUDE_PROJECT_DIR"] = self.tmp.name
+        self.mod = load("llm-chat-wake")
+        # A server name nobody else uses, so these bells live in a doorbell
+        # directory of their own and are removed afterwards.
+        self.server = "http://bell-handover-test-%d" % os.getpid()
+        self.addCleanup(shutil.rmtree, self.mod.doorbell_dir(self.server), True)
+        self.rooms = {"a": {"identity": "me", "server": self.server},
+                      "b": {"identity": "me", "server": self.server}}
+
+    def test_claiming_WAITS_for_the_old_waker_to_go(self):
+        """Fails on the old code: it returned while the old waker, still
+        handling its SIGTERM, held every bell."""
+        import subprocess
+        import time
+        # A GRANDCHILD, as a real old waker is: not ours to reap, so it is
+        # gone the moment it exits rather than lingering as our zombie.
+        script = ("import signal,sys,time\n"
+                  "signal.signal(signal.SIGTERM, lambda *a: (time.sleep(0.4), sys.exit(0)))\n"
+                  "print('ready', flush=True)\n"
+                  "time.sleep(30)\n")
+        ready = os.path.join(self.tmp.name, "ready")
+        launcher = subprocess.run(
+            ["/bin/sh", "-c", '"$0" -c "$1" > "$2" 2>&1 < /dev/null & echo $!',
+             sys.executable, script, ready],
+            capture_output=True, text=True, timeout=10)
+        pid = int(launcher.stdout.strip())
+        self.addCleanup(lambda: _kill_quietly(pid))
+        for _ in range(200):
+            if os.path.exists(ready) and open(ready).read().strip() == "ready":
+                break
+            time.sleep(0.01)
+        os.makedirs(os.path.dirname(self.mod.PID_PATH), exist_ok=True)
+        with open(self.mod.PID_PATH, "w") as f:
+            f.write(str(pid))
+        started = time.time()
+        self.assertTrue(self.mod.claim_pidfile())
+        elapsed = time.time() - started
+        with self.assertRaises(ProcessLookupError,
+                               msg="the old waker was still running"):
+            os.kill(pid, 0)
+        # Returned because it EXITED, not because the wait ran out.
+        self.assertLess(elapsed, self.mod.BELL_HANDOVER_SEC - 1)
+
+    def test_a_room_with_no_bell_gets_one_and_a_held_room_is_left(self):
+        held = self.mod.open_doorbell("a", "me", self.server)
+        self.addCleanup(held.close)
+        found = self.mod.open_missing_doorbells(self.rooms, {held: "a"})
+        self.assertEqual(sorted(found.values()), ["b"])
+        for bell in found:
+            bell.close()
+
+    def test_a_bell_skipped_for_a_live_holder_is_bound_once_it_is_GONE(self):
+        """The retry that makes a lost race cost one heartbeat, not all of
+        them: the holder answers, so nothing is bound; it dies, leaving its
+        socket file behind, and the next pass takes the bell."""
+        other = self.mod.open_doorbell("a", "me", self.server)
+        self.assertEqual(self.mod.open_missing_doorbells(
+            {"a": self.rooms["a"]}, {}), {})
+        other.close()                       # dies; the file stays
+        found = self.mod.open_missing_doorbells({"a": self.rooms["a"]}, {})
+        self.assertEqual(list(found.values()), ["a"])
+        for bell in found:
+            bell.close()
+
+
 if __name__ == "__main__":
     unittest.main()

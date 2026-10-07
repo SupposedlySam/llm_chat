@@ -78,6 +78,7 @@ class WakeLoopTest(unittest.TestCase):
         self.real_run_maintenance = self.mod.run_maintenance
         self.mod.run_maintenance = lambda: None
         self.mod.open_doorbells = lambda rooms: {}
+        self.mod.open_missing_doorbells = lambda rooms, bells: {}
         # BOUNDED, not just instant. Returning False immediately keeps the
         # suite fast, but it also means the loop spins with no sleep in it at
         # all — so a mutation that removes the loop's exit condition runs
@@ -669,7 +670,14 @@ class WakeLoopTest(unittest.TestCase):
         """Newest waker wins, or N pollers means N wake-ups for one message."""
         signalled = []
         real_kill = self.mod.os.kill
-        self.mod.os.kill = lambda pid, sig: signalled.append((pid, sig))
+
+        def kill(pid, sig):
+            # Signal 0 is the handover wait asking whether it has gone yet;
+            # a waker that was sent SIGTERM has.
+            if sig == 0:
+                raise ProcessLookupError("gone")
+            signalled.append((pid, sig))
+        self.mod.os.kill = kill
         try:
             with open(self.mod.PID_PATH, "w") as f:
                 f.write("424242")
