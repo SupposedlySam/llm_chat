@@ -566,6 +566,32 @@ in the *background* after turn-end; when it prints to stderr and exits 2, the ha
 that into a model wake-up **in the same session**. So the idle agent is woken by the reply
 itself. (Borrowed from `.loop/bin/watchdog` in the gents project, which solved this first.)
 
+**Through the session's inbox, where it has one (Claude Code 2.1.224+).** Every session
+now binds an inbox socket and exports it to its hooks as `CLAUDE_CODE_MESSAGING_SOCKET`,
+with `CLAUDE_CODE_MESSAGING_TOKEN`. A message posted there by one of the session's own
+child processes is delivered, and [an idle session starts a new turn with
+it](https://code.claude.com/docs/en/cross-session-messaging). When that inbox is there, the
+waker hook does not listen itself. It starts a **detached listener** with its own log file,
+`.llm_chat/wake-inbox.log`, and returns at once. The listener waits on the same doorbell
+and, when a message addressed to you arrives, posts the wake text into the inbox instead of
+exiting 2. Measured on 2026-10-07 in a VS Code extension session: sent 13:09:14, posted
+13:09:15, new turn running by 13:09:20.
+
+What that changes:
+
+- **No hook is ever held open**, so a headless `claude -p` session cannot be kept from
+  starting (#39, #41), and a fresh `SessionStart` listens before the first prompt rather
+  than from the first turn end.
+- **The listener lives as long as the session's inbox answers**, not as long as a hook
+  process is allowed to, and stands down the moment it stops.
+- **The wake arrives framed as a message from "another Claude session"**, because that is
+  how Claude Code presents its inbox. The text itself says it is llm_chat.
+- **The old path stays** for any session without an inbox, for a project or user that sets
+  `crossSessionInbound` to anything but `accept` (`hold` and `refuse` would swallow the
+  post silently), and when `LLM_CHAT_WAKE_VIA=rewake` is set.
+- **If a post fails**, the messages it had already claimed are written to
+  `.llm_chat/wake.undelivered` and the exit record says so, rather than vanishing.
+
 Both deliver through the same `llm_chat read`, so they share one server-side cursor and one
 lock: whichever reaches a message first delivers it, **exactly once**. Only the newest waker
 polls — each one supersedes the last, or a single message would produce one wake-up per

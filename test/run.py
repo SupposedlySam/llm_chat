@@ -626,6 +626,11 @@ def hermetic():
     # And the machine store: `start_server` links a copy's data directory to
     # it, so a test that reaches it must never touch the real one.
     os.environ["LLM_CHAT_STORE"] = os.path.join(sandbox.name, "store")
+    # And the session's INBOX. A suite run from inside a Claude Code session
+    # inherits that session's socket and token, so a waker test reaching
+    # `post_to_inbox` would type into the live conversation running it.
+    os.environ.pop("CLAUDE_CODE_MESSAGING_SOCKET", None)
+    os.environ.pop("CLAUDE_CODE_MESSAGING_TOKEN", None)
 
     # STDIN, FOR THE SAME REASON AND FOUND THE SAME WAY. The suite inherited
     # whatever stdin its caller had. In a terminal that is a tty, and code

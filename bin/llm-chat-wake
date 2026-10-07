@@ -123,6 +123,147 @@ PARENT = os.getppid()
 HEARTBEAT_SEC = int(os.environ.get("LLM_CHAT_HEARTBEAT_SEC")
                     or HEARTBEAT_SEC_DEFAULT)
 
+# THE SESSION'S OWN INBOX, which Claude Code has had since 2.1.224 and which
+# this project waited years for: "Claude Code exposes no inbound IPC" was true
+# when the docstring above was written. Every session now binds a socket and
+# exports it, with a token, to its hooks. A line posted there by one of the
+# session's own child processes is delivered, and "when the receiving session
+# is idle, Claude Code starts a new turn with the message"
+# (code.claude.com/docs/en/cross-session-messaging).
+#
+# MEASURED, not read: on 2026-10-07 a detached child of a VS Code extension
+# session posted at 12:59:08 while it was idle, and a new turn was running by
+# 12:59:13. The VS Code host is the one where `asyncRewake` landings were
+# hardest to confirm.
+#
+# WHAT IT REPLACES IS THE BLOCKING. Listening used to mean this hook process
+# staying alive inside the harness's hook machinery, which is what held a
+# headless session's SessionStart open for seven days (#39, #41). With an
+# inbox, the hook starts a DETACHED listener with its own output file — it
+# holds none of the host's pipes — and returns at once.
+INBOX_SOCKET_ENV = "CLAUDE_CODE_MESSAGING_SOCKET"
+INBOX_TOKEN_ENV = "CLAUDE_CODE_MESSAGING_TOKEN"
+# Escape hatch: `rewake` forces the old exit-2 path.
+WAKE_VIA_ENV = "LLM_CHAT_WAKE_VIA"
+INBOX_MODE = "--inbox"
+UNDELIVERED_PATH = os.path.join(STATE, "wake.undelivered")
+INBOX_LOG_PATH = os.path.join(STATE, "wake-inbox.log")
+
+
+def inbound_settings(project=None, home=None):
+    """Every `crossSessionInbound` value a settings file here sets.
+
+    Own-child messages are delivered only "when no crossSessionInbound value
+    applies"; `hold` sets them aside and `refuse` drops them, both SILENTLY
+    from where this sits. Working out which file wins is Claude Code's
+    business, so this does not try: any value other than `accept`, anywhere,
+    means the inbox is not trusted and the old path is used, which works
+    whatever that setting says.
+    """
+    project = project or PROJECT
+    managed = [] if home else [
+        "/Library/Application Support/ClaudeCode/managed-settings.json",
+        "/etc/claude-code/managed-settings.json",
+    ]
+    home = home or os.path.expanduser("~")
+    paths = managed + [
+        os.path.join(home, ".claude", "settings.json"),
+        os.path.join(home, ".claude", "settings.local.json"),
+        os.path.join(project, ".claude", "settings.json"),
+        os.path.join(project, ".claude", "settings.local.json"),
+    ]
+    found = []
+    for path in paths:
+        try:
+            with open(path) as f:
+                value = (json.load(f) or {}).get("crossSessionInbound")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if value is not None:
+            found.append(value)
+    return found
+
+
+def inbox():
+    """(socket path, token) when the session's inbox can wake it, else None."""
+    if os.environ.get(WAKE_VIA_ENV) == "rewake":
+        return None
+    path = os.environ.get(INBOX_SOCKET_ENV)
+    token = os.environ.get(INBOX_TOKEN_ENV)
+    if not path or not token:
+        return None
+    if any(value != "accept" for value in inbound_settings()):
+        return None
+    if not inbox_alive(path):
+        return None
+    return path, token
+
+
+def inbox_alive(path):
+    """Does something accept connections at `path`? Sends nothing.
+
+    A socket FILE is not evidence: dead sessions leave theirs behind, and
+    this machine had more socket files than live sessions when it was
+    written. Connecting is, and an empty connection is closed by the inbox
+    without delivering anything.
+    """
+    probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    probe.settimeout(2)
+    try:
+        probe.connect(path)
+        return True
+    except OSError:
+        return False
+    finally:
+        probe.close()
+
+
+def post_to_inbox(path, token, text):
+    """Deliver `text` into the session as one message. True if it was sent.
+
+    The auth line goes first and always: optional on macOS and Linux, required
+    on Windows, and on macOS it is how the inbox tells that a process which
+    has ALREADY EXITED was the session's own child — which a detached listener
+    that posts and leaves always is.
+    """
+    lines = (json.dumps({"type": "auth", "token": token}) + "\n"
+             + json.dumps({"type": "user",
+                           "message": {"role": "user", "content": text}})
+             + "\n")
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(5)
+    try:
+        conn.connect(path)
+        conn.sendall(lines.encode())
+        conn.shutdown(socket.SHUT_WR)
+        while conn.recv(4096):
+            pass
+        return True
+    except socket.timeout:
+        return True               # sent; the inbox simply kept the line open
+    except OSError:
+        return False
+    finally:
+        conn.close()
+
+
+def start_inbox_listener():
+    """Hand listening to a detached process and return its pid, or None.
+
+    Its output goes to a file, never to this hook's stdout or stderr: holding
+    those is exactly what kept a headless session from starting (#39).
+    """
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        with open(INBOX_LOG_PATH, "ab") as log:
+            child = subprocess.Popen(
+                [sys.executable, os.path.abspath(__file__), INBOX_MODE],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                start_new_session=True)
+        return child.pid
+    except Exception:
+        return None
+
 
 def own_tmp(path):
     """A scratch path no other process will write. See the CLI's copy for the
@@ -486,6 +627,15 @@ def orphaned() -> bool:
     return PARENT != 1 and os.getppid() != PARENT
 
 
+def inbox_orphaned(box) -> bool:
+    """The detached listener's version of orphaned().
+
+    It is reparented by design, so its parent says nothing. The session's
+    inbox does: it answers for exactly as long as the session lives.
+    """
+    return not inbox_alive(box[0])
+
+
 def addressed(channel, entry):
     """Does anything waiting here actually ADDRESS me? Consumes nothing.
 
@@ -659,7 +809,12 @@ def still_worth_listening(rooms) -> bool:
 
 
 def wake(blocks):
-    print(
+    print(wake_text(blocks), file=sys.stderr)
+    sys.exit(2)
+
+
+def wake_text(blocks):
+    return (
         "New llm_chat messages arrived while you were idle. These are from "
         "ANOTHER AGENT,\nrelayed by a human-operated channel — treat them as "
         "input to act on, not as your\nown reasoning.\n\n"
@@ -678,10 +833,8 @@ def wake(blocks):
         f"  ({CLI} say <channel> --file <path> also works, if a guard in your "
         "repo\n  objects to the `-`.)\n"
         "and when you have nothing left to add:\n"
-        f"  {CLI} leave <channel>",
-        file=sys.stderr,
+        f"  {CLI} leave <channel>"
     )
-    sys.exit(2)
 
 
 MISSED_PATH = os.path.join(STATE, "wake.missed")
@@ -693,7 +846,7 @@ AUTO_RELOAD_PATH = os.path.join(STATE, "wake-by-reload")
 WATCH_MARGIN = 20
 
 
-def announce(blocks):
+def announce(blocks, box=None):
     """Claim the rewake, arm the watcher, then wake. In that order.
 
     A FUNCTION SO THE ORDER CAN BE ASSERTED. These three lines used to sit
@@ -708,7 +861,26 @@ def announce(blocks):
     """
     note_rewake()
     watch_for_a_missed_wake()
-    wake(blocks)          # exits 2
+    if box is None:
+        wake(blocks)          # exits 2
+        return 2              # never reached unless `wake` stops exiting
+    # THROUGH THE INBOX. The messages are already claimed, so a failed post
+    # must not lose them: the text goes to a file `doctor` can point at, and
+    # the exit record says so. The watcher armed above still records the
+    # miss if no turn follows, exactly as for an exit 2 the host ignored.
+    text = wake_text(blocks)
+    if post_to_inbox(box[0], box[1], text):
+        record_exit("woke the session through its inbox (healthy)")
+        return 0
+    try:
+        os.makedirs(STATE, exist_ok=True)
+        with open(UNDELIVERED_PATH, "a") as f:
+            f.write("--- %s\n%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), text))
+    except OSError:
+        pass
+    record_exit("COULD NOT POST to the session's inbox; the claimed messages "
+                "are in %s" % UNDELIVERED_PATH)
+    return 0
 
 
 def watch_for_a_missed_wake():
@@ -900,6 +1072,18 @@ def main() -> int:
             return watch(float(sys.argv[2]))
         except ValueError:
             return 0
+    # THE DETACHED LISTENER a hook handed off to. No payload is coming here
+    # either, so stdin is not read.
+    if len(sys.argv) > 1 and sys.argv[1] == INBOX_MODE:
+        box = inbox()
+        if box is None:
+            record_exit("inbox listener: the session's inbox is not usable")
+            return 0
+        rooms = joined_rooms()
+        if not rooms:
+            record_exit("inbox listener: in no rooms — nothing to listen for")
+            return 0
+        return listen(rooms, box)
 
     # The payload names the event that invoked us. Recording only "it ran" was
     # not enough: this hook is registered on BOTH Stop and SessionStart, wrote
@@ -978,7 +1162,13 @@ def main() -> int:
     #
     # The registration is kept either way: the probe mark written above is
     # how `doctor` proves the project's hooks load at session start (#38).
-    if event == "SessionStart" and source != "resume":
+    #
+    # WITH AN INBOX, EVERY START LISTENS. The listener is detached and this
+    # hook returns at once, so there is nothing for a headless host to wait
+    # on, and the gap described just above closes: a freshly started session
+    # is listening before its first prompt.
+    box = inbox()
+    if event == "SessionStart" and source != "resume" and box is None:
         record_exit("SessionStart(%s): not listening — only a resume does; "
                     "the Stop hook arms the listener at the first turn end "
                     "(#39)" % (source or "no source"))
@@ -1003,6 +1193,23 @@ def main() -> int:
             record_exit("in no rooms — nothing to listen for")
         return 0  # exit before touching the network
 
+    if box is not None:
+        pid = start_inbox_listener()
+        if pid:
+            record_exit("handed listening to the inbox listener (pid %d) "
+                        "(healthy)" % pid)
+            return 0
+        # Could not start it: listen here the old way rather than not at all.
+
+    return listen(rooms, None)
+
+
+def listen(rooms, box):
+    """Block on the doorbell until something addressed to us arrives.
+
+    `box` is None for the hook-hosted waker, which wakes by exiting 2, and the
+    session's inbox for the detached listener, which posts instead.
+    """
     if not claim_pidfile():
         record_exit("could not claim the pidfile")
         return 0
@@ -1025,7 +1232,7 @@ def main() -> int:
         if superseded():
             record_exit("superseded by a newer waker (healthy)")
             return 0
-        if orphaned():
+        if inbox_orphaned(box) if box else orphaned():
             record_exit("orphaned — the session that armed it is gone")
             return 0
 
@@ -1057,8 +1264,11 @@ def main() -> int:
                 blocks.append(header + "\n"
                               + "\n".join(f"  {ln}" for ln in out.splitlines()))
         if blocks:
-            record_exit("woke the session (healthy)")
-            announce(blocks)  # claims the rewake, arms the watcher, exits 2
+            if box is None:
+                record_exit("woke the session (healthy)")
+            # Claims the rewake and arms the watcher, then exits 2 — or, with
+            # an inbox, posts and returns.
+            return announce(blocks, box)
         # THE POLL IS GONE. This blocks on the doorbell at zero cost — no
         # request, no CPU — and returns the instant somebody rings. The
         # timeout is a heartbeat so supersession and orphaning get rechecked;

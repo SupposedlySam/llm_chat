@@ -2349,7 +2349,28 @@ NOT_SWEPT = {
     "bin/llm-chat-wake:joined_rooms": "missing and corrupt records asserted directly",
     "bin/llm-chat-deliver:missing_hooks": "asserted directly, including malformed shapes",
     "bin/llm-chat-deliver:stale_install": "all four outcomes asserted directly",
-    "bin/llm-chat-wake:poll": "all three outcomes asserted directly",
+    "bin/llm-chat-wake:announce": "SHOULD BE SWEPT — changed for the inbox "
+        "path. Both branches asserted (exit 2 without a box; post, healthy "
+        "record and watcher order with one; a failed post keeps the text), "
+        "but this is the wake itself and deserves a sweep",
+    "bin/llm-chat-wake:wake_text": "the exact text is asserted equal to what "
+        "the inbox receives; it was the body of `wake`, which never changed",
+    "bin/llm-chat-wake:post_to_inbox": "asserted against a REAL Unix socket: "
+        "auth line first, one user line, nothing else; a missing socket "
+        "returns False",
+    "bin/llm-chat-wake:inbox": "every refusal asserted: either variable "
+        "missing, the rewake escape hatch, hold and refuse settings, a dead "
+        "socket; and the accepted case",
+    "bin/llm-chat-wake:inbox_alive": "asserted against a listening socket and "
+        "a stale socket file nobody listens on",
+    "bin/llm-chat-wake:inbox_orphaned": "asserted before and after the inbox "
+        "stops answering",
+    "bin/llm-chat-wake:inbound_settings": "asserted against real project and "
+        "home files, including an unreadable one",
+    "bin/llm-chat-wake:start_inbox_listener": "asserted that it detaches "
+        "(new session, devnull stdin, file stdout and stderr) and passes "
+        "--inbox; a real spawn would leave a process behind the suite",
+    "bin/llm-chat-wake:poll":"all three outcomes asserted directly",
 
     "bin/llm-chat-wake:superseded": "its CALL SITE is swept (the "
         "before-polling ordering); the comparison itself is asserted directly "
