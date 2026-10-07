@@ -5846,9 +5846,15 @@ def do_channels(server, show_closed=False, as_json=False, mine=False,
         return
     hidden = 0
     if not show_closed:
-        live = [c for c in chans if not c.get("closed")]
-        hidden = len(chans) - len(live)
-        chans = live
+        # NOT `live` — that is this function's `--live` flag, read again below
+        # to decide whether presence was asked for. Rebinding it to the open
+        # rooms made it true whenever any room was open, so every plain
+        # `channels` printed "CANNOT TELL (host unreachable)" for every member
+        # of every room, from a host nobody had asked. Found by rubric-owner,
+        # who named the line and the fix.
+        open_rooms = [c for c in chans if not c.get("closed")]
+        hidden = len(chans) - len(open_rooms)
+        chans = open_rooms
         if not chans:
             print("no open channels (%d closed — `channels --all` to see them)"
                   % hidden)

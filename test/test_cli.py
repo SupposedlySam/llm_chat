@@ -806,6 +806,34 @@ class ChannelsAndInviteTest(unittest.TestCase):
             cli.do_channels("http://127.0.0.1:1", **kw)
         return out.getvalue()
 
+    def test_a_PLAIN_listing_makes_no_presence_claim_at_all(self):
+        """rubric-owner: every member of every room read "CANNOT TELL (host
+        unreachable)" in a plain `channels`, because a local rebound the
+        `--live` flag to the list of open rooms. Nobody had asked the host."""
+        self.fake.channel("room")
+        self.fake.membership("room", "someone")
+        asked = []
+        real = cli.live_identities
+        cli.live_identities = lambda: asked.append(1) or None
+        try:
+            out = self.filtered()
+        finally:
+            cli.live_identities = real
+        self.assertNotIn("CANNOT TELL", out)
+        self.assertEqual(asked, [])
+
+    def test_with_LIVE_an_unaskable_host_still_says_so(self):
+        """Paired: the honest "cannot tell" stays where it was asked for."""
+        self.fake.channel("room")
+        self.fake.membership("room", "someone")
+        real = cli.live_identities
+        cli.live_identities = lambda: None
+        try:
+            out = self.filtered(live=True)
+        finally:
+            cli.live_identities = real
+        self.assertIn("CANNOT TELL (host unreachable): someone", out)
+
     def arrange_mine(self):
         """Two rooms mine under DIFFERENT names, one done, one not mine."""
         for name in ("mine_open", "mine_done", "theirs"):
