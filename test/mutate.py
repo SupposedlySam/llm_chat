@@ -2349,7 +2349,10 @@ NOT_SWEPT = {
     "bin/llm-chat-wake:joined_rooms": "missing and corrupt records asserted directly",
     "bin/llm-chat-deliver:missing_hooks": "asserted directly, including malformed shapes",
     "bin/llm-chat-deliver:stale_install": "all four outcomes asserted directly",
-    "bin/llm-chat-wake:wait_for_exit": "asserted through claim_pidfile with a "
+    "bin/llm_chat:unringable_rooms": "asserted with a real bound bell, a "
+        "missing one and a record with no identity; it only chooses a doctor "
+        "line",
+    "bin/llm-chat-wake:wait_for_exit":"asserted through claim_pidfile with a "
         "real old waker that takes time to exit: the claim returns after it is "
         "gone and before the wait runs out (fails on the code without it)",
     "bin/llm-chat-wake:open_missing_doorbells": "asserted with real sockets: "

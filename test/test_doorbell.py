@@ -87,6 +87,20 @@ class ConventionTest(unittest.TestCase):
         self.assertTrue(cli.ring(*self.LONG, server=server),
                         "the sender could not find the doorbell")
 
+    def test_doctor_names_a_room_with_NO_DOORBELL(self):
+        """`doctor` said "listening" for weeks while most rooms had no bell.
+        A bound room is ringable; an unbound one is named; a record with no
+        identity is not guessed at."""
+        server = "http://deaf-room-test-%d" % os.getpid()
+        self.addCleanup(__import__("shutil").rmtree,
+                        cli.doorbell_dir(server), True)
+        bell = waker.open_doorbell("heard", "me", server)
+        self.addCleanup(bell.close)
+        joined = {"heard": {"identity": "me", "server": server},
+                  "deaf": {"identity": "me", "server": server},
+                  "half": {"server": server}}
+        self.assertEqual(cli.unringable_rooms(joined), ["deaf"])
+
     def test_A_TEMP_FILE_IS_NAMED_AFTER_ITS_WRITER(self):
         """`path + ".tmp"` is named after the DESTINATION, so two processes
         writing the same state file do not make two temps — they make ONE, and

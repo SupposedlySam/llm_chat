@@ -2962,6 +2962,32 @@ def doorbell_name(channel, identity, server=None):
     return "h-%s.sock" % hashlib.sha256(name.encode()).hexdigest()[:16]
 
 
+def unringable_rooms(joined):
+    """The joined rooms whose doorbell nothing answers on. Sends no ring.
+
+    Connecting without writing is a probe, not a ring: `ring` writes a byte,
+    and this closes without one. A waker that wakes on the bare connection
+    does one extra reconcile and finds nothing, which costs a `pending`.
+    """
+    deaf = []
+    for channel, entry in (joined or {}).items():
+        identity = (entry or {}).get("identity")
+        if not identity:
+            continue
+        server = (entry or {}).get("server")
+        path = os.path.join(doorbell_dir(server),
+                            doorbell_name(channel, identity, server))
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.settimeout(1)
+        try:
+            probe.connect(path)
+        except OSError:
+            deaf.append(channel)
+        finally:
+            probe.close()
+    return deaf
+
+
 def ring(channel, identity, server=None):
     """Tell one agent something arrived. Returns True if anyone was listening.
 
@@ -5495,6 +5521,23 @@ def do_doctor(server):
                       "is going round\n  its loop and finding nothing — "
                       "which is different from not running."
                       % (beat, WAKER_HEARTBEAT_SEC))
+            # A LIVE WAKER WITH NO DOORBELL IS A FIVE-MINUTE WAKER. Every line
+            # above said "listening" for weeks while most rooms here had no
+            # bell at all — their socket path was over macOS's 103-byte limit
+            # and the bind failed silently — so they were heard only on the
+            # heartbeat. Measured by rubric-owner as wakes one heartbeat late;
+            # the doorbell directory was the evidence, and nothing printed it.
+            deaf = unringable_rooms(joined)
+            if deaf:
+                print("  BUT %d of %d room(s) HAVE NO DOORBELL: %s\n  A "
+                      "message there is heard only on the %ds heartbeat, "
+                      "not when it is\n  sent. A new waker rebinds missing "
+                      "bells each pass; if this persists,\n  the bind itself "
+                      "is failing."
+                      % (len(deaf), len(joined), ", ".join(sorted(deaf)),
+                         WAKER_HEARTBEAT_SEC))
+            else:
+                print("  every joined room has a doorbell that answers")
             # POLLING AND WAKING ARE TWO CLAIMS, and this line used to make
             # the second on the strength of the first. `asyncRewake` is the
             # one hook whose success is invisible: if the host ignores exit 2
