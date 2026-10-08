@@ -165,21 +165,22 @@ class CallTest(unittest.TestCase):
         self.assertTrue(found.get("rate_limited"))
 
     def test_a_0_9_1_refusal_NAMES_THE_BUCKET_and_when_it_reopens(self):
-        """A `say` is mostly reads, so the verb typed is usually not the
-        request refused. zonai 0.9.1 says which it was; this kept only
-        Retry-After and threw the rest away."""
+        """zonai 0.9.1 names the collection and operation that refused; this
+        kept only Retry-After and threw the rest away. A WRITE, because only
+        writes are limited now — a refused read means an old server, and
+        says so instead (test_restart)."""
         reset = 1788307242
         self.throttle(times=99, retry_after="42", refusal=(
-            b'{"error":"Rate limit exceeded","collection":"memberships",'
-            b'"operation":"list","retryAfter":42}'),
-            extra_headers={"X-RateLimit-Limit": "100",
+            b'{"error":"Rate limit exceeded","collection":"messages",'
+            b'"operation":"create","retryAfter":42}'),
+            extra_headers={"X-RateLimit-Limit": "1000",
                            "X-RateLimit-Reset": str(reset)})
         found = cli.call("http://127.0.0.1:1", "GET", "/p")
         with self.assertRaises(cli.Throttled) as raised:
             cli.refuse(found)
         text = str(raised.exception)
-        self.assertIn("memberships/list limit", text)
-        self.assertIn("100 per minute", text)
+        self.assertIn("messages/create limit", text)
+        self.assertIn("1000 per minute", text)
         self.assertIn(time.strftime("%H:%M:%S", time.localtime(reset)), text)
 
     def test_a_PRE_0_9_1_refusal_claims_no_bucket(self):

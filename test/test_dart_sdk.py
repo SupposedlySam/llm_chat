@@ -160,10 +160,18 @@ class WiredIntoTheBootstrapTest(unittest.TestCase):
     """
 
     def setUp(self):
+        # The bootstrap is split across the functions a restart reuses —
+        # start_server calls dart_env, run_steps and launch_server — so the
+        # wiring is asserted across all four rather than one body.
         with open(os.path.join(cli.ROOT, "bin", "llm_chat")) as handle:
             source = handle.read()
-        start = source.index("def start_server(")
-        self.body = source[start:source.index("\ndef ", start + 1)]
+        bodies = []
+        for name in ("start_server", "dart_env", "run_steps", "launch_server"):
+            start = source.index("def %s(" % name)
+            bodies.append(source[start:source.index("\ndef ", start + 1)])
+        self.body = "\n".join(bodies)
+        self.assertIn("dart_env()", bodies[0])
+        self.assertIn("launch_server(server, env)", bodies[0])
 
     def test_start_server_resolves_a_matching_sdk(self):
         self.assertIn("matching_dart_sdk()", self.body)

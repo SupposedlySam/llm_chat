@@ -522,7 +522,9 @@ class CliCorrespondenceTest(McpTestCase):
     # Verbs deliberately not exposed over MCP. Empty, and an entry here should
     # have to be argued for — the reason to leave one out is that it cannot
     # work over MCP, not that nobody got to it.
-    NOT_EXPOSED = set()
+    # restart-server stops the server every agent on the machine is using.
+    # A typed command, deliberately, not a tool a model reaches for mid-turn.
+    NOT_EXPOSED = {"restart-server"}
 
     def setUp(self):
         super().setUp()

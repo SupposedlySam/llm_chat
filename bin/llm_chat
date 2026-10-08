@@ -44,6 +44,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import socket
 import subprocess
 import sys
@@ -821,6 +822,13 @@ def throttled_which(res):
     bucket = res.get("bucket")
     if not bucket:
         return None
+    if bucket.rsplit("/", 1)[-1] in READ_OPERATIONS:
+        # A READ WAS REFUSED, which this version never does: reads are
+        # unlimited in lib/src/rate_limit/. So the server is older than this
+        # copy, and waiting is the wrong remedy — restarting it is.
+        return ("  Refused by the %s limit — but reads are unlimited in this "
+                "version of llm_chat,\n  so the server running is older than "
+                "this copy.\n%s" % (bucket, stale_server_advice()))
     line = "  Refused by the %s limit" % bucket
     try:
         line += " (%d per minute" % int(res.get("limit"))
@@ -5075,6 +5083,31 @@ def waker_alive(project):
         return pid, False
 
 
+def report_undelivered(project):
+    """Say so when the inbox listener claimed messages it could not post.
+
+    The listener reads messages before posting them into the session, so a
+    post that fails leaves them claimed and undelivered. It writes them to
+    `.llm_chat/wake.undelivered` rather than lose them; this is where a
+    reader finds out that file exists.
+    """
+    path = os.path.join(project, ".llm_chat", "wake.undelivered")
+    try:
+        with open(path) as f:
+            text = f.read()
+    except OSError:
+        return
+    # The listener heads each entry `--- YYYY-MM-DD HH:MM:SS`; a message that
+    # itself contains a `---` line is not an entry.
+    count = len(re.findall(r"(?m)^--- \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$",
+                           text))
+    if not count:
+        return
+    print(f"\nUNDELIVERED WAKES: {count} — messages the listener read and "
+          f"could not post into\n  this session are saved in {path}.\n  "
+          "Read them there; delete the file once you have.")
+
+
 def do_doctor(server):
     """Why is nothing arriving? Answer it without guessing."""
     project = project_dir()
@@ -5130,6 +5163,18 @@ def do_doctor(server):
     else:
         print("  server build        current (knows every column this build "
               "writes)")
+    # THE WORKERS, NOT THE SCHEMA. A server keeps the compiled workers it
+    # started with, so an update that changes them — the rate-limit policies
+    # did — is not served until a restart, and every check above still reads
+    # "current". Measured on the server's own counters rather than guessed
+    # from versions.
+    limited = reads_are_limited(server) if build is not None else None
+    if limited:
+        print("  SERVER IS OLDER     than this copy: it still rate-limits "
+              "reads.")
+        print(stale_server_advice().replace("\n  ", "\n                      "))
+    elif limited is False:
+        print("  server workers      current (reads are not rate-limited)")
 
     # THE BIND, MEASURED, because every other check on this page reads a file
     # somebody wrote and this one reads the socket. A server started before
@@ -5492,6 +5537,7 @@ def do_doctor(server):
               "--repair")
     report_who_is_home(project)
     report_sessions(project)
+    report_undelivered(project)
 
     joined = read_joined()
     if joined:
@@ -6357,11 +6403,27 @@ def start_server(server) -> None:
     """
     for note in adopt_machine_store(ROOT, port_of(server)):
         print("  " + note, flush=True)
+    env = dart_env()
+    run_steps(build_steps() + [MIGRATE_STEP], env)
+    launch_server(server, env)
+
+
+MIGRATE_STEP = ["./zonai", "db", "migrate", "apply"]
+
+
+def build_steps():
+    """What produces the workers. Safe while a server runs: `zonai compile`
+    writes each executable beside the old one and renames it into place
+    (measured: a new inode every time), so a live worker keeps its file."""
     steps = []
     if not os.path.isdir(os.path.join(ROOT, ".dart_tool")):
         steps.append(["dart", "pub", "get"])
-    steps += [["./zonai", "compile"], ["./zonai", "db", "migrate", "apply"]]
+    return steps + [["./zonai", "compile"]]
 
+
+def dart_env():
+    """The environment every build step and the server need: the Dart SDK
+    the vendored zonai host embeds. Refuses rather than guess."""
     sdk = matching_dart_sdk()
     if sdk is None:
         raise SystemExit(
@@ -6384,7 +6446,11 @@ def start_server(server) -> None:
             % (HOST_DART, HOST_DART, HOST_DART, HOST_DART))
     env = dict(os.environ, DART_SDK=sdk)
     print(f"  DART_SDK={sdk}", flush=True)
+    return env
 
+
+def run_steps(steps, env):
+    """Run each step in this copy, stopping at the first that fails."""
     for step in steps:
         print(f"  {' '.join(step)}", flush=True)
         done = subprocess.run(step, cwd=ROOT, capture_output=True, text=True,
@@ -6404,6 +6470,9 @@ def start_server(server) -> None:
             "would accept\n  connections and fail every one." % ", ".join(missing)
         )
 
+
+def launch_server(server, env):
+    """Start the server from this copy and wait until it answers."""
     state = os.path.join(ROOT, ".state")
     os.makedirs(state, exist_ok=True)
     log_path = os.path.join(state, "serve.log")
@@ -6429,6 +6498,133 @@ def start_server(server) -> None:
             return
         time.sleep(1)
     raise SystemExit(f"server never came up at {server}; see {log_path}")
+
+
+def listener_pid(server):
+    """The pid listening on `server`'s port on this machine, or None."""
+    if not shutil.which("lsof"):
+        return None
+    host = (urllib.parse.urlparse(server).hostname or "").lower()
+    if host not in LOCAL_HOSTS:
+        return None
+    try:
+        pids = subprocess.run(
+            ["lsof", "-t", "-nP", "-iTCP:%d" % port_of(server), "-sTCP:LISTEN"],
+            capture_output=True, text=True, timeout=10).stdout.split()
+    except Exception:
+        return None
+    return int(pids[0]) if pids else None
+
+
+def stop_listener(pid, server, seconds=15):
+    """SIGTERM the server and wait for its port to free. True if it did."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        if not server_up(server) and listener_pid(server) is None:
+            return True
+        time.sleep(0.2)
+    return False
+
+
+def restart_server(server):
+    """Rebuild this copy, then replace the running server with it.
+
+    WHY THIS EXISTS: a running zonai server keeps the workers it started
+    with. Recompiling — which every `lamp upgrade` and `git pull` leaves to
+    the next start — changes nothing it serves, so a fix that lives in the
+    compiled workers (the rate-limit policies in lib/src/rate_limit/, for
+    one) reaches nobody until the server restarts, and nothing said so.
+
+    THE GAP IS SECONDS, NOT A COMPILE. The build runs first, while the old
+    server keeps serving: `zonai compile` replaces each worker by rename, so
+    the live one is untouched. Only then is the old server stopped, and the
+    new one starts against the same shared store at once. A message sent in
+    the gap gets "unreachable" and its sender retries.
+    """
+    env = dart_env()
+    run_steps(build_steps(), env)
+    pid = listener_pid(server)
+    if pid is not None:
+        print(f"  stopping the running server (pid {pid})", flush=True)
+        if not stop_listener(pid, server):
+            raise SystemExit(
+                f"the server (pid {pid}) did not stop within 15s; nothing "
+                "else was changed.\n  Stop it by hand and run this again.")
+    elif server_up(server):
+        raise SystemExit(
+            f"something answers at {server} but no local process could be "
+            "found to restart.\n  It may be another machine's, or lsof may be "
+            "missing; restart it where it runs.")
+    for note in adopt_machine_store(ROOT, port_of(server)):
+        print("  " + note, flush=True)
+    run_steps([MIGRATE_STEP], env)
+    launch_server(server, env)
+    print(f"  server restarted from {ROOT}")
+
+
+READ_OPERATIONS = ("get", "list", "count")
+
+
+def reads_are_limited(server):
+    """Does the RUNNING server still count reads against a rate limit?
+
+    True means it was started before this copy's policies (reads are
+    unlimited since lib/src/rate_limit/ existed) and needs `restart-server`.
+    None means it could not be told: no local server, no store to read.
+
+    Measured, not inferred from versions: the server's own counter table is
+    read before and after one read of ours. A server that limits reads moves
+    its `channels/list` row; one that does not leaves it alone. Another
+    agent's read moving it in between only happens if reads are counted, so
+    it cannot produce a wrong True.
+    """
+    store = serving_store(server)
+    if not store:
+        return None
+    db = os.path.join(store, "zonai_rate_limit.sqlite")
+    if not os.path.exists(db):
+        return None
+
+    def row():
+        try:
+            import sqlite3
+            conn = sqlite3.connect("file:%s?mode=ro" % db, uri=True,
+                                   timeout=2)
+            try:
+                return conn.execute(
+                    'SELECT count, window_start FROM _rate_limit WHERE '
+                    '"table" = ? AND operation = ?',
+                    ("channels", "list")).fetchone()
+            finally:
+                conn.close()
+        except Exception:
+            return False
+
+    before = row()
+    if before is False:
+        return None
+    try:
+        rows(server, "channels", eq("name", "__llm_chat_probe__"))
+    except (Exception, SystemExit) as problem:
+        # A 429 on a read is itself the answer.
+        if isinstance(problem, Throttled) and "/list" in str(problem):
+            return True
+        return None
+    after = row()
+    if after is False:
+        return None
+    return after is not None and after != before
+
+
+def stale_server_advice():
+    return ("  It started before this copy's rate-limit policies, so it "
+            "still throttles reads\n  that this version leaves unlimited. "
+            "Restart it once, from any repo:\n"
+            f"    {ROOT}/bin/llm_chat restart-server")
 
 
 def install_hook(project) -> str:
@@ -6462,6 +6658,12 @@ def do_setup(server, channel, identity, topic, max_messages, in_checkout=False):
 
     if server_up(server):
         print(f"server: already running at {server}")
+        # A running server keeps the workers it started with, so code that
+        # just arrived through `lamp upgrade` or `git pull` is not what it
+        # serves. Said here because setup is where a new install looks.
+        if reads_are_limited(server):
+            print("server: OLDER THAN THIS COPY")
+            print(stale_server_advice())
     else:
         print(f"server: none at {server}, starting one")
         start_server(server)
@@ -6891,6 +7093,9 @@ def build_parser():
                    help="which tree to hash. Defaults to this checkout — but a "
                         "repo wired from a VENDORED copy must be compared "
                         "against that copy, or it reports stale forever")
+    sub.add_parser("restart-server",
+                   help="rebuild this copy and restart the chat server on it "
+                        "(needed once after an update changes the server)")
     p = sub.add_parser("reload", help="reload the VSCode window (registers hooks)")
     p.add_argument("--force", action="store_true",
                    help="actually do it; it drives the UI and ends this turn")
@@ -6974,6 +7179,9 @@ def main() -> int:
         return 0
     if args.cmd == "doctor":
         do_doctor(server)
+        return 0
+    if args.cmd == "restart-server":
+        restart_server(server)
         return 0
     if args.cmd == "who":
         return do_who(args.as_json)

@@ -2349,7 +2349,29 @@ NOT_SWEPT = {
     "bin/llm-chat-wake:joined_rooms": "missing and corrupt records asserted directly",
     "bin/llm-chat-deliver:missing_hooks": "asserted directly, including malformed shapes",
     "bin/llm-chat-deliver:stale_install": "all four outcomes asserted directly",
-    "bin/llm_chat:unringable_rooms": "asserted with a real bound bell, a "
+    "bin/llm_chat:report_undelivered": "asserted in test_restart: entries "
+        "counted by their timestamped headers (a --- line inside a message "
+        "is not one), path named, and silence when there is no file",
+    "bin/llm_chat:restart_server":"SHOULD BE SWEPT — its order (build "
+        "while the old server serves, then stop, adopt, migrate, launch) and "
+        "both refusals are asserted in test_restart, and it was run for real "
+        "against this machine's server",
+    "bin/llm_chat:build_steps": "split out of start_server unchanged; the "
+        "pub-get-when-needed and compile steps are asserted through it",
+    "bin/llm_chat:launch_server": "split out of start_server unchanged; "
+        "printed-equals-spawned and env=env are asserted on its source",
+    "bin/llm_chat:listener_pid": "reads lsof against a live listener, which "
+        "the suite must not depend on; stubbed wherever it is consumed",
+    "bin/llm_chat:stop_listener": "signals a real server; asserted only "
+        "through restart_server's order and its did-not-stop refusal",
+    "bin/llm_chat:reads_are_limited": "asserted against a real SQLite "
+        "counter table: counted, not counted, a 429 on the probe, no store "
+        "and an unreachable server",
+    "bin/llm_chat:row": "the nested reader inside reads_are_limited, "
+        "exercised by every one of its tests",
+    "bin/llm_chat:stale_server_advice": "its text is asserted through the "
+        "read-refusal tests; it only words advice",
+    "bin/llm_chat:unringable_rooms":"asserted with a real bound bell, a "
         "missing one and a record with no identity; it only chooses a doctor "
         "line",
     "bin/llm-chat-wake:wait_for_exit":"asserted through claim_pidfile with a "
