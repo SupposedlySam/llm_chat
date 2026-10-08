@@ -13,9 +13,8 @@ import 'package:zonai_schema/zonai_schema.dart';
 /// It protected nothing. The server binds loopback only and serves one user.
 /// The real hazard is two agents talking in a loop, and a request counter is
 /// the wrong instrument for that: it throttles the reads every agent needs
-/// and refuses the bystander as readily as the pair in the loop. Loops are
-/// handled where the decision is made, by the client asking the sender to
-/// confirm a loop-shaped message, and by each room's message cap.
+/// and refuses the bystander as readily as the pair in the loop. A loop is
+/// stopped by each room's message cap and by `leave`/`close`, not here.
 ///
 /// The write ceiling stays for the one thing a counter is right about: a bug
 /// that sends in a tight loop. A thousand a minute is far beyond any

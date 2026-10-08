@@ -161,16 +161,31 @@ fi
 #    would strand the membership server-side: the room would keep listing this
 #    project as present, and the other agent would wait for a reply that can no
 #    longer come.
-JOINED="$TARGET/.llm_chat/joined.json"
-if [ "$KEEP_MEMBERSHIP" = 0 ] && [ -f "$JOINED" ]; then
+#
+#    EVERY SESSION'S RECORD, not just the project's. Joins have been written
+#    per session (.llm_chat/sessions/<id>/joined.json) for a long time, and
+#    the project-level file is only an old fallback, so reading it alone left
+#    every current room joined. Each leave runs as the session that joined,
+#    so the CLI finds that session's own record.
+leave_rooms_in() {   # <joined.json> <session id, or empty for the project file>
   while IFS=$'\t' read -r channel identity server; do
     [ -z "$channel" ] && continue
     say "leave #$channel as $identity"
     if [ "$DRY" = 0 ]; then
-      CLAUDE_PROJECT_DIR="$TARGET" python3 "$HERE/bin/llm_chat" \
+      CLAUDE_PROJECT_DIR="$TARGET" CLAUDE_CODE_SESSION_ID="$2" \
+        python3 "$HERE/bin/llm_chat" \
         --server "$server" leave "$channel" --as "$identity" >/dev/null 2>&1 || true
     fi
-  done < <(python3 "$WORK/list_joined.py" "$JOINED")
+  done < <(python3 "$WORK/list_joined.py" "$1")
+}
+if [ "$KEEP_MEMBERSHIP" = 0 ]; then
+  [ -f "$TARGET/.llm_chat/joined.json" ] \
+    && leave_rooms_in "$TARGET/.llm_chat/joined.json" ""
+  for SESSION_JOINED in "$TARGET"/.llm_chat/sessions/*/joined.json; do
+    [ -f "$SESSION_JOINED" ] || continue
+    leave_rooms_in "$SESSION_JOINED" \
+      "$(basename "$(dirname "$SESSION_JOINED")")"
+  done
 fi
 
 # 3. Strip our hooks from both settings files.

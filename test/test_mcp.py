@@ -107,8 +107,8 @@ class ToolsListTest(McpTestCase):
         self.assertEqual(names, {
             "open", "join", "setup", "say", "sync", "mode", "pending", "read",
             "leave", "owed", "delete", "close", "reopen", "invite", "channels",
-            "briefing", "identify", "doctor", "who", "fingerprint", "reload",
-            "maintenance",
+            "briefing", "topic", "identify", "doctor", "who", "fingerprint",
+            "reload", "maintenance",
         })
 
     def test_every_tool_carries_a_description_and_object_schema(self):
@@ -813,7 +813,7 @@ class ProseReachesTheCliAsData(McpTestCase):
         read is harmless; handing it THIS server's stdin would not be, and
         the distinction is worth pinning."""
         for tool in self.mod.TOOLS:
-            if tool["name"] in ("say", "briefing"):
+            if tool["name"] in ("say", "briefing", "topic"):
                 continue
             with self.subTest(tool=tool["name"]):
                 self.assertIsNone(tool.get("stdin"))

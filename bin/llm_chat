@@ -628,10 +628,11 @@ def and_(*conditions):
 # deadlines, so this may add at most ~1.4s; a retry policy generous enough to
 # outlast a long window would turn a throttle into a hang, which is worse than
 # the error it replaces.
-# WHOSE LIMIT IS THIS. Not one llm_chat chose: `lib/src/rate_limit/` is empty
-# and no Dart source here mentions a rate limit at all, so a 429 is zonai's
-# default. Worth knowing before tuning anything below, because the numbers are
-# not ours to change from this side.
+# WHOSE LIMIT IS THIS. llm_chat's own, in `lib/src/rate_limit/`: reads are
+# unlimited and writes stop at 1,000 a minute per table and operation. Until
+# those files existed it was zonai's default of 100 a minute on everything,
+# which is what the history below was measured against. A 429 on a READ now
+# means the running server predates the policies (see reads_are_limited).
 #
 # SCOPE. Read from zonai's own docs rather than inferred here, after two
 # rounds of inferring it wrongly.
@@ -1741,6 +1742,55 @@ def do_briefing(server, name, identity, text):
     chan["briefing"], chan["briefing_by"] = text, identity
     print(f"house rules set for {name} by {identity}\n")
     print(render_briefing(chan))
+    return chan
+
+
+# A topic is the one line a room listing shows, so it stays a line.
+MAX_TOPIC = 200
+
+
+def do_topic(server, name, identity, text):
+    """Change what a room says it is, in place.
+
+    A topic could be set when a room was created, or filled in when it had
+    none, and never changed: the only way to correct one was to delete the
+    room and lose its transcript and membership with it. Asked for by the
+    human who runs this machine, for gameloop's own room.
+
+    MEMBERSHIP IS REQUIRED, as for `close`: changing what a room says it is
+    belongs to someone in it. The change is announced in the room without
+    waking anyone, with the old wording, so members can see what moved and
+    who moved it.
+    """
+    text = " ".join((text or "").split())
+    if not text:
+        raise SystemExit("a topic needs some text: llm_chat topic <room> "
+                         "\"<what this room is for>\"")
+    if len(text) > MAX_TOPIC:
+        raise SystemExit(
+            f"topic is {len(text)} chars; the limit is {MAX_TOPIC}.\n  It is "
+            "the one line a room listing shows. Put longer guidance in the "
+            "house rules:\n  llm_chat briefing " + name + " --file rules.md")
+    chan = get_channel(server, name)
+    if chan is None:
+        raise SystemExit(f"no channel called {name}")
+    if get_membership(server, name, identity) is None:
+        raise SystemExit(
+            f"{identity} is not a member of {name}, so its topic is not yours "
+            f"to change.\n  Join it first: llm_chat join {name} --as "
+            f"{identity}")
+    old = chan.get("topic")
+    if old == text:
+        print(f"{name}'s topic is already: {text}")
+        return chan
+    update(server, "channels", eq("id", chan["id"]), {"topic": text})
+    chan["topic"] = text
+    print(f"topic for {name} set by {identity}: {text}")
+    if not chan.get("closed"):
+        do_say(server, name, identity,
+               f"Topic changed to: {text}"
+               + (f"  (was: {old})" if old else ""),
+               AUDIENCE_NONE)
     return chan
 
 
@@ -6176,7 +6226,7 @@ def missing_workers():
 # test never used the SDK it thought it was using. DART_SDK is set here because
 # it is position 2 and beats the FVM candidates.
 #
-# 3.12.0 IS NOT A GUESS. It is the runtime compiled into the vendored `zonai`
+# THIS VERSION IS NOT A GUESS. It is the runtime compiled into the vendored `zonai`
 # host, read out of the extracted binary, and `test/test_pins.py` fails when
 # this constant and that binary disagree — so upgrading zonai without moving
 # this line is caught rather than discovered through a dead server.
@@ -6444,7 +6494,13 @@ def dart_env():
             "disagree: this\n  scans fvm and recommended only dvm, on a "
             "machine that had fvm and not dvm."
             % (HOST_DART, HOST_DART, HOST_DART, HOST_DART))
-    env = dict(os.environ, DART_SDK=sdk)
+    # ITS `bin` FIRST ON PATH TOO. `dart pub get` runs as a bare `dart`, so
+    # an SDK found only under ~/.dvm or ~/fvm — the common case this search
+    # exists for — left the first build with no `dart` to run and a raw
+    # FileNotFoundError in place of a message.
+    env = dict(os.environ, DART_SDK=sdk,
+               PATH=os.pathsep.join([os.path.join(sdk, "bin"),
+                                     os.environ.get("PATH", "")]))
     print(f"  DART_SDK={sdk}", flush=True)
     return env
 
@@ -6662,7 +6718,7 @@ def do_setup(server, channel, identity, topic, max_messages, in_checkout=False):
         # just arrived through `lamp upgrade` or `git pull` is not what it
         # serves. Said here because setup is where a new install looks.
         if reads_are_limited(server):
-            print("server: OLDER THAN THIS COPY")
+            print("server: SERVER IS OLDER than this copy")
             print(stale_server_advice())
     else:
         print(f"server: none at {server}, starting one")
@@ -7057,6 +7113,14 @@ def build_parser():
                    help="name, message_count and closed ONLY, as JSON — and "
                         "no membership lookup, so it is half the requests of "
                         "--json. The cheap poll for 'has anything changed'")
+    p = sub.add_parser("topic",
+                       help="change the one-line description a room listing "
+                            "shows, without recreating the room")
+    p.add_argument("channel")
+    p.add_argument("text", nargs="?")
+    p.add_argument("--file", action=RefuseRepeat,
+                   help="read the topic from a file, or - for stdin")
+    p.add_argument("--as", dest="identity")
     p = sub.add_parser("briefing",
                        help="set the house rules every joiner is shown")
     p.add_argument("channel")
@@ -7154,6 +7218,11 @@ def main() -> int:
         do_briefing(server, args.channel,
                     resolve_identity(args.identity, args.channel),
                     message_text(args))
+        return 0
+    if args.cmd == "topic":
+        do_topic(server, args.channel,
+                 resolve_identity(args.identity, args.channel),
+                 message_text(args))
         return 0
     if args.cmd == "maintenance":
         return do_maintenance(server, args.action, args.task, args.why,

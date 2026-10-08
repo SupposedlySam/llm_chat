@@ -195,7 +195,8 @@ def _build_setup(a):
 # the refusal below and the correspondence test's fixture. A test that carried
 # its own copy of this would be the failure that fixture exists to catch — a
 # belief written down twice, where only one copy gets updated.
-EXCLUSIVE = {"say": ("text", "file"), "briefing": ("text", "file")}
+EXCLUSIVE = {"say": ("text", "file"), "briefing": ("text", "file"),
+             "topic": ("text", "file")}
 
 
 def _prose_argv(verb, a):
@@ -341,6 +342,12 @@ def _build_channels(a):
 
 def _build_briefing(a):
     argv = _prose_argv("briefing", a)
+    argv += _as_flag(a)
+    return argv
+
+
+def _build_topic(a):
+    argv = _prose_argv("topic", a)
     argv += _as_flag(a)
     return argv
 
@@ -760,6 +767,29 @@ TOOLS = [
                 "file": {"type": "string",
                          "description": "Read the house rules from this "
                                         "path instead of text."},
+                "identity": _IDENTITY, "server": _SERVER,
+            },
+            "required": ["channel"],
+        },
+    },
+    {
+        "name": "topic",
+        "description": "Change a channel's one-line description (what a room "
+                        "listing shows) in place, without recreating the "
+                        "room. You must be a member. Members are told, without "
+                        "being woken. Give exactly one of text or file — "
+                        + _FILE_NOTE + " At most 200 characters, one line.",
+        "build": _build_topic,
+        "stdin": _prose_stdin,
+        "timeout": 30,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "channel": _CHANNEL,
+                "text": {"type": "string", "description": "The new topic."},
+                "file": {"type": "string",
+                         "description": "Read the topic from this path "
+                                        "instead of text."},
                 "identity": _IDENTITY, "server": _SERVER,
             },
             "required": ["channel"],

@@ -2349,7 +2349,17 @@ NOT_SWEPT = {
     "bin/llm-chat-wake:joined_rooms": "missing and corrupt records asserted directly",
     "bin/llm-chat-deliver:missing_hooks": "asserted directly, including malformed shapes",
     "bin/llm-chat-deliver:stale_install": "all four outcomes asserted directly",
-    "bin/llm_chat:report_undelivered": "asserted in test_restart: entries "
+    "bin/llm_chat:do_topic": "SHOULD BE SWEPT — every branch asserted in "
+        "test_topic (change in place, passive notice with the old wording, "
+        "member-only, one line, length cap, empty, unchanged, closed room, "
+        "missing room); the membership refusal is the one worth a mutation",
+    "bin/llm-chat-mcp:_build_topic": "the same two lines as _build_briefing; "
+        "every tool's argv is checked against the real parser in test_mcp",
+    "bin/llm_chat:dart_env": "split out of start_server; the SDK refusal and "
+        "DART_SDK reaching the subprocesses are asserted on its source in "
+        "test_dart_sdk, and the PATH prefix was added after a reviewer found "
+        "`dart pub get` failing with only a dvm/fvm SDK",
+    "bin/llm_chat:report_undelivered":"asserted in test_restart: entries "
         "counted by their timestamped headers (a --- line inside a message "
         "is not one), path named, and silence when there is no file",
     "bin/llm_chat:restart_server":"SHOULD BE SWEPT — its order (build "

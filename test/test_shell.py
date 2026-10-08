@@ -277,6 +277,22 @@ class TeardownTest(ShellTestCase):
         self.assertEqual(hooks_in(self.local), before)
         self.assertTrue(os.path.isdir(os.path.join(self.repo, ".llm_chat")))
 
+    def test_it_leaves_rooms_recorded_PER_SESSION_too(self):
+        """Joins are written per session; reading only the old project-level
+        file left every current room joined, so the other members waited on
+        an agent that had been uninstalled."""
+        self.install()
+        for where, room in ((("sessions", "sid-one"), "per-session-room"),
+                            ((), "project-room")):
+            d = os.path.join(self.repo, ".llm_chat", *where)
+            os.makedirs(d, exist_ok=True)
+            with open(os.path.join(d, "joined.json"), "w") as f:
+                json.dump({room: {"identity": "me",
+                                  "server": "http://127.0.0.1:1"}}, f)
+        done = self.run_script(TEARDOWN, "--dry-run", self.repo)
+        self.assertIn("leave #per-session-room as me", done.stdout)
+        self.assertIn("leave #project-room as me", done.stdout)
+
     def test_it_removes_every_hook_it_installed(self):
         self.install()
         self.run_script(TEARDOWN, self.repo)

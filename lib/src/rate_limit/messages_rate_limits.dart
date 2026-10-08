@@ -2,9 +2,8 @@ import '../schemas/messages.dart';
 import 'package:zonai_schema/zonai_schema.dart';
 
 /// No limit on reading, a runaway ceiling on writing. The reasoning is in
-/// channels_rate_limits.dart. A conversation loop is not stopped here: the
-/// client asks the sender to confirm a loop-shaped message, and each room has
-/// a message cap.
+/// channels_rate_limits.dart. A conversation loop is not stopped here: each
+/// room has a message cap.
 MessageRateLimits main() => MessageRateLimits();
 
 const _runawayWrites = RateLimitPolicy(
