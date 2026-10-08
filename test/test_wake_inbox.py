@@ -395,6 +395,12 @@ class BellHandoverTest(unittest.TestCase):
         os.makedirs(os.path.dirname(self.mod.PID_PATH), exist_ok=True)
         with open(self.mod.PID_PATH, "w") as f:
             f.write(str(pid))
+        # A GENEROUS LIMIT FOR THE TEST, because 3 s is a property of the
+        # code, not of the machine: this failed the #55 publish gate on a
+        # laptop that was stalling processes, where starting a Python child
+        # and handling its signal took longer than the real limit. What is
+        # asserted is that the claim returned because the waker EXITED.
+        self.mod.BELL_HANDOVER_SEC = 30
         started = time.time()
         self.assertTrue(self.mod.claim_pidfile())
         elapsed = time.time() - started
