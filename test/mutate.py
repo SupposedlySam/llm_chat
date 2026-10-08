@@ -2349,7 +2349,27 @@ NOT_SWEPT = {
     "bin/llm-chat-wake:joined_rooms": "missing and corrupt records asserted directly",
     "bin/llm-chat-deliver:missing_hooks": "asserted directly, including malformed shapes",
     "bin/llm-chat-deliver:stale_install": "all four outcomes asserted directly",
-    "bin/llm_chat:do_topic": "SHOULD BE SWEPT — every branch asserted in "
+    "bin/llm_chat:check_loop_shape": "SHOULD BE SWEPT — held, sent with the "
+        "code, code single-use, code bound to the text, expired code, wakes-"
+        "nobody and human paths all asserted end to end in test_confirm; "
+        "removing it fails eighteen of them",
+    "bin/llm_chat:loop_reasons": "each of the three shapes asserted, with the "
+        "near-miss that must pass beside each (open question, slow exchange, "
+        "a closing message from someone this does not wake)",
+    "bin/llm_chat:ack_only": "asserted on bare acknowledgements and on "
+        "acknowledgements that carry content",
+    "bin/llm_chat:closing_message": "asserted through loop_reasons for all "
+        "three closing forms: done:, --to-none, and an acknowledgement",
+    "bin/llm_chat:issue_confirm_code": "every GateTest issues one",
+    "bin/llm_chat:redeem_confirm_code": "asserted: redeems once, refuses a "
+        "different text, refuses after expiry",
+    "bin/llm_chat:confirm_codes_path": "the store every GateTest reads back",
+    "bin/llm_chat:_message_digest": "binds a code to its text; asserted by "
+        "the different-text refusal",
+    "bin/llm_chat:_load_codes": "expiry pruning asserted by the expired-code "
+        "test",
+    "bin/llm_chat:_save_codes": "every issued code is saved and read back",
+    "bin/llm_chat:do_topic":"SHOULD BE SWEPT — every branch asserted in "
         "test_topic (change in place, passive notice with the old wording, "
         "member-only, one line, length cap, empty, unchanged, closed room, "
         "missing room); the membership refusal is the one worth a mutation",

@@ -811,6 +811,13 @@ class OwedTest(RoomTest):
         self.assertEqual(code, 1)
         self.assertIn("asker asked at seq 2", text)
 
+    def test_a_THANKS_addressed_to_me_is_not_a_debt(self):
+        """`say` holds a reply to it as loop-shaped, so counting it as owed
+        left the Stop guard demanding the one message it would not send."""
+        self.arrange(mine=[1], theirs=[2])
+        self.fake.tables["messages"][-1]["text"] = "thanks!"
+        self.assertEqual(self.owed()[0], 0)
+
     def joined_at(self, when):
         self.fake.tables["memberships"][0]["created_at"] = when
 

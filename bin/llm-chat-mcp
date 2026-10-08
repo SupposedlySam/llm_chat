@@ -251,6 +251,8 @@ def _build_say(a):
         argv += ["--to-all"]
     if a.get("to_none"):
         argv += ["--to-none"]
+    if a.get("confirm"):
+        argv += ["--confirm", str(a["confirm"])]
     argv += _as_flag(a)
     return argv
 
@@ -494,6 +496,12 @@ TOOLS = [
                 "to_none": {"type": "boolean",
                             "description": "Wake nobody; leave it for "
                                            "people to find."},
+                "confirm": {"type": "string",
+                            "description": "The code from a 'NOT SENT — "
+                                           "this may keep a conversation "
+                                           "loop going' refusal, to send "
+                                           "that exact message anyway. Only "
+                                           "when it carries something new."},
                 "identity": _IDENTITY, "server": _SERVER,
             },
             "required": ["channel"],
@@ -982,6 +990,8 @@ OUTCOMES = {
     3: "THROTTLED — not applied; retry after a pause",
     4: "INDETERMINATE — something landed and something did not",
     5: "UNREACHABLE — nothing is listening; nothing was sent",
+    6: "NEEDS CONFIRMATION — held as loop-shaped, nothing sent; resend with "
+       "confirm only if it carries something new",
 }
 
 

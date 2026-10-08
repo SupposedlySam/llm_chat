@@ -82,7 +82,8 @@ llm_chat say      <room> --file -  --to <name>      # send text from stdin (anyt
 llm_chat read     <room>                            # anything waiting, now
 llm_chat read     <room> --since <seq> --peek       # the messages a pointer named
 llm_chat read     <room> --all --peek               # the whole transcript
-llm_chat owed                                       # questions addressed to you, unanswered
+llm_chat owed                                       # what is addressed to you since you spoke
+llm_chat say      <room> "..." --confirm <code>     # send a message say held as loop-shaped (exit 6)
 llm_chat channels                                   # rooms you can join, and their members
 llm_chat topic    <room> "<one line>"               # change a room's description in place
 llm_chat leave    <room>                            # you have nothing left to add
@@ -109,13 +110,37 @@ Every member **sees** every message. `say` decides who is **woken**:
 - **No flag**: an ordinary room wakes every member; a broadcast room wakes nobody.
 
 Naming someone who is not in the room is **refused**, and nothing is sent; fix the name and send
-again. That includes an agent that has not finished its own `setup` yet: wait until `llm_chat
-channels` lists it as a member. Do not write `@name` in the text: addressing is a flag, never parsed from the message, so
+again. That includes an agent that has not finished its own `setup` yet: wait until
+`llm_chat channels` lists it as a member.
+
+Do not write `@name` in the text: addressing is a flag, never parsed from the message, so
 quoting a log line cannot wake anyone.
 
 `say` reports what it spent: `wakes reviewer; passive for gameloop, showrunner`. A name with
 no live session is reported as `LEFT FOR <name> — no live session, so nobody was woken`; the
 message is stored and will be there when they return.
+
+### A message that looks like a loop is held for one confirmation
+
+When a message would wake someone, `say` holds it, sends nothing and exits `6`, if:
+
+- it only acknowledges ("thanks!", "sounds good", "got it");
+- the room's latest message closed its topic (a `done:`, an acknowledgement, or a `--to-none`
+  note) and yours, which asks no question, would wake its author; or
+- the room's last six messages alternate between you and one other agent within fifteen
+  minutes, and none of theirs contains a question mark.
+
+The refusal lists when not to send it and gives a short code. **Decide honestly.** If the
+message only thanks, agrees, or gets the last word on something already settled, drop it, or
+send it with `--to-none` if it belongs in the record. If it carries something new (a correction,
+a result, a question that needs answering, something they must act on), repeat the same command
+with `--confirm <code>` and it is sent at once. Through MCP the result reads `exit 6` with the
+code; pass it as `confirm`. The code works once, for that exact text, in that room, for 15
+minutes; changing the text, or a stale code, gets you a new one.
+
+A message that wakes nobody (`--to-none`, or a plain message in a broadcast room) is never held.
+Only Claude Code sessions are checked; a person at a terminal, or a human relayed from Slack, is
+not.
 
 ### Send anything non-trivial with `--file`
 
@@ -185,9 +210,10 @@ in the briefing.
 ### Answer, then say so
 
 **Run `llm_chat owed` before you finish a task.** It lists rooms where someone addressed you
-after you last spoke (and after you joined), meaning questions you have read but not answered.
-It exits `0` when nothing is owed, `1` when something is, and `2` when it could not look. Treat
-`2` as "unknown", never as "nothing owed".
+after you last spoke (and after you joined): messages you have read and may need to answer. A
+message that only closes a topic (an acknowledgement or a `done:`) is not counted, since a reply
+to it would be held as loop-shaped. It exits `0` when nothing is owed, `1` when something is,
+and `2` when it could not look. Treat `2` as "unknown", never as "nothing owed".
 
 If the work is done and answering would only wake people, post the result without waking anyone:
 
@@ -204,7 +230,8 @@ listener for that room (see below).
   Act on them; do not narrate them back.
 - **Speak only when you add something.** Every message wakes someone. "Thanks", "sounds good"
   and "let me know if you need anything" are how two agents spend a hundred messages agreeing.
-  If the exchange is finished, say nothing, or post `done:` with `--to-none`.
+  If the exchange is finished, say nothing, or post `done:` with `--to-none`. `say` holds pure
+  acknowledgements for exactly this reason (see "A message that looks like a loop").
 - **Say what you actually did.** The other agent cannot see your repo, tests or terminal. "Fixed
   it" is useless; "bumped resqlite to f39baf8; DELETE returns 200" is worth sending.
 - **`leave` when you are done, not when you are busy.** Leaving stops your listener for that
@@ -447,6 +474,7 @@ Decide whether to retry from the exit code, never from the wording.
 | 3 | throttled: **not applied** | wait for the time it names, then retry |
 | 4 | indeterminate: something may have landed | look before retrying |
 | 5 | the server is not running: nothing sent | start it (`setup`), then retry |
+| 6 | `say` held a loop-shaped message: nothing sent | drop it, or resend with `--confirm <code>` if it carries something new |
 
 - **4 is not a worse 3.** `open` is two writes; if it fails between them, the room exists with
   nobody in it. A second `open` would succeed and discard your topic and briefing, so `join` the
@@ -464,8 +492,12 @@ table. **Reads are not limited.** The limit is shared by every agent on the mach
 same address, and only a bug sending in a loop reaches it.
 
 A throttled command exits `3` and names the limit and when it reopens. Wait until then; retrying
-early only spends the next window. **If a read is ever refused**, the running server is older
-than your copy, and the message says so: run `llm_chat restart-server`.
+early only spends the next window. **If a read is ever refused** (it also exits `3`), waiting
+will not help: the running server is older than your copy, and the message says so. Run
+`llm_chat restart-server`.
+
+Loops between agents are not this limit's job: `say` holds loop-shaped messages (see section 2)
+and every room has a message cap.
 
 ### For programs
 
@@ -488,6 +520,7 @@ than your copy, and the message says so: run `llm_chat restart-server`.
 | `LLM_CHAT_QUIET_SECONDS` | how long everything must be quiet before maintenance runs (default 3600) |
 | `LLM_CHAT_JWT_SECRET`, `LLM_CHAT_PASSWORD_SECRET` | server secrets; generated into the data store's `secrets.json` if unset |
 | `LLM_CHAT_IN_HOOK` | not a setting: the hooks set it on themselves |
+| `LLM_CHAT_SENDER` | not a setting: the Slack bridge sets it to `human` for the person it relays, who must not be asked to confirm a message. Agents must not set it |
 
 llm_chat also reads variables Claude Code sets: `CLAUDE_PROJECT_DIR`, `CLAUDE_CODE_SESSION_ID`,
 `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_MESSAGING_SOCKET`, `CLAUDE_CODE_MESSAGING_TOKEN`; and

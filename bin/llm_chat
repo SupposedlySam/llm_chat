@@ -959,6 +959,7 @@ EXIT_REFUSED = 1          # permanent. Do not retry; the answer will not change
 EXIT_USAGE = 2            # argparse's, and `owed`'s could-not-look. See above
 EXIT_THROTTLED = 3        # the server said later. NOT applied — retry after a wait
 EXIT_INDETERMINATE = 4    # nobody can say what landed. Do NOT blindly retry
+EXIT_NEEDS_CONFIRM = 6    # loop-shaped send held. Resend with --confirm <code>, or don't
 EXIT_UNREACHABLE = 5      # nothing is listening. Nothing sent; start it and retry
 
 # PRINTED BY --help, not filed in a document the consumer does not open. The
@@ -981,6 +982,12 @@ EXIT_CODE_HELP = """exit codes — for a caller deciding whether to retry:
      Start the server and retry. Distinct from 3: a throttle means the server
      is healthy and asked you to wait; this means it is not there.
 
+  6  NEEDS CONFIRMATION. `say` held a message shaped like a conversation loop
+     (only an acknowledgement, the last word on a closed topic, or a long
+     back-and-forth with no questions). Nothing was sent. If it carries
+     something new, repeat the same command with `--confirm <code>` from the
+     message; otherwise do not send it.
+
 3, 4 and 5 exist because all three used to be 1, so a consumer had to regex
 this program's prose to tell a transient from a refusal — and the prose gets
 reworded. The wording is aimed at a human; the code is aimed at you.
@@ -990,6 +997,16 @@ the branch that catches an unreachable host is commented "not retried", and
 that is about this program's own budget inside one invocation, not about
 whether YOU should try again. Two questions, one sentence, and the table
 answered the wrong one."""
+
+
+class NeedsConfirmation(SystemExit):
+    """A send held for one deliberate confirmation. Nothing was sent.
+
+    The alternative was a rate limit, and a rate limit is the wrong tool for
+    a conversation loop: it delays the agent with something to say as much as
+    the pair thanking each other, and it costs time rather than attention.
+    This costs one re-read, and only for messages shaped like a loop.
+    """
 
 
 class Throttled(SystemExit):
@@ -2807,11 +2824,16 @@ def owed_in(server, name, entry, identity, store=None):
     # Membership rows written before `created_at` existed carry none, and keep
     # the old reach-back rather than guessing a floor.
     joined_at = member.get("created_at") or 0
+    # A MESSAGE THAT CLOSES A TOPIC IS NOT A QUESTION. "thanks", or a
+    # `done: ...` addressed to you, used to count as owed — and the Stop guard
+    # then demanded a reply that `say` holds as loop-shaped, so the only
+    # honest move (say nothing) left a debt standing.
     asks = [m for m in messages
             if m["from_identity"] != identity
             and m["seq"] > last_spoke
             and (m.get("created_at") or 0) >= joined_at
-            and wakes(m, identity, chan)]
+            and wakes(m, identity, chan)
+            and not closing_message(m)]
     if not asks:
         return None
     first = min(asks, key=lambda m: m["seq"])
@@ -3173,8 +3195,183 @@ def warn_if_another_session_holds(name, identity):
     return note
 
 
+# THE CONFIRMATION GATE. Two agents left alone thank each other, agree, and
+# thank each other again, and every one of those messages wakes somebody. A
+# rate limit is the wrong brake for that: it delays the agent with something
+# to say exactly as much as the pair in the loop, and it charges time rather
+# than attention. The human who runs this machine proposed the alternative:
+# hold a loop-shaped message, give the sender a code, and let them resend it
+# at once if it really does carry something.
+#
+# NARROW ON PURPOSE. It never looks at a message that wakes nobody, it never
+# looks at a human (the Slack bridge sets LLM_CHAT_SENDER=human), and it fires
+# on three shapes only. A gate that fired on ordinary work would be confirmed
+# by reflex, and then it would be a speed bump that teaches nothing.
+SENDER_ENV = "LLM_CHAT_SENDER"
+CONFIRM_TTL_SEC = 15 * 60
+LOOP_WINDOW_MS = 15 * 60 * 1000
+ACK_WORDS = frozenset("""
+    thanks thank you ty thx much very so sounds good great perfect got it will
+    do noted ack acknowledged ok okay k cheers appreciated appreciate np no
+    problem worries welcome you're youre understood makes sense nice awesome
+    cool agreed agree yes yep yeah sure glad to help helped the a for that
+    this and all again received same here likewise excellent wonderful lgtm
+    +1 too as well confirmed copy that's thats fair enough on it sounds
+    great! wilco roger lot
+""".split())
+
+
+def ack_only(text):
+    """Is this message nothing but an acknowledgement?
+
+    Short, no question, and made almost entirely of the words people use to
+    say "received". A message that also says WHAT was received ("thanks, the
+    fix is in 4a1b2c") carries content, and passes.
+    """
+    text = (text or "").strip()
+    if not text or "?" in text:
+        return False
+    words = re.findall(r"[\w'+]+", text.lower())
+    if not words:
+        return len(text) <= 10          # an emoji or "+1" on its own
+    if len(words) > 12:
+        return False
+    return sum(1 for w in words if w in ACK_WORDS) / len(words) >= 0.8
+
+
+def closing_message(message):
+    """Did this message close its topic: an FYI, an acknowledgement, a done?"""
+    text = (message.get("text") or "").strip()
+    return (message.get("audience") == AUDIENCE_NONE or ack_only(text)
+            or text.lower().startswith("done:"))
+
+
+def loop_reasons(text, identity, woken, recent):
+    """Why this send looks like it keeps a loop going. Empty means it does not.
+
+    `woken` is who this send would wake; `recent` the room's latest messages.
+    """
+    reasons = []
+    if ack_only(text):
+        reasons.append("it only acknowledges, and it would wake "
+                       + ", ".join(woken))
+    ordered = sorted(recent, key=lambda m: m["seq"])
+    last = ordered[-1] if ordered else None
+    # A QUESTION IS NEVER THE LAST WORD. Asking something new of an agent
+    # whose last message closed a topic is work, not a loop.
+    if (last and "?" not in (text or "")
+            and last["from_identity"] != identity
+            and last["from_identity"] in woken and closing_message(last)):
+        reasons.append(
+            "the last message (#%d, from %s) closed its topic, and this would "
+            "wake them to answer it" % (last["seq"], last["from_identity"]))
+    tail = ordered[-6:]
+    senders = [m["from_identity"] for m in tail]
+    other = next((s for s in senders if s != identity), None)
+    if (len(tail) == 6 and other in woken and set(senders) == {identity, other}
+            and all(a != b for a, b in zip(senders, senders[1:]))
+            and (tail[-1].get("created_at") or 0)
+            - (tail[0].get("created_at") or 0) <= LOOP_WINDOW_MS
+            and not any("?" in (m.get("text") or "")
+                        for m in tail if m["from_identity"] == other)):
+        reasons.append(
+            "you and %s have gone back and forth six times in a few minutes "
+            "with no question from %s left open" % (other, other))
+    return reasons
+
+
+def confirm_codes_path():
+    return os.path.join(state_dir(), "confirm.json")
+
+
+def _message_digest(name, identity, text):
+    return hashlib.sha256(
+        ("%s\0%s\0%s" % (name, identity, text)).encode()).hexdigest()
+
+
+def _load_codes():
+    try:
+        with open(confirm_codes_path()) as f:
+            codes = json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+    now = time.time()
+    return {c: v for c, v in codes.items()
+            if isinstance(v, dict) and v.get("expires", 0) > now}
+
+
+def _save_codes(codes):
+    path = confirm_codes_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = own_tmp(path)
+    with open(tmp, "w") as f:
+        json.dump(codes, f)
+    os.replace(tmp, path)
+
+
+def issue_confirm_code(name, identity, text):
+    """A fresh code for exactly this message, in this room, as this sender."""
+    import secrets
+    codes = _load_codes()
+    code = secrets.token_hex(3)[:5]
+    codes[code] = {"digest": _message_digest(name, identity, text),
+                   "expires": time.time() + CONFIRM_TTL_SEC}
+    _save_codes(codes)
+    return code
+
+
+def redeem_confirm_code(code, name, identity, text):
+    """True, once, if `code` was issued for exactly this message."""
+    codes = _load_codes()
+    entry = codes.get((code or "").strip().lower())
+    if not entry or entry["digest"] != _message_digest(name, identity, text):
+        return False
+    del codes[code.strip().lower()]
+    _save_codes(codes)
+    return True
+
+
+def check_loop_shape(server, name, identity, text, audience, chan, roster,
+                     confirm=None):
+    """Hold a loop-shaped send for one confirmation. Raises; never sends."""
+    woken = sorted(m["identity"] for m in roster
+                   if m["identity"] != identity and not m.get("done")
+                   and wakes({"audience": audience}, m["identity"], chan))
+    if not woken:
+        return              # wakes nobody, so it costs nobody a turn
+    if confirm and redeem_confirm_code(confirm, name, identity, text):
+        return
+    count = chan.get("message_count", 0)
+    recent = rows(server, "messages",
+                  and_(eq("channel", name), gt("seq", max(0, count - 6))))
+    reasons = loop_reasons(text, identity, woken, recent)
+    if not reasons:
+        return
+    code = issue_confirm_code(name, identity, text)
+    stale = ("\n  (The code you gave was for a different message, or has "
+             "expired. Here is a new one.)" if confirm else "")
+    raise NeedsConfirmation(
+        "NOT SENT — this may keep a conversation loop going, so it needs one "
+        "confirmation:%s\n  - %s\n\n"
+        "Don't send it if:\n"
+        "  - it only thanks or acknowledges: the other agent does not need it, "
+        "and it wakes them;\n"
+        "  - the other message was informational or closed the topic, and "
+        "yours would just\n    have the last word;\n"
+        "  - it restates something already agreed.\n\n"
+        "Send it anyway if it carries something new: a correction, a result, "
+        "a question\nthat needs an answer, or something they must act on. "
+        "Repeat the same command with:\n"
+        "    --confirm %s\n"
+        "That code is for this exact text, in #%s, as %s, for %d minutes; "
+        "changing the text\nneeds a new one. To keep it on record without "
+        "waking anyone, use --to-none instead."
+        % (stale, "\n  - ".join(reasons), code, name, identity,
+           CONFIRM_TTL_SEC // 60))
+
+
 def do_say(server, name, identity, text, audience=None, thread=None,
-           identity_inferred=False):
+           identity_inferred=False, gate=False, confirm=None):
     refuse_impersonation(name, identity)
     # ONLY WHEN THE NAME WAS INFERRED, and the reason is cost measured rather
     # than assumed. The check needs `live_identities`, which asks the host and
@@ -3228,6 +3425,9 @@ def do_say(server, name, identity, text, audience=None, thread=None,
         update(server, "channels", eq("id", chan["id"]),
                {"closed": b(True), "closed_reason": f"hit the {cap}-message cap"})
         raise SystemExit(f"{name} hit its {cap}-message cap and is now closed")
+    if gate:
+        check_loop_shape(server, name, identity, text, audience, chan, roster,
+                         confirm)
 
     seq = count + 1
     create(server, "messages", {
@@ -6983,6 +7183,10 @@ def build_parser():
                         "level, which is how you RAISE something rather than "
                         "answer it. Only a bridged room does anything with "
                         "this; elsewhere it is recorded and ignored")
+    p.add_argument("--confirm", metavar="CODE",
+                   help="send a message `say` held as loop-shaped (exit 6). "
+                        "The code is printed with the refusal and is valid "
+                        "for this exact text, once, for 15 minutes")
     p.add_argument("--as", dest="identity")
 
     p = sub.add_parser("sync", help="pick up broadcast rooms opened or "
@@ -7276,7 +7480,14 @@ def main() -> int:
                # project the shell happened to be standing in, which is the
                # whole mechanism behind a message landing under someone else's
                # identity.
-               identity_inferred=getattr(args, "identity", None) is None)
+               identity_inferred=getattr(args, "identity", None) is None,
+               # Only an AGENT is held: a Claude Code session always has a
+               # session id and a person at a terminal has none. A human
+               # relayed by the Slack bridge is marked explicitly, because the
+               # bridge itself may run inside a session.
+               gate=(session_id() is not None
+                     and os.environ.get(SENDER_ENV) != "human"),
+               confirm=args.confirm)
     elif args.cmd == "read":
         do_read(server, args.channel, identity, args.peek, args.all_messages,
                 args.as_json, args.since_seq)
@@ -7305,6 +7516,8 @@ def run():
         return main()
     except Indeterminate as stop:
         return _exit_with(stop, EXIT_INDETERMINATE)
+    except NeedsConfirmation as stop:
+        return _exit_with(stop, EXIT_NEEDS_CONFIRM)
     except Unreachable as stop:
         return _exit_with(stop, EXIT_UNREACHABLE)
     except Throttled as stop:
