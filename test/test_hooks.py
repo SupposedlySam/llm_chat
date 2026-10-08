@@ -1060,6 +1060,20 @@ class WakeTest(HookTestCase):
         self.assertFalse(self.mod.still_worth_listening(
             {"room": {"identity": "me", "server": "http://127.0.0.1:1"}}))
 
+    def test_ONE_listing_per_server_however_many_rooms(self):
+        """The listing is every room on the server. Fetched per room, an agent
+        in 18 rooms spent 18 `channels/list` requests per pass, and after #53
+        gave long room names a doorbell, one message rang a dozen wakers into
+        exhausting the shared 100-a-minute budget."""
+        fake = FakeSubprocess('[{"name": "a", "closed": true},'
+                              ' {"name": "b", "closed": true},'
+                              ' {"name": "c", "closed": true}]')
+        self.mod.subprocess = fake
+        rooms = {n: {"identity": "me", "server": "http://127.0.0.1:1"}
+                 for n in ("a", "b", "c")}
+        self.assertFalse(self.mod.still_worth_listening(rooms))
+        self.assertEqual(len(fake.run.calls), 1)
+
     def test_an_open_room_is(self):
         self.mod.subprocess = FakeSubprocess(
             '[{"name": "room", "closed": false}]')

@@ -472,6 +472,39 @@ class ManyBellsTest(unittest.TestCase):
                 b.close()
 
 
+class ProbeIsNotARingTest(unittest.TestCase):
+    """A connection that writes nothing is somebody checking, not ringing.
+
+    Since #52 every waker probes its missing bells on every pass, and a probe
+    that counted as a ring cost the holder a full pass — per-room listings
+    against a budget the whole machine shares — and two wakers holding each
+    other's bells could ring each other indefinitely."""
+
+    def setUp(self):
+        self.server = "http://probe-ring-test-%d" % os.getpid()
+        self.addCleanup(__import__("shutil").rmtree,
+                        waker.doorbell_dir(self.server), True)
+        self.bell = waker.open_doorbell("room", "me", self.server)
+        self.addCleanup(self.bell.close)
+
+    def test_a_bare_PROBE_does_not_wake_the_holder(self):
+        probe = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        probe.connect(os.path.join(waker.doorbell_dir(self.server),
+                                   waker.doorbell_name("room", "me",
+                                                       self.server)))
+        probe.close()
+        self.assertFalse(waker.wait_for_ring({self.bell: "room"}, 2))
+
+    def test_doctors_probe_does_not_wake_it_either(self):
+        cli.unringable_rooms({"room": {"identity": "me",
+                                       "server": self.server}})
+        self.assertFalse(waker.wait_for_ring({self.bell: "room"}, 2))
+
+    def test_a_real_RING_still_does(self):
+        self.assertTrue(cli.ring("room", "me", self.server))
+        self.assertTrue(waker.wait_for_ring({self.bell: "room"}, 2))
+
+
 class ImpersonationTest(unittest.TestCase):
     """You may speak only as yourself.
 

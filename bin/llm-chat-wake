@@ -559,14 +559,29 @@ def wait_for_ring(bells, seconds):
     ready, _, _ = select.select(list(bells), [], [], seconds)
     if not ready:
         return False
-    try:
-        for bell in ready:
+    # A RING CARRIES A BYTE; A PROBE CARRIES NONE. Every sender's `ring`
+    # writes one, while `open_doorbell` deciding whether a bell is held, and
+    # `doctor` asking whether it answers, connect and write nothing. Counting
+    # those as rings made every probe cost the holder a full pass — and since
+    # #52 every waker probes its missing bells on every pass, two wakers
+    # holding each other's could ring each other indefinitely.
+    rang = False
+    for bell in ready:
+        try:
             conn, _ = bell.accept()
-            conn.recv(64)
+        except OSError:
+            # Something arrived and cannot be read: count it, because never
+            # missing a real ring outranks skipping a probe.
+            rang = True
+            continue
+        try:
+            conn.settimeout(0.5)
+            rang = bool(conn.recv(64)) or rang
+        except OSError:
+            pass
+        finally:
             conn.close()
-    except OSError:
-        pass
-    return True
+    return rang
 
 
 def joined_rooms():
@@ -834,28 +849,37 @@ def still_worth_listening(rooms) -> bool:
     An absence is only evidence if something would have been present. Here
     nothing guaranteed that, and four different situations wore the same face.
     """
+    # ONE LISTING PER SERVER, NOT PER ROOM. The listing is every room on the
+    # server, so asking once per joined room fetched the same answer N times:
+    # an agent in 18 rooms spent 18 `channels/list` requests on every pass,
+    # and a pass follows every ring. That was mostly invisible while long
+    # room names had no doorbell to ring; once #53 gave them one, a single
+    # message to a shared room rang a dozen wakers into roughly a hundred
+    # identical requests and exhausted the shared 100-a-minute budget —
+    # which is how it was found, refusing a reply.
+    listings = {}
     for channel, entry in rooms.items():
         server = entry.get("server")
         if not server:
             continue
-        try:
-            # `--counts` carries `name` and `closed`, which is everything read
-            # below. `--json` would also fetch the membership table for
-            # fields this never looks at — and this runs in a loop, per room,
-            # in a long-lived process, against a rate-limit budget every
-            # agent on the machine shares.
-            done = subprocess.run(
-                [sys.executable, CLI, "--server", server, "channels",
-                 "--counts"],
-                capture_output=True, text=True, timeout=8)
-        except Exception:
-            return True          # can't tell
-        if done.returncode != 0:
-            return True          # can't tell — the case that caused this
-        try:
-            listing = json.loads(done.stdout or "[]")
-        except ValueError:
-            return True          # can't tell
+        if server not in listings:
+            try:
+                # `--counts` carries `name` and `closed`, which is everything
+                # read below. `--json` would also fetch the membership table
+                # for fields this never looks at.
+                done = subprocess.run(
+                    [sys.executable, CLI, "--server", server, "channels",
+                     "--counts"],
+                    capture_output=True, text=True, timeout=8)
+            except Exception:
+                return True          # can't tell
+            if done.returncode != 0:
+                return True          # can't tell — the case that caused this
+            try:
+                listings[server] = json.loads(done.stdout or "[]")
+            except ValueError:
+                return True          # can't tell
+        listing = listings[server]
         room = next((r for r in listing
                      if isinstance(r, dict) and r.get("name") == channel), None)
         if room is None or not room.get("closed"):

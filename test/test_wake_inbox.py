@@ -387,8 +387,10 @@ class BellHandoverTest(unittest.TestCase):
         pid = int(launcher.stdout.strip())
         self.addCleanup(lambda: _kill_quietly(pid))
         for _ in range(200):
-            if os.path.exists(ready) and open(ready).read().strip() == "ready":
-                break
+            if os.path.exists(ready):
+                with open(ready) as f:
+                    if f.read().strip() == "ready":
+                        break
             time.sleep(0.01)
         os.makedirs(os.path.dirname(self.mod.PID_PATH), exist_ok=True)
         with open(self.mod.PID_PATH, "w") as f:
