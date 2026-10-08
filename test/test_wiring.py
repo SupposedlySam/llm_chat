@@ -640,7 +640,7 @@ class ServeCommandTest(unittest.TestCase):
         spellings that happen to agree today — they WERE two, and the drift
         between them is invisible until somebody pastes the printed one."""
         import inspect
-        source = inspect.getsource(cli.start_server)
+        source = inspect.getsource(cli.launch_server)
         self.assertIn("command = serve_command(", source)
         self.assertIn('" ".join(command)', source)
         self.assertIn("subprocess.Popen(\n            command,", source)
@@ -1339,9 +1339,11 @@ class EveryTriggerIsCLASSIFIEDTest(unittest.TestCase):
 
     def shipped(self):
         directory = os.path.join(mutate.ROOT, "triggers")
+        # A document about the triggers is not a trigger.
         return sorted(name for name in os.listdir(directory)
                       if os.path.isfile(os.path.join(directory, name))
-                      and not name.startswith("."))
+                      and not name.startswith(".")
+                      and not name.endswith(".md"))
 
     @staticmethod
     def unclassified(shipped, expected):
@@ -1469,19 +1471,27 @@ class EveryTriggerIsCLASSIFIEDTest(unittest.TestCase):
         self.assertEqual(self.counted_in_prose("THREE TRIGGERS are wired"),
                          ["THREE TRIGGERS"])
 
+    # The sentence README once carried, kept here as the fixture now that the
+    # README no longer quotes its own history. It carries BOTH forms the
+    # check must find: a digit count and a spelled-out one.
+    DELETED_SENTENCE = ("> This sentence used to say **\"242 tests, 100% line "
+                        "coverage on the four entrypoints\"**.")
+
     def test_THE_DELETED_SENTENCE_IS_ITS_OWN_FIXTURE(self):
-        """README quotes the claim it removed, and that quote carries BOTH
-        forms — `242 tests` and `four entrypoints`. So the widening is proved
-        against real text in this repo rather than a synthetic string, and the
-        blockquote exclusion is proved to be what keeps the live scan quiet
-        rather than the pattern simply missing them.
+        """The claim README removed carries BOTH forms — `242 tests` and
+        `four entrypoints`. So the widening is proved against the real
+        sentence that rotted rather than one written to pass, and the
+        blockquote rule is proved to be what keeps a quoted claim out of the
+        live scan rather than the pattern simply missing it.
 
         Two things fail together if either half breaks: a narrowed pattern
         stops finding the word form here, and a dropped blockquote rule makes
-        the live check fire on a sentence the doc is explicitly not claiming.
+        the live check fire on a sentence a doc is explicitly not claiming.
         """
-        with open(os.path.join(mutate.ROOT, "README.md")) as f:
-            text = f.read()
+        text = "Live prose with no counts.\n" + self.DELETED_SENTENCE
+        live = "\n".join(line for line in text.splitlines()
+                         if not line.lstrip().startswith(">"))
+        self.assertEqual(self.counted_in_prose(live), [])
         quoted = "\n".join(line for line in text.splitlines()
                            if line.lstrip().startswith(">"))
         found = [" ".join(hit.split()).lower()
