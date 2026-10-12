@@ -265,8 +265,8 @@ def sole_sweep():
 # (name, file, find, replace-with, what breaking it should mean)
 MUTATIONS = [
     ("the compile runs under the SDK the host embeds", "bin/llm_chat",
-     "    env = dict(os.environ, DART_SDK=sdk)",
-     "    env = dict(os.environ)",
+     "    env = dict(os.environ, DART_SDK=sdk,",
+     "    env = dict(os.environ,",
      "the workers and their .aot snapshots are built by whatever dart "
      "raindrop resolves first — which is FVM's, ahead of PATH, on any machine "
      "with ~/fvm — so a newer SDK produces a snapshot the host cannot load, "
@@ -684,8 +684,8 @@ MUTATIONS = [
      "happened, or retries refused that would have worked"),
 
     ("a name NOBODY TYPED is treated as inferred", "bin/llm_chat",
-     '               identity_inferred=getattr(args, "identity", None) is None)',
-     "               identity_inferred=False)",
+     '               identity_inferred=getattr(args, "identity", None) is None,',
+     "               identity_inferred=False,",
      "the collision note is wired to a flag that is never true, so it can "
      "never fire — the guard is present, tested, and unreachable from "
      "production, which is a shape this repo has now found three times in a "
@@ -1059,8 +1059,10 @@ MUTATIONS = [
      "escalation path, taking its cursor and thread map with it"),
 
     ("a doorbell is keyed by MEMBERSHIP, not identity", "bin/llm_chat",
-     '    return "%s__%s.sock" % (channel, identity)',
-     '    return "%s.sock" % identity',
+     '    name = "%s__%s.sock" % (channel, identity)\n'
+     '    if len(os.path.join(doorbell_dir(server), name).encode()) <= SOCKET_PATH_MAX:',
+     '    name = "%s.sock" % identity\n'
+     '    if len(os.path.join(doorbell_dir(server), name).encode()) <= SOCKET_PATH_MAX:',
      "four projects here answer to `owner`, so one waker binds the socket and "
      "the rest silently do not — then hear nothing, which looks like a quiet "
      "room rather than a fault"),
@@ -1451,8 +1453,8 @@ MUTATIONS = [
     # exit-2 contract. A stale anchor is reported as ANCHOR MISSING rather
     # than passing quietly, which is the only reason this was noticed.
     ("a missed wake is NOTICED at all", "bin/llm-chat-wake",
-     "    note_rewake()\n    watch_for_a_missed_wake()\n    wake(blocks)",
-     "    note_rewake()\n    wake(blocks)",
+     "    note_rewake()\n    watch_for_a_missed_wake()\n    if box is None:",
+     "    note_rewake()\n    if box is None:",
      "nothing outlives the exit, so a wake the harness ignores is never seen "
      "by anything: no turn means no Stop, no Stop means no waker, no waker "
      "means nobody looks — the circularity that lets an idle session go deaf "
@@ -2349,7 +2351,14 @@ NOT_SWEPT = {
     "bin/llm-chat-wake:joined_rooms": "missing and corrupt records asserted directly",
     "bin/llm-chat-deliver:missing_hooks": "asserted directly, including malformed shapes",
     "bin/llm-chat-deliver:stale_install": "all four outcomes asserted directly",
-    "bin/llm_chat:check_loop_shape": "SHOULD BE SWEPT — held, sent with the "
+    "bin/llm_chat:check_machine_store": "SHOULD BE SWEPT — asserted against a "
+        "real unwritable directory (refused, names LLM_CHAT_STORE, nothing "
+        "stopped) and a writable one; restart_server's order test pins that "
+        "it runs before the stop (#43)",
+    "bin/llm_chat:store_creatable": "asserted read-only (creates nothing) and "
+        "right both ways against real directories; it only chooses a doctor "
+        "line",
+    "bin/llm_chat:check_loop_shape":"SHOULD BE SWEPT — held, sent with the "
         "code, code single-use, code bound to the text, expired code, wakes-"
         "nobody and human paths all asserted end to end in test_confirm; "
         "removing it fails eighteen of them",

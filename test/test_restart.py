@@ -21,7 +21,8 @@ cli = load("llm_chat")
 
 class RestartOrderTest(unittest.TestCase):
     NAMES = ("dart_env", "run_steps", "listener_pid", "stop_listener",
-             "adopt_machine_store", "launch_server", "server_up")
+             "adopt_machine_store", "launch_server", "server_up",
+             "check_machine_store")
 
     def setUp(self):
         self.saved = {n: getattr(cli, n) for n in self.NAMES}
@@ -36,6 +37,7 @@ class RestartOrderTest(unittest.TestCase):
         cli.adopt_machine_store = lambda root, port: self.order.append("adopt") or []
         cli.launch_server = lambda server, env: self.order.append("launch")
         cli.server_up = lambda server: True
+        cli.check_machine_store = lambda port: self.order.append("check") or "/s"
 
     def restart(self):
         with open(os.devnull, "w") as sink:
@@ -49,27 +51,137 @@ class RestartOrderTest(unittest.TestCase):
         """The gap must be seconds, not a compile."""
         self.restart()
         self.assertEqual(self.order,
-                         ["build", "stop", "adopt", "migrate", "launch"])
+                         ["build", "check", "stop", "adopt", "migrate",
+                          "launch"])
+
+    def test_an_unusable_STORE_is_refused_BEFORE_the_stop(self):
+        """#43: a root-owned ~/.local failed the store step after the old
+        server had been stopped, and the machine had no chat."""
+        def unusable(port):
+            raise SystemExit("cannot use ~/.local/share ... LLM_CHAT_STORE")
+        cli.check_machine_store = unusable
+        with self.assertRaises(SystemExit) as caught:
+            self.restart()
+        self.assertEqual(self.order, ["build"])
+        self.assertIn("LLM_CHAT_STORE", str(caught.exception))
+
+    def test_a_failure_AFTER_the_stop_starts_the_server_again(self):
+        """A failed restart must still leave a server running."""
+        def fails(root, port):
+            self.order.append("adopt")
+            raise PermissionError(13, "Permission denied")
+        cli.adopt_machine_store = fails
+        cli.server_up = lambda server: False
+        with self.assertRaises(SystemExit) as caught:
+            self.restart()
+        self.assertEqual(self.order, ["build", "check", "stop", "adopt",
+                                      "launch"])
+        self.assertIn("started again", str(caught.exception))
+
+    def test_if_starting_again_ALSO_fails_it_says_nothing_is_serving(self):
+        def fails(root, port):
+            raise PermissionError(13, "Permission denied")
+        cli.adopt_machine_store = fails
+        cli.server_up = lambda server: False
+
+        def launch(server, env):
+            raise SystemExit("server never came up")
+        cli.launch_server = launch
+        with self.assertRaises(SystemExit) as caught:
+            self.restart()
+        self.assertIn("Nothing is serving", str(caught.exception))
+        self.assertIn("--host=::1", str(caught.exception))
 
     def test_a_server_that_will_not_stop_changes_nothing_else(self):
         cli.stop_listener = lambda pid, server: self.order.append("stop") or False
         with self.assertRaises(SystemExit) as caught:
             self.restart()
-        self.assertEqual(self.order, ["build", "stop"])
+        self.assertEqual(self.order, ["build", "check", "stop"])
         self.assertIn("did not stop", str(caught.exception))
 
     def test_an_answering_server_with_no_local_process_is_not_guessed_at(self):
         cli.listener_pid = lambda server: None
         with self.assertRaises(SystemExit) as caught:
             self.restart()
-        self.assertEqual(self.order, ["build"])
+        self.assertEqual(self.order, ["build", "check"])
         self.assertIn("no local process", str(caught.exception))
 
     def test_with_NOTHING_running_it_simply_starts_one(self):
         cli.listener_pid = lambda server: None
         cli.server_up = lambda server: False
         self.restart()
-        self.assertEqual(self.order, ["build", "adopt", "migrate", "launch"])
+        self.assertEqual(self.order, ["build", "check", "adopt", "migrate",
+                                      "launch"])
+
+
+class StoreSafetyTest(unittest.TestCase):
+    """#43's other half: the store step itself, and the probe during a stop."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        saved = os.environ.get(cli.STORE_ENV)
+        self.addCleanup(lambda: os.environ.__setitem__(cli.STORE_ENV, saved)
+                        if saved is not None
+                        else os.environ.pop(cli.STORE_ENV, None))
+        # A directory nobody may write into, like a root-owned ~/.local.
+        self.locked = os.path.join(self.tmp.name, "locked")
+        os.makedirs(self.locked)
+        os.chmod(self.locked, 0o500)
+        self.addCleanup(os.chmod, self.locked, 0o700)
+
+    def test_an_unwritable_store_parent_is_refused_and_names_the_way_out(self):
+        os.environ[cli.STORE_ENV] = os.path.join(self.locked, "share", "x")
+        with self.assertRaises(SystemExit) as caught:
+            cli.check_machine_store(7717)
+        self.assertIn("LLM_CHAT_STORE", str(caught.exception))
+        self.assertIn("Nothing was stopped", str(caught.exception))
+
+    def test_a_writable_store_parent_is_made_and_passes(self):
+        os.environ[cli.STORE_ENV] = os.path.join(self.tmp.name, "ok")
+        store = cli.check_machine_store(7717)
+        self.assertTrue(os.path.isdir(os.path.dirname(store)))
+
+    def test_store_creatable_is_READ_ONLY_and_right_both_ways(self):
+        """doctor uses it, and doctor writes nothing."""
+        good = os.path.join(self.tmp.name, "not", "yet", "there")
+        self.assertTrue(cli.store_creatable(good))
+        self.assertFalse(os.path.exists(os.path.join(self.tmp.name, "not")))
+        self.assertFalse(cli.store_creatable(
+            os.path.join(self.locked, "share", "llm_chat", "port-7717")))
+
+    def test_a_failed_link_PUTS_THE_DATA_BACK(self):
+        """Otherwise a relaunch would serve an empty directory zonai made."""
+        os.environ[cli.STORE_ENV] = os.path.join(self.tmp.name, "machine")
+        root = os.path.join(self.tmp.name, "copy")
+        data = os.path.join(root, ".zonai", "data")
+        os.makedirs(data)
+        with open(os.path.join(data, "zonai.sqlite"), "w") as f:
+            f.write("the rooms")
+        real = cli.os.symlink
+
+        def refuse(*a, **kw):
+            raise PermissionError(13, "Permission denied")
+        cli.os.symlink = refuse
+        try:
+            with self.assertRaises(PermissionError):
+                cli.adopt_machine_store(root, 7717)
+        finally:
+            cli.os.symlink = real
+        with open(os.path.join(data, "zonai.sqlite")) as f:
+            self.assertEqual(f.read(), "the rooms")
+
+    def test_a_connection_DROPPED_by_a_server_going_away_reads_as_down(self):
+        """#43's second failure: ConnectionResetError during the stop."""
+        real = cli.call
+
+        def reset(*a, **kw):
+            raise ConnectionResetError(54, "Connection reset by peer")
+        cli.call = reset
+        try:
+            self.assertFalse(cli.server_up("http://localhost:7717"))
+        finally:
+            cli.call = real
 
 
 class ListenerHelpersTest(unittest.TestCase):

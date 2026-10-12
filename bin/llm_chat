@@ -5527,8 +5527,17 @@ def do_doctor(server):
               "%s, so this" % store)
         print("                      server's rooms are not the ones other "
               "agents' copies would bring")
-        print("                      back. Stop it and run `llm_chat setup` "
-              "from an upgraded copy.")
+        # ONLY RECOMMEND WHAT WILL WORK (#43): on a machine where the store
+        # cannot be created, a restart is the outage, not the fix.
+        if store_creatable(store):
+            print("                      back. Run `llm_chat restart-server` "
+                  "from an upgraded copy.")
+        else:
+            print("                      back, but %s cannot be created here." % store)
+            print("                      Set LLM_CHAT_STORE to a directory you "
+                  "can write, for every")
+            print("                      agent, then run `llm_chat "
+                  "restart-server`.")
     print()
     print(install_report(project) + stale_skill_report(project)
           + divergent_skill_report() + "\n")
@@ -6270,8 +6279,18 @@ def do_channels(server, show_closed=False, as_json=False, mine=False,
 # human would otherwise have done first has to happen here, or it becomes a
 # step they have to remember and explain.
 def server_up(server) -> bool:
-    """Is anything listening? An HTTP error still means yes."""
-    res = call(server, "GET", "/db/list", query={"table": "channels"}, timeout=3)
+    """Is anything listening? An HTTP error still means yes.
+
+    A connection dropped mid-answer means NO. It is what a server that is
+    shutting down does, and `restart-server` asks exactly then: issue #43
+    crashed there with ConnectionResetError, after the old server had been
+    told to stop, leaving the machine with no chat.
+    """
+    try:
+        res = call(server, "GET", "/db/list", query={"table": "channels"},
+                   timeout=3)
+    except OSError:
+        return False
     return not str(res.get("error", "")).startswith("no llm_chat server")
 
 
@@ -6570,6 +6589,45 @@ def serve_lock_holder(data):
     return pid
 
 
+def store_creatable(store):
+    """Could `store` be created and written? Read-only: creates nothing.
+
+    For `doctor`, which must not write. Walks up to the nearest directory that
+    exists and asks whether it can be written into.
+    """
+    probe = store
+    while not os.path.exists(probe):
+        parent = os.path.dirname(probe)
+        if parent == probe:
+            return False
+        probe = parent
+    return os.path.isdir(probe) and os.access(probe, os.W_OK | os.X_OK)
+
+
+def check_machine_store(port):
+    """Refuse, before anything moves, if the machine store cannot be made.
+
+    Issue #43: on a machine where `~/.local` is owned by root, creating
+    `~/.local/share` fails — and `restart-server` found that out after it had
+    stopped the old server, leaving every agent with no chat. Asked first, it
+    is a refusal with the server still running, naming the way out.
+    """
+    store = machine_store(port)
+    parent = os.path.dirname(store)
+    try:
+        os.makedirs(parent, exist_ok=True)
+        probe = tempfile.NamedTemporaryFile(dir=parent, delete=True)
+        probe.close()
+    except OSError as problem:
+        raise SystemExit(
+            "cannot use %s for the shared data store: %s\n"
+            "  Nothing was stopped or moved. Point the store somewhere you can "
+            "write, in the\n  environment of every agent on this machine, then "
+            "retry:\n    export LLM_CHAT_STORE=~/llm_chat-store"
+            % (parent, problem.strerror or problem))
+    return store
+
+
 def adopt_machine_store(root, port):
     """Make `root/.zonai/data` a link to the machine store. Returns notes.
 
@@ -6581,7 +6639,7 @@ def adopt_machine_store(root, port):
         and serving it is the defect this exists for.
     """
     data = os.path.join(root, ".zonai", "data")
-    store = machine_store(port)
+    store = check_machine_store(port)
     notes = []
     # NEVER FROM UNDER A LIVE SERVER. "Nothing answered on this port" is not
     # "nothing is serving this directory": a server on another port can hold
@@ -6593,25 +6651,36 @@ def adopt_machine_store(root, port):
         raise SystemExit(
             "%s is held by a running server (pid %d). Refusing to move a "
             "store out from under it;\n  stop that server first." % (data, holder))
+    undo = None                       # how to put the copy's data back
     if os.path.islink(data):
         if os.path.realpath(data) == os.path.realpath(store):
             return notes
+        old_target = os.readlink(data)
         os.remove(data)
+        undo = lambda: os.symlink(old_target, data)
         notes.append("re-pointed %s at the machine store" % data)
     elif os.path.isdir(data):
         if not os.path.exists(store):
-            os.makedirs(os.path.dirname(store), exist_ok=True)
             shutil.move(data, store)
+            undo = lambda: shutil.move(store, data)
             notes.append("moved this copy's store to %s" % store)
         else:
             aside = "%s.set-aside-%s" % (data, time.strftime("%Y%m%d%H%M%S"))
             os.rename(data, aside)
+            undo = lambda: os.rename(aside, data)
             notes.append(
                 "this copy had its own store; it is set aside at %s, NOT "
                 "merged — the machine store at %s is what serves" % (aside, store))
-    os.makedirs(store, exist_ok=True)
-    os.makedirs(os.path.dirname(data), exist_ok=True)
-    os.symlink(store, data)
+    try:
+        os.makedirs(store, exist_ok=True)
+        os.makedirs(os.path.dirname(data), exist_ok=True)
+        os.symlink(store, data)
+    except OSError:
+        # PUT IT BACK, so whatever starts next serves the data this copy had
+        # rather than an empty directory zonai would create in its place.
+        if undo is not None:
+            undo()
+        raise
     return notes
 
 
@@ -6801,8 +6870,12 @@ def restart_server(server):
     new one starts against the same shared store at once. A message sent in
     the gap gets "unreachable" and its sender retries.
     """
+    # EVERYTHING THAT CAN FAIL ON ITS OWN, BEFORE THE STOP (#43). The build,
+    # the SDK and the store's directory are all checked while the old server
+    # keeps serving, so a refusal here costs nobody their chat.
     env = dart_env()
     run_steps(build_steps(), env)
+    check_machine_store(port_of(server))
     pid = listener_pid(server)
     if pid is not None:
         print(f"  stopping the running server (pid {pid})", flush=True)
@@ -6815,10 +6888,32 @@ def restart_server(server):
             f"something answers at {server} but no local process could be "
             "found to restart.\n  It may be another machine's, or lsof may be "
             "missing; restart it where it runs.")
-    for note in adopt_machine_store(ROOT, port_of(server)):
-        print("  " + note, flush=True)
-    run_steps([MIGRATE_STEP], env)
-    launch_server(server, env)
+    try:
+        for note in adopt_machine_store(ROOT, port_of(server)):
+            print("  " + note, flush=True)
+        run_steps([MIGRATE_STEP], env)
+        launch_server(server, env)
+    except (Exception, SystemExit) as problem:
+        # A FAILED RESTART MUST STILL LEAVE A SERVER RUNNING. The old one is
+        # already stopped, so start one on whatever layout is on disk now
+        # (adopt_machine_store puts the data back if it fails part-way).
+        print(f"  restart failed after the stop: {problem}", flush=True)
+        if server_up(server):
+            raise
+        print("  starting the server again on the current layout", flush=True)
+        try:
+            launch_server(server, env)
+        except (Exception, SystemExit) as again:
+            raise SystemExit(
+                f"restart failed ({problem}), and starting the server again "
+                f"also failed ({again}).\n  Nothing is serving {server}. "
+                f"Start it by hand from {ROOT}:\n"
+                f"    ./zonai db migrate apply && "
+                + " ".join(serve_command(port_of(server))))
+        raise SystemExit(
+            f"restart failed ({problem}); the server was started again on the "
+            "layout now on disk,\n  so chat is up. Fix the cause and run "
+            "restart-server again.")
     print(f"  server restarted from {ROOT}")
 
 

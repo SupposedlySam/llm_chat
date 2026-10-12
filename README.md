@@ -363,14 +363,27 @@ from each wired repo and it tells you.**
    llm_chat restart-server
    ```
 
-   It rebuilds the workers first, while the old server keeps serving, then swaps servers. The
-   interruption is a couple of seconds, and it is safe to run from any repo: every copy of
-   llm_chat on the machine serves the same data. `doctor` and `setup` print **SERVER IS OLDER**
-   when a restart is needed, and a refused read (HTTP 429) says the same. If none of them say
-   so, you do not need it.
+   Before it stops anything, it rebuilds the workers (the old server keeps serving) and checks
+   that the shared data store's directory can be created and written. If either fails it
+   refuses, and chat carries on. Only then does it swap servers, which usually interrupts chat
+   for a few seconds. If anything fails after the old server has stopped, it tries to start the
+   server again on whatever is on disk before reporting the failure; if even that fails, it says
+   nothing is serving and prints the command to start it by hand.
+
+   Run it from any directory, but with the **upgraded** copy's path. The server it starts runs
+   that copy's code, and every copy on the machine serves the same data.
+
+   If the store's default location under `~/.local/share` cannot be created (for example
+   because `~/.local` is owned by root), set `LLM_CHAT_STORE` to a directory you can write and
+   run it again. Set it where every agent sees it: in your shell profile before you launch VS
+   Code or `claude`, or in the `env` block of `~/.claude/settings.json`. Sessions already running
+   must be restarted to see it.
+
+   `doctor` and `setup` print **SERVER IS OLDER** when a restart is needed, and a refused read
+   (HTTP 429) says the same. If none of them say so, you do not need it.
 3. **Reload the window**, so the sessions pick up the new hooks.
 
-A brand-new install, or a server started after the update, needs none of this.
+A brand-new install, or a server started by the updated copy, needs none of this.
 
 ## When something is wrong: `doctor`
 
@@ -415,12 +428,20 @@ warn you about itself.
   `zonai compile` can print errors and still exit 0.
 - **A setup on macOS exits 137 with no output.** The binary is quarantined: run the `xattr`
   line from [Install](#install).
+- **`setup` or `restart-server` says it "cannot use ~/.local/share/... for the shared data
+  store".** That directory cannot be created (often `~/.local` is owned by root). Nothing was
+  stopped. Set `LLM_CHAT_STORE` to a directory you can write, for every agent on the machine
+  (see [Updating](#updating-llm_chat) for where), and try again.
+- **`doctor` says SERVER STORE NOT THE MACHINE STORE.** Follow the remedy it prints: usually
+  `restart-server`, or setting `LLM_CHAT_STORE` first when it says the store cannot be created.
 
 ## Workspaces, ports and where data lives
 
 **A port is a workspace.** All rooms, messages and memberships for the server on a port live
-in one place on the machine, `~/.local/share/llm_chat/port-<port>` (set `LLM_CHAT_STORE` to
-move the base directory). Every copy of llm_chat that starts a server, whether a clone or a
+in one place on the machine, `~/.local/share/llm_chat/port-<port>`. `LLM_CHAT_STORE` changes
+the base directory; set it before the store is first created, because changing it later does
+not move existing rooms (move the `port-<port>` directory there yourself first, with the server
+stopped). Every copy of llm_chat that starts a server, whether a clone or a
 vendored copy, links its `.zonai/data` to that directory, so it never matters which copy happens
 to start the server. If a copy had its own older data, it is set aside as
 `.zonai/data.set-aside-<time>`, never deleted. `doctor`'s `server store` line shows what the
@@ -567,7 +588,7 @@ If it ever says WIDE, run `llm_chat restart-server`.
 Messages travel over HTTP to the server, so an agent in a repo that forbids writes outside
 itself can still talk. Outside the calling repo, llm_chat writes only:
 
-- the shared data store, `~/.local/share/llm_chat/port-<port>`;
+- the shared data store, `~/.local/share/llm_chat/port-<port>` (or under `$LLM_CHAT_STORE`);
 - a Claude Code skill describing llm_chat, `~/.claude/skills/llm-chat/SKILL.md`, shared by every
   repo;
 - the MCP registration, through `claude mcp add --scope local` (stored in `~/.claude.json`);
