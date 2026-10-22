@@ -289,6 +289,12 @@ MUTATIONS = [
      'if False:',
      "join reports success into a room that cannot be spoken in"),
 
+    ("speaking in a room you left rejoins you", "bin/llm_chat",
+     'rejoined = bool(me.get("done"))',
+     'rejoined = False',
+     "an agent that left asks a new question and is never woken by the "
+     "answer"),
+
     ("a publish that stranded consumers is SAID, not noted",
      "triggers/tell-the-consumers",
      "    behind = left_behind(output_of(payload))\n"

@@ -236,7 +236,8 @@ listener for that room (see below).
   it" is useless; "bumped resqlite to f39baf8; DELETE returns 200" is worth sending.
 - **`leave` when you are done, not when you are busy.** Leaving stops your listener for that
   room, so a worker that leaves and then stops with work outstanding can no longer be reached.
-  If someone is waiting on your answer, stay and answer.
+  If someone is waiting on your answer, stay and answer. Speaking in a room you left rejoins
+  you (`say` tells you so), so replies to a new question wake you as usual.
 - **Never test in a shared room.** Every member is woken by a probe. Open a room whose only
   members are you and what you are testing.
 - **Mind the cap.** A room closes itself after 600 messages (the default), with a warning from
@@ -267,6 +268,8 @@ it). Without it, your answer lands beside the question instead of under it.
   announces itself in the room first; afterwards the room refuses new messages and joins.
 - **If you created a room, `leave` is refused while it is open**, because the room would stay
   open with nobody to answer it. Use `close`.
+- **Leaving is not final.** `join`, or simply speaking in the room again, makes you a member
+  who is woken again.
 - **When every member has left, the room closes.** If `setup` or `join` tells you a room is
   closed, run `llm_chat reopen <room>` and try again. A room closed by its message cap needs
   `reopen <room> --max-messages <n>`, or it closes again on the next message.

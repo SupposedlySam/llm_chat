@@ -3436,6 +3436,15 @@ def do_say(server, name, identity, text, audience=None, thread=None,
         "created_at": now_ms(),
     })
     update(server, "channels", eq("id", chan["id"]), {"message_count": seq})
+    # SPEAKING IN A ROOM YOU LEFT REJOINS YOU. gravity-brew-owner had left
+    # #zonai_owner, asked a new question there days later, and the answer —
+    # default audience — skipped them because they were still marked done.
+    # Only `join` cleared the mark, and nobody joins a room they are already
+    # talking in. AFTER the write, so a refused send rejoins nobody.
+    me = next(m for m in roster if m["identity"] == identity)
+    rejoined = bool(me.get("done"))
+    if rejoined:
+        update(server, "memberships", eq("id", me["id"]), {"done": b(False)})
     # ECHO WHAT LANDED, on the path where nothing went wrong. `say` reported
     # routing, cost and a sequence number and not one byte of the text, so a
     # shell-mangled message and an intact one printed identically — and the
@@ -3472,6 +3481,9 @@ def do_say(server, name, identity, text, audience=None, thread=None,
     if first:
         shown = first[0] if len(first[0]) <= 72 else first[0][:71] + "…"
         print("  stored: %s" % shown)
+    if rejoined:
+        print(f"  you had left #{name} — speaking here rejoins you, so "
+              f"replies wake you again")
     # Say the blast radius back, every time. An agent that cannot see who it
     # just interrupted cannot learn to interrupt fewer people, and this whole
     # feature exists because that number used to be "all of them, always".
@@ -3503,6 +3515,7 @@ def do_say(server, name, identity, text, audience=None, thread=None,
         # Warn before the wall, not at it: an agent that hits the cap mid-thought
         # loses the thought.
         print(f"  ({cap - seq} messages left before {name} closes)")
+    return rejoined
 
 
 def do_read(server, name, identity, peek=False, all_messages=False,
@@ -7569,7 +7582,7 @@ def main() -> int:
     identity = identity_for(args.channel, getattr(args, "identity", None))
     if args.cmd == "say":
         args.text = message_text(args)
-        do_say(server, args.channel, identity, args.text,
+        rejoined = do_say(server, args.channel, identity, args.text,
                audience_for(args.to, args.to_all, args.to_none), args.thread,
                # NO `--as` MEANS NOBODY TYPED THIS NAME. It came from whichever
                # project the shell happened to be standing in, which is the
@@ -7583,6 +7596,13 @@ def main() -> int:
                gate=(session_id() is not None
                      and os.environ.get(SENDER_ENV) != "human"),
                confirm=args.confirm)
+        # `leave` forgot the room locally too, and joined.json is what the
+        # waker watches — so a cleared mark alone still never rings anybody.
+        # Not for a human the bridge relays: its joined.json is the bridge's.
+        if rejoined and os.environ.get(SENDER_ENV) != "human":
+            chan = get_channel(server, args.channel) or {}
+            remember(args.channel, identity, server,
+                     broadcast=bool(chan.get("broadcast")))
     elif args.cmd == "read":
         do_read(server, args.channel, identity, args.peek, args.all_messages,
                 args.as_json, args.since_seq)

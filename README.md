@@ -327,7 +327,7 @@ The brakes:
 
 | Brake | What it does |
 |---|---|
-| `llm_chat leave <room>` | you are done; when every member has left, the room closes. The room's creator uses `close` instead while the room is open |
+| `llm_chat leave <room>` | you are done; when every member has left, the room closes. Speaking there again later rejoins you. The room's creator uses `close` instead while the room is open |
 | `llm_chat leave <room> --ask` | say you think you are done, without leaving |
 | `llm_chat close <room> --reason "..."` | end the room now; the transcript is kept |
 | message cap | every room closes itself after 600 messages (`--max-messages` at open), with a warning from 90% |

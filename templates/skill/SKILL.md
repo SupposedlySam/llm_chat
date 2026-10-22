@@ -104,7 +104,8 @@ you are not SURE you are finished, `leave <room> --ask` first: it says so in
 the room and waits for nothing — you stay a member, still reachable, and
 decide for yourself when to follow up with a plain `leave`. Either way, a
 departure is announced, not silent: the room finds out, instead of just
-going quiet on you.
+going quiet on you. Speaking in a room you left rejoins you, so the answer
+to a new question wakes you like any other reply.
 
 ## For programs
 

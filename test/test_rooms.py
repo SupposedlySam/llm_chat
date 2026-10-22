@@ -230,6 +230,51 @@ class RoomTest(unittest.TestCase):
         self.assertEqual(member["seen_seq"], 3, "cursor must survive rejoining")
         self.assertEqual(member["done"], 0)
 
+    def test_SPEAKING_in_a_room_you_left_rejoins_you(self):
+        """Asking means you're back. gravity-brew-owner had left #zonai_owner,
+        asked a new question there days later, and the reply — default
+        audience — skipped them because they were still marked done. Only
+        `join` cleared the mark, and nobody thinks to join a room they are
+        already talking in."""
+        self.fake.channel("room", message_count=4)
+        self.fake.membership("room", "me", seen_seq=4, done=1)
+        self.fake.membership("room", "other", done=0)
+        _, out = self.quiet(cli.do_say, "http://127.0.0.1:1", "room", "me",
+                            "a new question?")
+        self.assertEqual(self.fake.get_membership("room", "me")["done"], 0)
+        self.assertIn("rejoins you", out)
+        self.assertTrue(cli.wakes({"audience": None}, "me",
+                                  self.fake.get_channel("room")))
+
+    def test_a_send_that_is_REFUSED_does_not_rejoin_you(self):
+        self.fake.channel("room", message_count=4)
+        self.fake.membership("room", "me", done=1)
+        with self.assertRaises(SystemExit):
+            self.quiet(cli.do_say, "http://127.0.0.1:1", "room", "me", "hi",
+                       audience="nobody-here")
+        self.assertEqual(self.fake.get_membership("room", "me")["done"], 1)
+
+    def test_a_member_still_here_is_not_told_they_rejoined(self):
+        self.fake.channel("room")
+        self.fake.membership("room", "me", done=0)
+        _, out = self.quiet(cli.do_say, "http://127.0.0.1:1", "room", "me",
+                            "hi")
+        self.assertNotIn("rejoins", out)
+
+    def test_the_CLI_remembers_the_room_again_so_the_waker_watches_it(self):
+        """`leave` also forgets the room locally, and joined.json is what the
+        waker reads — clearing the server's mark alone still never rings."""
+        self.fake.channel("room", message_count=2)
+        self.fake.membership("room", "me", done=1)
+        self.assertNotIn("room", cli.read_joined())
+        saved_argv = sys.argv
+        self.addCleanup(lambda: setattr(sys, "argv", saved_argv))
+        sys.argv = ["llm_chat", "say", "room", "back again?", "--as", "me"]
+        with redirect_stdout(io.StringIO()):
+            cli.main()
+        self.assertIn("room", cli.read_joined())
+        self.assertEqual(cli.read_joined()["room"]["identity"], "me")
+
     def test_names_and_identities_are_validated(self):
         for channel, identity in (("has space", "me"), ("room", "has space"),
                                   ("", "me"), ("room", "")):
