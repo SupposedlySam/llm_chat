@@ -275,6 +275,56 @@ class RoomTest(unittest.TestCase):
         self.assertIn("room", cli.read_joined())
         self.assertEqual(cli.read_joined()["room"]["identity"], "me")
 
+    def test_a_PLAIN_say_after_leave_rejoins_without_as(self):
+        """The path a real agent takes. `leave` forgets the room locally, so
+        a `say` with no --as used to stop at "you have not joined" before the
+        rejoin could run. Found by a cold read of the docs, which promised it."""
+        self.fake.channel("room", message_count=2)
+        self.fake.membership("room", "me", done=0)
+        self.fake.membership("room", "other", done=0)
+        cli.remember("room", "me", "http://127.0.0.1:1")
+        self.quiet(cli.do_leave, "http://127.0.0.1:1", "room", "me")
+        self.assertNotIn("room", cli.read_joined())
+        saved_argv = sys.argv
+        self.addCleanup(lambda: setattr(sys, "argv", saved_argv))
+        sys.argv = ["llm_chat", "say", "room", "a new question?"]
+        with redirect_stdout(io.StringIO()):
+            cli.main()
+        self.assertEqual(self.fake.get_membership("room", "me")["done"], 0)
+        self.assertEqual(cli.read_joined()["room"]["identity"], "me")
+        self.assertEqual(cli.left_identity("room"), None,
+                         "rejoining clears the record of having left")
+
+    def test_rejoining_by_speaking_works_under_a_PER_ROOM_name(self):
+        """With a session default from `identify`, the impersonation check
+        knew only that name once `leave` forgot the room — so speaking as the
+        name you left under was refused as speaking as somebody else."""
+        self.fake.channel("room", message_count=2)
+        self.fake.membership("room", "builder", done=0)
+        self.fake.membership("room", "other", done=0)
+        cli.remember("room", "builder", "http://127.0.0.1:1")
+        real = cli.project_identity
+        cli.project_identity = lambda: "generic"
+        self.addCleanup(lambda: setattr(cli, "project_identity", real))
+        self.quiet(cli.do_leave, "http://127.0.0.1:1", "room", "builder")
+        saved_argv = sys.argv
+        self.addCleanup(lambda: setattr(sys, "argv", saved_argv))
+        sys.argv = ["llm_chat", "say", "room", "back with a question?"]
+        with redirect_stdout(io.StringIO()):
+            cli.main()
+        self.assertEqual(self.fake.get_membership("room", "builder")["done"],
+                         0)
+
+    def test_a_room_never_joined_is_still_refused_without_as(self):
+        self.fake.channel("room")
+        saved_argv = sys.argv
+        self.addCleanup(lambda: setattr(sys, "argv", saved_argv))
+        sys.argv = ["llm_chat", "say", "room", "hi"]
+        with self.assertRaises(SystemExit) as stop:
+            with redirect_stdout(io.StringIO()):
+                cli.main()
+        self.assertIn("have not joined", str(stop.exception))
+
     def test_names_and_identities_are_validated(self):
         for channel, identity in (("has space", "me"), ("room", "has space"),
                                   ("", "me"), ("room", "")):

@@ -289,6 +289,37 @@ MUTATIONS = [
      'if False:',
      "join reports success into a room that cannot be spoken in"),
 
+    ("a host row with no process to check is not proof of life (#37)",
+     "bin/llm_chat",
+     '    return not session.get("llm_chat_unchecked")',
+     '    return True',
+     "a background job whose daemon died weeks ago sits under **here** as "
+     "the one agent still listening, while every real one is stopped"),
+
+    ("only a session we could check makes a name live (#37)", "bin/llm_chat",
+     '            if any(checkable(s) for s in sessions)}',
+     '            if sessions}',
+     "`say` reports 'wakes backcompat' for a ghost row, which reads as reach "
+     "it does not have"),
+
+    ("a session started above the repo is told it cannot be woken (#38)",
+     "bin/llm_chat",
+     '            return None\n        return cwd\n    return None',
+     '            return None\n        return None\n    return None',
+     "a session started above the repo joins 34 rooms nothing can deliver "
+     "to, and doctor reports its wiring healthy"),
+
+    ("a plain `say` after `leave` knows who you were", "bin/llm_chat",
+     '    return (_read_json(left_path()) or {}).get(channel)',
+     '    return None',
+     "the rejoin in `say` is unreachable without --as, so the agent that "
+     "left and asks again is told it never joined"),
+
+    ("`leave` records who left", "bin/llm_chat",
+     '    record[channel] = identity\n    _write_left(record)',
+     '    _write_left(record)',
+     "the same: nothing remembers the name, so a plain `say` is refused"),
+
     ("speaking in a room you left rejoins you", "bin/llm_chat",
      'rejoined = bool(me.get("done"))',
      'rejoined = False',
@@ -371,9 +402,10 @@ MUTATIONS = [
      "exact claim the heartbeat exists to stop it making"),
 
     ("auto-reload SAYS when it can never fire", "bin/llm_chat",
-     "        here = live_here()\n"
-     "        if here is not None and len(here) > 1:",
-     "        here = None\n        if False:",
+     "        if here is not None and len(here) > 1:\n"
+     "            print(\"WARNING: %d live sessions",
+     "        if False:\n"
+     "            print(\"WARNING: %d live sessions",
      "a feature that declines whenever the project holds more than one live "
      "session is switched on, looks armed, and can only fire in the "
      "configuration where the manual version was already cheap — silently, "
@@ -1722,8 +1754,8 @@ MUTATIONS = [
      "sitting there deaf"),
 
     ("the host disagreeing about who you are is named", "bin/llm_chat",
-     '    if mine and not any((s.get("sessionId") or "") == mine '
-     "for s in here):",
+     '    if mine and not outside and not any((s.get("sessionId") or "") == mine\n'
+     "                                        for s in here):",
      "    if False:",
      "the environment and the host can disagree about this session's id after "
      "a window reload, and issue #12 is that nothing noticed — this is the "
@@ -2184,9 +2216,8 @@ MUTATIONS = [
      "before it recursed"),
 
     ("a wake and a note left for the dead are worded APART", "bin/llm_chat",
-     '        awake = [m for m in woken if m in live]\n'
      '        gone = [m for m in woken if m not in live]',
-     '        awake = list(woken)\n        gone = []',
+     '        gone = []',
      "`say --to lead-ml` reads 'wakes lead-ml' whether that session is running "
      "or ended four days ago, which is exactly what an orchestrator acted on "
      "three times in an hour before filing #19 — and the failure is silent in "
@@ -2861,6 +2892,15 @@ NOT_SWEPT = {
     "bin/llm_chat:audience_for": "every flag, combination and refusal asserted "
         "directly, including a sentinel passed as a name",
     "bin/llm_chat:describe_audience": "every branch asserted directly",
+    "bin/llm_chat:left_path": "a path, not a decision; left_identity and "
+        "note_left, which are swept, fail without it",
+    "bin/llm_chat:_write_left": "the atomic write remember() already uses; "
+        "note_left, which is swept, fails without it",
+    "bin/llm_chat:clear_left": "asserted directly: rejoining must clear the "
+        "record of having left",
+    "bin/llm_chat:outside_note": "a sentence, not a decision: the #38 tests "
+        "assert its words in doctor and join, and the decision it reports is "
+        "swept in started_outside",
     "bin/llm_chat:say_reach": "woken, passive and empty-room asserted directly",
     "bin/llm_chat:do_pending": "asserted directly, including that a second "
         "call returns the same answer — which is what proves it consumed nothing",

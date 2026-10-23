@@ -172,9 +172,14 @@ leave_rooms_in() {   # <joined.json> <session id, or empty for the project file>
     [ -z "$channel" ] && continue
     say "leave #$channel as $identity"
     if [ "$DRY" = 0 ]; then
-      CLAUDE_PROJECT_DIR="$TARGET" CLAUDE_CODE_SESSION_ID="$2" \
-        python3 "$HERE/bin/llm_chat" \
-        --server "$server" leave "$channel" --as "$identity" >/dev/null 2>&1 || true
+      # SAID, NOT SWALLOWED. `|| true` hid every refusal: a room you created
+      # cannot be left while it is open, so it stayed open with you in it,
+      # and this output read as though it had been left.
+      if ! out="$(CLAUDE_PROJECT_DIR="$TARGET" CLAUDE_CODE_SESSION_ID="$2" \
+          python3 "$HERE/bin/llm_chat" \
+          --server "$server" leave "$channel" --as "$identity" 2>&1)"; then
+        say "  NOT LEFT #$channel: ${out%%$'\n'*}"
+      fi
     fi
   done < <(python3 "$WORK/list_joined.py" "$1")
 }
@@ -243,9 +248,8 @@ else
   echo "run from inside $TARGET."
   if [ "$KEEP_MEMBERSHIP" = 0 ]; then
     echo
-    echo "Leaving may have closed a room — that happens once every member is done,"
-    echo "and two teardowns between them are enough. setup will say so and refuse."
-    echo "Bring it back with:"
+    echo "Leaving may have closed a room — that happens once every member is done."
+    echo "setup will say so and refuse. Bring it back with:"
     echo "  $HERE/bin/llm_chat reopen <channel>"
   fi
 fi

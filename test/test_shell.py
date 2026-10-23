@@ -293,6 +293,19 @@ class TeardownTest(ShellTestCase):
         self.assertIn("leave #per-session-room as me", done.stdout)
         self.assertIn("leave #project-room as me", done.stdout)
 
+    def test_a_leave_that_FAILS_is_said_not_swallowed(self):
+        """`|| true` hid every refusal — a room you created cannot be left
+        while open, so it stayed open with nobody to answer, and the
+        uninstaller's output read as though it had been left."""
+        self.install()
+        d = os.path.join(self.repo, ".llm_chat", "sessions", "sid-one")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "joined.json"), "w") as f:
+            json.dump({"stuck-room": {"identity": "me",
+                                      "server": "http://127.0.0.1:1"}}, f)
+        done = self.run_script(TEARDOWN, self.repo)
+        self.assertIn("NOT LEFT #stuck-room", done.stdout)
+
     def test_it_removes_every_hook_it_installed(self):
         self.install()
         self.run_script(TEARDOWN, self.repo)

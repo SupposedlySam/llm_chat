@@ -416,8 +416,32 @@ def host_sessions():
         found = json.loads(done.stdout or "[]")
     except ValueError:
         return None
-    return [s for s in found if isinstance(s, dict)] \
-        if isinstance(found, list) else None
+    if not isinstance(found, list):
+        return None
+    rows = [s for s in found if isinstance(s, dict)]
+    # A ROW WITH NO PID IS THE HOST'S SAY-SO AND NOTHING ELSE (#37). It lists
+    # background jobs whose daemon is gone: one sat in `who` and under
+    # **here** for 25 days after its supervisor died, as the one agent still
+    # listening while every real one was stopped. With no process to check,
+    # it is neither here nor away — the same place CANNOT TELL already goes.
+    for row in rows:
+        if not row.get("pid"):
+            row["llm_chat_unchecked"] = True
+    return rows
+
+
+NO_PROCESS = "host lists it, no process to check"
+
+
+def checkable(session):
+    """False for a row the host lists with no process behind it (#37)."""
+    return not session.get("llm_chat_unchecked")
+
+
+def proven_live(live):
+    """Names in `live_identities()`'s answer with a session we could check."""
+    return {name for name, sessions in (live or {}).items()
+            if any(checkable(s) for s in sessions)}
 
 
 def ide_window(project=None):
@@ -484,6 +508,38 @@ def live_here(project=None):
         if cwd == root or cwd.startswith(root + os.sep):
             here.append(session)
     return here
+
+
+def started_outside(project=None):
+    """Where the host says THIS session started, when that is not inside
+    `project`; None when it is, or when nobody can tell (#38).
+
+    A session started ABOVE a repo never loads that repo's
+    .claude/settings.local.json, so neither hook ever runs for it. The CLI,
+    called by absolute path from inside the repo, still works: it joins, it
+    sends, and it becomes a member of 34 rooms that nothing can deliver to.
+    Everything it could check about itself read healthy.
+    """
+    mine = session_id()
+    sessions = host_sessions() if mine else None
+    if not sessions:
+        return None
+    root = os.path.abspath(project or project_dir())
+    for session in sessions:
+        if session.get("sessionId") != mine or not session.get("cwd"):
+            continue
+        cwd = os.path.abspath(session["cwd"])
+        if cwd == root or cwd.startswith(root + os.sep):
+            return None
+        return cwd
+    return None
+
+
+def outside_note(cwd, project):
+    return ("THIS SESSION CANNOT BE WOKEN HERE — it was started in %s,\n"
+            "  outside %s, so this project's hooks never load for it.\n"
+            "  Messages reach it only when it runs `read`. Restart the session "
+            "from\n  %s to receive them." % (cwd, project, project))
 
 
 def live_sessions(project=None):
@@ -1239,6 +1295,7 @@ def remember(channel, identity, server, broadcast=False):
     with open(tmp, "w") as f:
         json.dump(joined, f, indent=2)
     os.replace(tmp, path)
+    clear_left(channel)
 
 
 def forget(channel):
@@ -1288,10 +1345,48 @@ def hang_up(channel, server=None):
     return gone
 
 
-def identity_for(channel, explicit):
+def left_path():
+    return os.path.join(os.path.dirname(joined_path()), "left.json")
+
+
+def left_identity(channel):
+    """The name this session LEFT `channel` under, or None.
+
+    Kept apart from joined.json on purpose: both hooks poll every room listed
+    there, which is why `leave` forgets the room. But a session that left and
+    later speaks there again still needs to know who it was, or the rejoin in
+    `say` is unreachable without --as.
+    """
+    return (_read_json(left_path()) or {}).get(channel)
+
+
+def note_left(channel, identity):
+    record = _read_json(left_path()) or {}
+    record[channel] = identity
+    _write_left(record)
+
+
+def clear_left(channel):
+    record = _read_json(left_path()) or {}
+    if record.pop(channel, None) is not None:
+        _write_left(record)
+
+
+def _write_left(record):
+    path = left_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = own_tmp(path)
+    with open(tmp, "w") as f:
+        json.dump(record, f, indent=2)
+    os.replace(tmp, path)
+
+
+def identity_for(channel, explicit, rejoining=False):
     if explicit:
         return explicit
     entry = read_joined().get(channel)
+    if not entry and rejoining and (left := left_identity(channel)):
+        return left
     if not entry:
         raise SystemExit(
             f"you have not joined {channel} — run `llm_chat join {channel} "
@@ -2552,6 +2647,9 @@ def do_who(as_json=False):
             {"identity": who,
              "sessions": [{"sessionId": s.get("sessionId"),
                            "pid": s.get("pid"),
+                           # #37: the host listed it with no process behind
+                           # it, so it may be a background job long dead.
+                           "unchecked": not checkable(s),
                            "cwd": s.get("cwd"),
                            "name": s.get("name"),
                            # HOW, and `inferred` derived from it rather than
@@ -2574,8 +2672,10 @@ def do_who(as_json=False):
     for who, sessions in sorted(live.items()):
         print(who)
         for s in sessions:
-            print("  session %s  pid %s  %s\n    how: %s"
-                  % (s.get("sessionId") or "?", s.get("pid") or "?",
+            print("  session %s  %s  %s\n    how: %s"
+                  % (s.get("sessionId") or "?",
+                     "pid %s" % s["pid"] if checkable(s) and s.get("pid")
+                     else "NO PID: %s" % NO_PROCESS,
                      s.get("cwd") or "?",
                      ", ".join(s.get("llm_chat_how") or ["?"])))
     if any("inferred" in h for sessions in live.values()
@@ -2688,9 +2788,15 @@ def say_reach(sender, audience, chan, roster):
         # inventing a liveness claim in either direction.
         out = f"wakes {', '.join(woken)}"
     else:
-        awake = [m for m in woken if m in live]
+        proven = proven_live(live)
+        awake = [m for m in woken if m in proven]
+        unsure = [m for m in woken if m in live and m not in proven]
         gone = [m for m in woken if m not in live]
         out = f"wakes {', '.join(awake)}" if awake else ""
+        if unsure:
+            out += ("; " if out else "") + (
+                "CANNOT TELL whether %s is there — %s" % (", ".join(unsure),
+                                                         NO_PROCESS))
         if gone:
             out += ("; " if out else "") + (
                 "LEFT FOR %s — no live session, so nobody was woken"
@@ -3115,8 +3221,10 @@ def refuse_impersonation(channel, identity):
     it still cannot invent a third.
     """
     entry = read_joined().get(channel)
-    known = {n for n in (project_identity(), entry and entry.get("identity"))
-             if n}
+    # The name this session LEFT the room under is still its own: speaking
+    # there again is how it rejoins, and `leave` forgot the joined entry.
+    known = {n for n in (project_identity(), entry and entry.get("identity"),
+                         left_identity(channel)) if n}
     if not known or identity in known:
         return
     raise SystemExit(
@@ -3180,7 +3288,7 @@ def warn_if_another_session_holds(name, identity):
     here = "joined #%s" % name
     others = [s for s in live.get(identity, [])
               if here in (s.get("llm_chat_how") or [])
-              and s.get("sessionId") != mine]
+              and s.get("sessionId") != mine and checkable(s)]
     if not others:
         return None
     where = others[0].get("cwd") or "?"
@@ -3830,6 +3938,7 @@ def do_leave(server, name, identity, ask=False):
     owner_of_record = (recorded or {}).get("identity")
     if recorded is None or owner_of_record == identity:
         forget(name)
+        note_left(name, identity)
     else:
         print(f"  (this project's local record for #{name} belongs to "
               f"{owner_of_record or 'nobody named'}, not\n  {identity} — left "
@@ -4265,6 +4374,8 @@ def do_auto_reload(setting):
         # cannot operate is indistinguishable from one that is fine. Turning a
         # silent never-fires into a visible one is the whole fix.
         here = live_here()
+        if here is not None:
+            here = [s for s in here if checkable(s)]   # #37: not a ghost job
         if here is not None and len(here) > 1:
             print("WARNING: %d live sessions in this project right now, and "
                   "auto-reload\n  DECLINES whenever there is more than one — "
@@ -4374,6 +4485,8 @@ def do_reload(force=False, i_know=False):
     #
     # Askable now: the host lists live sessions with their cwd.
     here = live_here(project)
+    if here is not None:
+        here = [s for s in here if checkable(s)]   # #37: not a ghost job
     if here is not None and len(here) > 1 and not i_know:
         raise SystemExit(
             "refusing: the host reports %d live sessions in this project, and "
@@ -5131,6 +5244,12 @@ def report_who_is_home(project):
     ended hours ago — and until the host could be asked, those were the same
     line.
     """
+    # FIRST, because it changes what every line below means: "has fired" is
+    # about OTHER sessions in this checkout, and this one never loads the
+    # hooks at all (#38).
+    outside = started_outside(project)
+    if outside:
+        print("\n" + outside_note(outside, os.path.abspath(project)))
     here = live_here(project)
     if here is None:
         # Could not ask. Said out loud rather than skipped, because silence
@@ -5148,6 +5267,12 @@ def report_who_is_home(project):
     mine = session_id()
     for session in here:
         sid = session.get("sessionId") or "?"
+        if not checkable(session):
+            print("\nagent here: CANNOT TELL — %s (%s, session %s). Usually a "
+                  "background job\n  whose daemon has stopped; `claude agents` "
+                  "keeps listing it."
+                  % (NO_PROCESS, session.get("kind") or "unknown kind", sid))
+            continue
         it_is_me = " (this session)" if mine and sid == mine else ""
         # THE FULL ID, and it used to be `sid[:8]`. Somebody comparing this
         # line against a real session id matched nothing, concluded every
@@ -5168,7 +5293,8 @@ def report_who_is_home(project):
     # When a window reload mints a new id, the environment and the hook
     # payload disagree and neither is authoritative. This is a third source,
     # and it belongs to the host rather than to us.
-    if mine and not any((s.get("sessionId") or "") == mine for s in here):
+    if mine and not outside and not any((s.get("sessionId") or "") == mine
+                                        for s in here):
         print("  BUT THE HOST DOES NOT LIST THE SESSION THIS SHELL IS IN "
               "(%s).\n  Your environment and the host disagree about who you "
               "are. The rooms are\n  held by whichever id joined them, and "
@@ -5676,7 +5802,8 @@ def do_doctor(server):
               "depends on a hook.")
     elif not missing and not no_sessionstart and not deliver_no_start:
         print("Wiring looks right: both hooks are registered and both have fired "
-              "in this checkout.")
+              "in this checkout\n  (in some session here — `agent here` below "
+              "says whether this one can receive).")
 
     stamp = installed_fingerprint(project)
     # Compare against the tree they were WIRED FROM, not against this one.
@@ -6079,8 +6206,10 @@ def liveness_split(names, live):
     """
     if live is None:
         return [], [], sorted(names)
-    here = sorted(n for n in names if n in live)
-    return here, sorted(n for n in names if n not in live), []
+    proven = proven_live(live)
+    here = sorted(n for n in names if n in proven)
+    return (here, sorted(n for n in names if n not in live),
+            sorted(n for n in names if n in live and n not in proven))
 
 
 def liveness_json(names, live):
@@ -6264,8 +6393,9 @@ def do_channels(server, show_closed=False, as_json=False, mine=False,
             if away:
                 parts.append("away: %s" % ", ".join(away))
             if unsure:
-                parts.append("CANNOT TELL (host unreachable): %s"
-                             % ", ".join(unsure))
+                parts.append("CANNOT TELL (%s): %s"
+                             % ("host unreachable" if alive is None
+                                else NO_PROCESS, ", ".join(unsure)))
             print("    %s" % ("   ".join(parts) or "nobody"))
             print(f"    messages: {c.get('message_count', 0)}"
                   + (f"   done: {', '.join(done)}" if done else ""))
@@ -7037,6 +7167,10 @@ def do_setup(server, channel, identity, topic, max_messages, in_checkout=False):
 
     do_join(server, channel, identity, topic, max_messages, announce=False)
     remember(channel, identity, server)
+    # Not a refusal: a session above the repo reading transcripts is
+    # legitimate. It must not become a member that looks reachable unsaid.
+    if outside := started_outside(project):
+        print("\n" + outside_note(outside, project))
 
     exe = os.path.abspath(__file__)
     print(
@@ -7513,6 +7647,8 @@ def main() -> int:
                        briefing=getattr(args, "briefing", None))
         remember(args.channel, identity, server,
                  broadcast=bool(chan.get("broadcast")))
+        if outside := started_outside():
+            print("\n" + outside_note(outside, project_dir()))
         return 0
     if args.cmd == "sync":
         do_sync(server, repair=args.repair)
@@ -7579,7 +7715,8 @@ def main() -> int:
         print(invite(args.channel, chan.get("topic"), server))
         return 0
 
-    identity = identity_for(args.channel, getattr(args, "identity", None))
+    identity = identity_for(args.channel, getattr(args, "identity", None),
+                            rejoining=args.cmd == "say")
     if args.cmd == "say":
         args.text = message_text(args)
         rejoined = do_say(server, args.channel, identity, args.text,

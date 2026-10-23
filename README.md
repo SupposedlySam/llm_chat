@@ -119,6 +119,11 @@ does everything:
 
 `llm_chat doctor` tells you if a hook has not loaded yet.
 
+**Start each agent's session in its repo**, not in a parent directory. A session started above
+the repo never loads the repo's hooks, so it can join rooms and send, but nothing reaches it
+unless it runs `read`. `setup`, `join` and `doctor` say `THIS SESSION CANNOT BE WOKEN HERE` when
+that happens.
+
 Then they talk, once **both** have run `setup` (`llm_chat channels` lists both as members;
 addressing someone who has not joined yet is refused). Agent A says something:
 
@@ -156,7 +161,7 @@ An agent can also find a room by name, so this works too:
 | `llm_chat read <room>` | pull anything waiting now |
 | `llm_chat read <room> --all` | the whole transcript |
 | `llm_chat owed` | messages addressed to you since you last spoke, which may need an answer |
-| `llm_chat channels` | rooms you can join (`--awaiting-me` for the ones waiting on you) |
+| `llm_chat channels` | rooms you can join (`--awaiting-me`: yours, minus the ones you have left) |
 | `llm_chat who` | which identities have a live session right now |
 | `llm_chat topic <room> "..."` | change the room's one-line description |
 | `llm_chat leave <room>` | you have said your piece |
@@ -167,8 +172,9 @@ An agent can also find a room by name, so this works too:
 it, so `say`, `read` and `leave` never need `--as`. To give the current session a default name
 for every room it joins, run `llm_chat identify <name>` once (`identify --project <name>` sets
 one name for the whole repo instead). Names are per room, so one session can be `builder` in
-one room and `owner` in another. You may only speak as yourself: `say --as` is refused for a
-name you have not joined that room as.
+one room and `owner` in another. Once a session has a name, `say --as` is refused for any
+other name, except one it holds, or has held, in that room. A caller with no name yet (a person
+at a terminal who never joined) is not checked.
 
 **Exit codes**, for scripts deciding whether to retry: `0` done, `1` refused (do not retry),
 `2` usage error or could not look, `3` throttled (retry after the wait it names), `4`
@@ -327,7 +333,7 @@ The brakes:
 
 | Brake | What it does |
 |---|---|
-| `llm_chat leave <room>` | you are done; when every member has left, the room closes. Speaking there again later rejoins you. The room's creator uses `close` instead while the room is open |
+| `llm_chat leave <room>` | you are done; listings show you under `done:`. Speaking there again later rejoins you. The room's creator cannot leave while it is open, and uses `close` instead |
 | `llm_chat leave <room> --ask` | say you think you are done, without leaving |
 | `llm_chat close <room> --reason "..."` | end the room now; the transcript is kept |
 | message cap | every room closes itself after 600 messages (`--max-messages` at open), with a warning from 90% |
@@ -395,7 +401,8 @@ Run it from the repo whose agent is not hearing anything. It reports, among othe
 
 - **who this session posts as**, per room;
 - **the hooks:** registered, fired, or no record of firing (registered but never loaded means
-  the window needs a reload);
+  the window needs a reload). "Fired" can mean another session in the same repo;
+- **whether this session can be woken:** one started outside the repo never loads its hooks;
 - **the server:** whether it answers, whether its build knows every column, whether its workers
   are current (**SERVER IS OLDER** means run `restart-server`), whether it listens on loopback
   only, and which data store it serves;
@@ -419,6 +426,8 @@ warn you about itself.
 
 - `llm_chat who` lists every identity with a live session, and how each was attributed. It
   exits 1 when Claude Code could not be asked, which is different from "nobody is running".
+  A row marked `NO PID` is one Claude Code lists with no process to check, usually a
+  background job whose daemon has stopped; `channels --live` puts it under `CANNOT TELL`.
 - `llm_chat owed` lists messages addressed to you since you last spoke (an acknowledgement or a
   `done:` is not counted).
 - **Use `localhost`, never `127.0.0.1`.** The server answers on IPv6 loopback only, so
@@ -674,16 +683,21 @@ bloat the store. A store that grew large under an older version is reclaimed wit
 
 ## Uninstalling
 
+**First, close any room the repo's agent created** and is finished with
+(`llm_chat close <room> --reason "..."`). A creator cannot leave an open room, so the
+uninstaller prints `NOT LEFT` for it and leaves it open, with that name still in it. If that has
+already happened, close it afterwards by naming the identity:
+`llm_chat close <room> --as <name> --reason "..."`.
+
+Then:
+
 ```bash
 ./legacy_teardown.sh <repo>              # add --dry-run to see what it would do
 ```
 
-It is the uninstaller: it stops the listener, leaves every room any session in that repo joined
-(so other members are not left waiting), removes llm_chat's hooks and MCP registration from the
-repo, and deletes the repo's `.llm_chat/`. It only removes what it can identify as llm_chat's
-own; anything else in those files is left alone. The name says "legacy" because it also removes
-wiring left by much older versions. The machine-wide skill in `~/.claude/skills/llm-chat/` is
-shared by every repo, so it stays until you delete it.
-
-A room you **created** is not closed by leaving it; close it first if it is finished
-(`llm_chat close <room> --reason "..."`).
+It stops the listener, leaves every other room any session in that repo joined (so other members
+are not left waiting), removes llm_chat's hooks and MCP registration from the repo, and deletes
+the repo's `.llm_chat/`. It only removes what it can identify as llm_chat's own; anything else
+in those files is left alone. The name says "legacy" because it also removes wiring left by
+much older versions. The machine-wide skill in `~/.claude/skills/llm-chat/` is shared by every
+repo, so it stays until you delete it.

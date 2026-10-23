@@ -1776,6 +1776,115 @@ class DoctorTest(unittest.TestCase):
         self.hosts([])
         self.assertEqual(cli.live_identities(), {})
 
+    # ── #37: a row the host lists with NO PROCESS to check ──────────────────
+
+    def ghost(self, identity="backcompat"):
+        """The row from #37: a background job whose daemon died 25 days
+        earlier, still listed by `claude agents --json`, with no pid."""
+        base = os.path.join(self.project, ".llm_chat", "sessions", "ghost")
+        self.joined_at(base, {"room": {"identity": identity}})
+        self.hosts([{"id": "e92b1d5d", "cwd": self.project, "kind":
+                     "background", "sessionId": "ghost", "state": "blocked"}])
+
+    def test_a_row_with_NO_PID_is_marked_unchecked(self):
+        self.ghost()
+        [row] = cli.host_sessions()
+        self.assertTrue(row.get("llm_chat_unchecked"))
+
+    def test_a_row_WITH_a_pid_is_not(self):
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": "s"}])
+        [row] = cli.host_sessions()
+        self.assertFalse(row.get("llm_chat_unchecked"))
+
+    def test_channels_live_never_puts_a_ghost_under_HERE(self):
+        """#37: `backcompat` sat under **here** in #announcements while every
+        real agent was stopped. It is not away either — the host lists it —
+        so it goes where CANNOT TELL already goes."""
+        self.ghost()
+        here, away, unknown = cli.liveness_split(
+            ["backcompat", "gone"], cli.live_identities())
+        self.assertEqual(here, [])
+        self.assertEqual(away, ["gone"])
+        self.assertEqual(unknown, ["backcompat"])
+
+    def test_say_does_not_report_a_ghost_as_WOKEN(self):
+        self.ghost()
+        roster = [{"identity": "me"}, {"identity": "backcompat"}]
+        reach = cli.say_reach("me", "backcompat", {"broadcast": False}, roster)
+        self.assertNotIn("wakes backcompat", reach)
+        self.assertIn("no process to check", reach)
+
+    def test_who_names_WHY_the_row_cannot_be_trusted(self):
+        """`pid ?` was the tell, printed as a missing field."""
+        self.ghost()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_who()
+        self.assertIn("no process to check", out.getvalue())
+        self.assertNotIn("pid ?", out.getvalue())
+
+    def test_doctor_does_not_say_AGENT_HERE_YES_for_a_ghost(self):
+        self.ghost()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.report_who_is_home(self.project)
+        self.assertNotIn("agent here: yes", out.getvalue())
+        self.assertIn("no process to check", out.getvalue())
+
+    # ── #38: a session started ABOVE the repo never loads its hooks ─────────
+
+    def as_session(self, sid):
+        saved = os.environ.get("CLAUDE_CODE_SESSION_ID")
+        os.environ["CLAUDE_CODE_SESSION_ID"] = sid
+        self.addCleanup(lambda: os.environ.__setitem__(
+            "CLAUDE_CODE_SESSION_ID", saved) if saved is not None
+            else os.environ.pop("CLAUDE_CODE_SESSION_ID", None))
+
+    def test_a_session_started_ABOVE_the_project_is_named(self):
+        self.as_session("sid-up")
+        above = os.path.dirname(self.project)
+        self.hosts([{"pid": 9, "cwd": above, "sessionId": "sid-up"},
+                    {"pid": 8, "cwd": self.project, "sessionId": "other"}])
+        self.assertEqual(cli.started_outside(self.project), above)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.report_who_is_home(self.project)
+        self.assertIn("THIS SESSION CANNOT BE WOKEN HERE", out.getvalue())
+        self.assertNotIn("HOST DOES NOT LIST", out.getvalue(),
+                         "the cause is known, so the unexplained line goes")
+
+    def test_a_session_IN_the_project_or_below_it_is_not(self):
+        self.as_session("sid-in")
+        for cwd in (self.project, os.path.join(self.project, "lib")):
+            with self.subTest(cwd=cwd):
+                self.hosts([{"pid": 9, "cwd": cwd, "sessionId": "sid-in"}])
+                self.assertIsNone(cli.started_outside(self.project))
+
+    def test_CANNOT_ASK_or_UNLISTED_says_nothing(self):
+        """A guess here would tell a healthy session to restart."""
+        self.as_session("sid-x")
+        self.hosts([], returncode=1)
+        self.assertIsNone(cli.started_outside(self.project))
+        self.hosts([{"pid": 9, "cwd": "/", "sessionId": "someone-else"}])
+        self.assertIsNone(cli.started_outside(self.project))
+
+    def test_join_SAYS_it_and_still_joins(self):
+        """Not a refusal: reading transcripts from above is legitimate."""
+        self.as_session("sid-up")
+        fake = FakeServer()
+        real_call = cli.call
+        cli.call = fake.call
+        self.addCleanup(lambda: setattr(cli, "call", real_call))
+        self.hosts([{"pid": 9, "cwd": "/", "sessionId": "sid-up"}])
+        saved_argv = sys.argv
+        self.addCleanup(lambda: setattr(sys, "argv", saved_argv))
+        sys.argv = ["llm_chat", "join", "room", "--as", "me"]
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.main()
+        self.assertIn("CANNOT BE WOKEN HERE", out.getvalue())
+        self.assertIsNotNone(fake.get_membership("room", "me"))
+
     def test_a_session_the_host_describes_incompletely_is_SKIPPED(self):
         """No cwd or no sessionId means there is nowhere to look. Guessing
         would attribute a live session to whichever project asked."""
