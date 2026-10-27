@@ -1,0 +1,4 @@
+{
+  "name": "llm_chat",
+  "install": "./install.sh {consumer}"
+}
