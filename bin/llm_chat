@@ -431,6 +431,35 @@ def host_sessions():
 
 
 NO_PROCESS = "host lists it, no process to check"
+REMOTE_FRESH_SEC = 120
+
+
+def remote_presence_path(server=None):
+    """Where `bin/llm-chat-bridge` writes the OTHER machines' live names.
+
+    Beside the machine store rather than in a project, because every repo's
+    CLI on this machine must read the same answer. Duplicated in the bridge
+    as `presence_path`; a test holds the two together.
+    """
+    return machine_store(port_of(server or DEFAULT_SERVER)) + ".remote.json"
+
+
+def remote_live(server=None):
+    """{name: seen_at} for proxy members a bridge says are live elsewhere.
+
+    The local host cannot see another machine, so without this every proxy
+    reads as "no live session" — which agents act on. A file older than
+    REMOTE_FRESH_SEC means the bridge stopped, and then nothing remote is
+    claimed: not knowing is reported as not live HERE, never as live.
+    """
+    record = _read_json(remote_presence_path(server)) or {}
+    updated = record.get("updated") or 0
+    if time.time() - updated > REMOTE_FRESH_SEC:
+        return {}
+    names = dict(record.get("live") or {})
+    if record.get("bridge"):
+        names[record["bridge"]] = updated      # the bridge itself is running
+    return names
 
 
 def checkable(session):
@@ -2602,6 +2631,13 @@ def live_identities():
             how = "project joined.json (inferred)"
         if name:
             add(name, waiting[0], how)
+    # OTHER MACHINES, as their bridges publish them. Marked, so `who` can say
+    # where the claim came from rather than print a pid that is not ours.
+    for name in remote_live():
+        live.setdefault(name, []).append({
+            "sessionId": None, "cwd": None, "pid": None,
+            "llm_chat_remote": True,
+            "llm_chat_how": ["remote: published by its machine's bridge"]})
     return live
 
 
@@ -2650,6 +2686,7 @@ def do_who(as_json=False):
                            # #37: the host listed it with no process behind
                            # it, so it may be a background job long dead.
                            "unchecked": not checkable(s),
+                           "remote": bool(s.get("llm_chat_remote")),
                            "cwd": s.get("cwd"),
                            "name": s.get("name"),
                            # HOW, and `inferred` derived from it rather than
@@ -2675,6 +2712,8 @@ def do_who(as_json=False):
             print("  session %s  %s  %s\n    how: %s"
                   % (s.get("sessionId") or "?",
                      "pid %s" % s["pid"] if checkable(s) and s.get("pid")
+                     else "REMOTE, via the hub bridge"
+                     if s.get("llm_chat_remote")
                      else "NO PID: %s" % NO_PROCESS,
                      s.get("cwd") or "?",
                      ", ".join(s.get("llm_chat_how") or ["?"])))

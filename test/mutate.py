@@ -320,6 +320,125 @@ MUTATIONS = [
      '    _write_left(record)',
      "the same: nothing remembers the name, so a plain `say` is refused"),
 
+    # ── the cross-machine bridge and its hub ────────────────────────────────
+    ("the bridge does not send a proxy's words back up", "bin/llm-chat-bridge",
+     '            if sender in st["proxies"] or sender == self.reader:',
+     '            if sender == self.reader:',
+     "Morgan's message, posted on Jonah's Mac as morgan.owner, goes back up "
+     "as jonah.morgan.owner and bounces between the machines forever"),
+    ("the bridge does not post its own machine's messages down",
+     "bin/llm-chat-bridge",
+     '            if message.get("origin") == self.ns:',
+     '            if False:',
+     "every message an agent sends comes back into its own room under a "
+     "proxy name"),
+    ("the up mark never passes a message the hub refused",
+     "bin/llm-chat-bridge",
+     '                break\n            st["up"] = message["seq"]',
+     '                pass\n            st["up"] = message["seq"]',
+     "a hub outage silently drops every message sent during it"),
+    ("the down mark never passes a message that did not post",
+     "bin/llm-chat-bridge",
+     '            if not self.deliver(room, message):\n                break',
+     '            if not self.deliver(room, message):\n                pass',
+     "a local refusal drops the other machine's message for good"),
+    ("a local name goes up under this machine's namespace",
+     "bin/llm-chat-bridge",
+     '    return ",".join(n if n in proxies else "%s.%s" % (namespace, n)',
+     '    return ",".join(n if True else "%s.%s" % (namespace, n)',
+     "`--to wcs` reaches the hub unqualified, so nobody on the far side is "
+     "the addressee"),
+    ("this machine's names come down unqualified", "bin/llm-chat-bridge",
+     '            local.append(name[len(namespace) + 1:])',
+     '            local.append(name)',
+     "`--to jonah.wcs` is refused on Jonah's Mac, where the agent is `wcs`"),
+    ("--to-none survives the crossing", "bin/llm-chat-bridge",
+     '        return ["--to-none"]',
+     '        return []',
+     "a note meant to wake nobody wakes the whole room on the other machine"),
+    ("a topic notice is replayed as a topic change", "bin/llm-chat-bridge",
+     '        if text.startswith("Topic changed to: "):',
+     '        if False:',
+     "the far side gets the notice text and keeps the old topic"),
+    ("a broadcast room is never bridged", "bin/llm-chat-bridge",
+     '            return True\n        return False\n\n    def ensure_reader',
+     '            return False\n        return False\n\n    def ensure_reader',
+     "#learnings-style rooms leave the machine, carrying every agent's posts"),
+    ("joining starts the bridge at the room's end", "bin/llm-chat-bridge",
+     '        st["up"] = count',
+     '        st["up"] = 0',
+     "the whole backlog from before anyone agreed to share it is shipped"),
+    ("the bridge remembers its proxies", "bin/llm-chat-bridge",
+     '        st["proxies"].append(name)',
+     '        pass',
+     "without the list, the echo guard has nothing to compare against"),
+    ("a member is announced, not said", "bin/llm-chat-bridge",
+     '                    "from": "%s.%s" % (self.ns, name), "kind": "join",',
+     '                    "from": "%s.%s" % (self.ns, name), "kind": "say",',
+     "every agent's arrival is posted on the other machine as a message "
+     "that wakes the room"),
+    ("an announcement creates the proxy and posts nothing",
+     "bin/llm-chat-bridge",
+     '            return True          # the proxy above is the whole effect',
+     '            pass',
+     "the same noise, from the receiving side"),
+    ("a remote leave is replayed as a leave", "bin/llm-chat-bridge",
+     '            code, out, err = self.cli(["leave", room, "--as", proxy])',
+     '            code, out, err = 0, "", ""',
+     "a departed remote agent stays a member who is addressed and woken"),
+    ("an addressee who left does not wedge the room", "bin/llm-chat-bridge",
+     '            if code == EXIT_REFUSED and audience not in',
+     '            if False and audience not in',
+     "one message to a departed member blocks every later one, forever"),
+    ("a bridge never reports its own machine as remote", "bin/llm-chat-bridge",
+     '                  if row.get("origin") != self.ns',
+     '                  if True',
+     "local names get a second, remote liveness claim from the hub"),
+    ("a stopped bridge's presence claims nothing", "bin/llm_chat",
+     '    if time.time() - updated > REMOTE_FRESH_SEC:',
+     '    if False:',
+     "remote agents read as live for ever after their bridge stopped"),
+    ("the hub refuses a name outside the machine's namespace",
+     "hub/llm_chat_hub.py",
+     '            if not name.startswith(ns + "."):',
+     '            if False:',
+     "either machine can post as the other's agents"),
+    ("a message's sender is checked against the namespace",
+     "hub/llm_chat_hub.py",
+     '        self.check_names(ns, [sender])',
+     '        pass',
+     "the same forgery, through the message path"),
+    ("presence is checked against the namespace", "hub/llm_chat_hub.py",
+     '                self.check_names(ns, names)',
+     '                pass',
+     "a machine can mark the other's agents live or dead"),
+    ("the room list limits the hub", "hub/llm_chat_hub.py",
+     '        if self.rooms is not None and name not in self.rooms:',
+     '        if False:',
+     "a bridge misconfigured with a working room ships it to the hub"),
+    ("since means strictly after", "hub/llm_chat_hub.py",
+     '"extra, created_at FROM messages WHERE room=? AND seq>? "',
+     '"extra, created_at FROM messages WHERE room=? AND seq>=? "',
+     "every poll re-delivers the last message"),
+    ("an RS256 signature is actually checked", "hub/llm_chat_hub.py",
+     '    return em == b"\\x00\\x01" + b"\\xff" * pad + b"\\x00" + digest',
+     '    return True',
+     "any forged Access token is accepted"),
+    ("an Access token for another application is refused",
+     "hub/llm_chat_hub.py",
+     '        if self.audience not in (aud if isinstance(aud, list) else [aud]):',
+     '        if False:',
+     "a token Access issued for some other app opens this hub"),
+    ("an Access token's namespace comes from the mapping",
+     "hub/llm_chat_hub.py",
+     '        ns = mapping.get(client_id)',
+     '        ns = "jonah"',
+     "every valid credential speaks for one machine"),
+    ("dev-insecure demands a namespace header", "hub/llm_chat_hub.py",
+     '    if not NAMESPACE_OK.match(ns):',
+     '    if False:',
+     "a request with no namespace is served as the empty namespace"),
+
     ("speaking in a room you left rejoins you", "bin/llm_chat",
      'rejoined = bool(me.get("done"))',
      'rejoined = False',
@@ -2344,6 +2463,85 @@ MUTATIONS = [
 # honest "should be swept, is not yet" is worth more than a false exclusion,
 # because a false one is exactly the gaming this whole family of checks is about.
 NOT_SWEPT = {
+    # ── the bridge and hub: plumbing, each named for why it is not swept ────
+    "bin/llm_chat:remote_presence_path": "a path; asserted equal to the "
+        "bridge's copy",
+    "bin/llm-chat-bridge:__init__": "constructors: config and header "
+        "assembly, exercised by every bridge test",
+    "bin/llm-chat-bridge:cli": "routes each call to its identity's project; "
+        "every relay test fails without it (the impersonation refusal)",
+    "bin/llm-chat-bridge:cycle": "the loop body; every bridge test drives it",
+    "bin/llm-chat-bridge:check": "asserted directly over HTTP: reachable, "
+        "namespace mismatch, and no config",
+    "bin/llm-chat-bridge:main": "--help and --check are run under the "
+        "suite; the relay loop itself is UNEXECUTED here and was run end to "
+        "end by hand (smoke test in the commit)",
+    "bin/llm-chat-bridge:load_config": "asserted directly: absent, defaults, "
+        "missing keys named, bad JSON",
+    "bin/llm-chat-bridge:read_state": "persistence plumbing; every "
+        "multi-cycle test reads it back",
+    "bin/llm-chat-bridge:write_state": "persistence plumbing; every "
+        "multi-cycle test reads it back",
+    "bin/llm-chat-bridge:room_state": "a setdefault; every pump uses it",
+    "bin/llm-chat-bridge:save": "one call to write_state",
+    "bin/llm-chat-bridge:request": "run over real HTTP against a loopback "
+        "hub, success and refusal",
+    "bin/llm-chat-bridge:run_cli": "run as a real subprocess; the relay "
+        "tests replace it at the seam",
+    "bin/llm-chat-bridge:local_live": "SHOULD BE SWEPT — the proxy exclusion "
+        "is asserted only through the remote-liveness test",
+    "bin/llm-chat-bridge:publish_presence": "one PUT of local_live's answer",
+    "bin/llm-chat-bridge:presence_path": "a path; asserted equal to the CLI's "
+        "copy",
+    "bin/llm-chat-bridge:classify": "swept through the topic mutation; leave "
+        "and close are asserted by their replay tests",
+    "bin/llm-chat-bridge:deliver": "swept through the leave and departed-"
+        "addressee mutations",
+    "bin/llm-chat-bridge:pump_up": "swept through the echo and up-mark "
+        "mutations",
+    "bin/llm-chat-bridge:pump_down": "swept through the origin and down-mark "
+        "mutations",
+    "hub/llm_chat_hub.py:__init__": "constructors and the schema",
+    "hub/llm_chat_hub.py:append": "idempotency is defended twice — the "
+        "lookup and a UNIQUE constraint — so a mutation can only crash, which "
+        "is not a measurement; asserted directly",
+    "hub/llm_chat_hub.py:set_presence": "SHOULD BE SWEPT — replace-not-merge "
+        "has no test yet",
+    "hub/llm_chat_hub.py:presence": "a SELECT",
+    "hub/llm_chat_hub.py:b64url": "padding arithmetic; every token test "
+        "fails without it",
+    "hub/llm_chat_hub.py:_fetch": "a urlopen and a parse, run against a "
+        "file URL; the token tests replace it at the seam",
+    "hub/llm_chat_hub.py:key": "the JWKS cache; the unknown-key case is "
+        "asserted directly",
+    "hub/llm_chat_hub.py:handle": "routing; swept through the presence "
+        "check, and every endpoint has a test",
+    "hub/llm_chat_hub.py:build_from_env": "asserted directly: both modes "
+        "build, and each bad config is refused",
+    "hub/llm_chat_hub.py:main": "binds and serves forever; the loopback "
+        "refusal is asserted directly, and a mutation would hang the suite",
+    "hub/llm_chat_hub.py:make_handler": "HTTP plumbing, run over a real "
+        "loopback socket in OverHttpTest",
+    "hub/llm_chat_hub.py:_serve": "HTTP plumbing, run over a real loopback "
+        "socket in OverHttpTest",
+    "hub/llm_chat_hub.py:do_GET": "one line each",
+    "hub/llm_chat_hub.py:do_POST": "one line each",
+    "hub/llm_chat_hub.py:do_PUT": "one line each",
+    "hub/llm_chat_hub.py:log_message": "logging; never bodies, by reading",
+    "hub/llm_chat_hub.py:namespace_for": "the closure access_namespaces "
+        "returns; swept there",
+    "hub/llm_chat_hub.py:since": "swept through the strictly-after mutation",
+    "hub/llm_chat_hub.py:room": "swept through the room-list mutation",
+    "hub/llm_chat_hub.py:message": "swept through the sender-namespace "
+        "mutation",
+    "hub/llm_chat_hub.py:check_names": "swept through the namespace mutation",
+    "hub/llm_chat_hub.py:claims": "swept through the audience mutation; "
+        "expiry, issuer and alg are asserted directly",
+    "hub/llm_chat_hub.py:rs256_valid": "swept through the signature mutation",
+    "hub/llm_chat_hub.py:access_namespaces": "swept through the mapping "
+        "mutation",
+    "hub/llm_chat_hub.py:insecure_namespaces": "swept through the header "
+        "mutation",
     # Asserted directly, so a mutation would be redundant rather than absent:
     # these have tests that fail the moment their behaviour changes.
     "bin/llm_chat:sdk_version": "asserted directly: a real SDK root and a "

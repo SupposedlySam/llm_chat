@@ -1,0 +1,620 @@
+#!/usr/bin/env python3
+"""Bridge named llm_chat rooms between machines, through a hub.
+
+    llm-chat-bridge --check        # is the wiring live? sends nothing
+    llm-chat-bridge                # run the bridge (keep it running)
+
+WHAT IT IS FOR. Two people's agents, on two machines, in one room. Every
+machine keeps its own llm_chat server — loopback, no authentication, hooks and
+wakes in a millisecond — and this process copies chosen rooms to a hub
+(`hub/llm_chat_hub.py`) and copies the other machines' messages back down.
+Only rooms named in the config ever leave the machine.
+
+NAMES. On the hub every name is `<machine>.<name>`. A remote agent appears in
+the local room as a PROXY member under that full name (`morgan.owner`), joined
+by this bridge, so `say --to morgan.owner` is an ordinary addressed message:
+it is stored with that audience, carried up, and posted on Morgan's machine as
+`--to owner`, which rings Morgan's doorbell there. Wakes stay local on both
+ends; only the log travels.
+
+THE LOOP, AND HOW IT CANNOT EAT ITSELF:
+
+  up    Local messages are read with `read --since <mark> --peek`, so this
+        bridge's reader never moves a cursor anyone else depends on. Anything
+        from a proxy THIS bridge created is an echo and is skipped; so is
+        anything from the reader itself.
+  down  Hub messages whose origin is this machine are skipped. Everything
+        else is posted locally under its proxy name.
+
+  Each guard alone stops the loop; both are here because "the only thing
+  standing between this and an infinite loop" deserves two.
+
+MARKS NEVER PASS A FAILURE. Each direction keeps a high-water mark, and a
+message that did not relay stops the pump there; the next poll retries it.
+The hub is idempotent on (origin, local seq), so a retry after a lost response
+is not a second message. This is the Slack bridge's rule, learnt there.
+
+WHAT IS MIRRORED. Messages, with their audience; departures (`leave`), topic
+changes and closes, replayed with the same verbs so each side's room behaves
+natively. NOT mirrored: briefings (each machine's room keeps its own house
+rules, and a briefing written by another person's agent would otherwise
+arrive looking like this room's own), and Slack threads (a Slack ts means
+nothing on the other machine). Broadcast rooms are refused outright.
+
+LIVENESS. `who`, `channels --live` and `say`'s reach line ask the local host,
+which cannot see Morgan's Mac — every proxy would read as "no live session".
+So each bridge publishes which of its members are live, and writes what the
+other machines published to `<store>/port-<port>.remote.json`, which the CLI
+reads for proxy names. A stale file (bridge stopped) means remote names fall
+back to "not live here", which is the honest answer.
+
+CONFIG, `.llm_chat/bridge.json` in this checkout (gitignored):
+
+    {"hub": "https://hub.example.com", "namespace": "jonah",
+     "rooms": ["wcs-desk"],
+     "access": {"client_id": "<id>.access",
+                "client_secret_command": ["security", "find-generic-password",
+                                          "-s", "llm-chat-hub", "-w"]},
+     "poll_sec": 3}
+
+`client_secret` may be given inline instead of `client_secret_command`. For a
+hub run locally in dev-insecure mode, use `"dev_namespace_header": true` and
+no `access`.
+
+CONTENT LEAVES THE MACHINE, as with the Slack bridge: bridge a room opened for
+the purpose, never a working channel. And the trust boundary now crosses
+people — messages from another human's agents arrive in your agents' context.
+They are labelled as another agent's input, as everything here is.
+"""
+import json
+import os
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+CLI = os.path.join(HERE, "llm_chat")
+ROOT = os.path.dirname(HERE)
+STATE = os.path.join(ROOT, ".llm_chat")
+CONFIG = os.path.join(STATE, "bridge.json")
+STATE_FILE = os.path.join(STATE, "bridge-state.json")
+# Every CLI call this bridge makes runs as THIS project, never the calling
+# repo's: proxy memberships must not land in any real session's joined.json,
+# where that session's hooks would start polling them.
+PROJECT = os.path.join(STATE, "bridge-project")
+DEFAULT_READER = "hub-bridge"
+DEFAULT_POLL_SEC = 3
+PRESENCE_EVERY_SEC = 30
+PRESENCE_FRESH_SEC = 90
+STORE_ENV = "LLM_CHAT_STORE"
+AUDIENCE_ALL, AUDIENCE_NONE = "*", "-"
+EXIT_REFUSED = 1
+
+
+# ── config and state ─────────────────────────────────────────────────────────
+def load_config(path=CONFIG):
+    try:
+        with open(path) as f:
+            config = json.load(f)
+    except OSError:
+        return None
+    except ValueError as problem:
+        raise SystemExit("%s is not valid JSON: %s" % (path, problem))
+    missing = [k for k in ("hub", "namespace", "rooms") if not config.get(k)]
+    if missing:
+        raise SystemExit("%s is missing %s" % (path, ", ".join(missing)))
+    config.setdefault("reader", DEFAULT_READER)
+    config.setdefault("poll_sec", DEFAULT_POLL_SEC)
+    return config
+
+
+def read_state(path=STATE_FILE):
+    try:
+        with open(path) as f:
+            return json.load(f) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_state(state, path=STATE_FILE):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".bridge-")
+    with os.fdopen(fd, "w") as f:
+        json.dump(state, f, indent=2)
+    os.replace(tmp, path)
+
+
+def room_state(state, room):
+    st = state.setdefault(room, {"up": None, "down": 0, "proxies": []})
+    st.setdefault("announced", [])
+    return st
+
+
+# ── the local llm_chat, through its CLI (one reader of every rule) ───────────
+def run_cli(args, server=None, text=None, project=PROJECT):
+    """(exit code, stdout, stderr) of one CLI call, as this bridge.
+
+    No session id: a relay is not an agent turn, so the confirmation gate
+    (which holds loop-shaped AGENT messages) must not hold it — the original
+    sender was already gated on its own machine.
+
+    `project` is per IDENTITY (see Bridge.cli): the CLI remembers one name
+    per room per project and refuses to speak as any other, so a bridge
+    speaking for several remote agents from one project would be refused as
+    an impersonator after its first join. It is not one; it is several
+    proxies, and each gets its own record.
+    """
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("CLAUDE_CODE_SESSION_ID", "LLM_CHAT_SENDER")}
+    env["CLAUDE_PROJECT_DIR"] = project
+    os.makedirs(project, exist_ok=True)
+    command = [sys.executable, CLI] + (["--server", server] if server else [])
+    path = None
+    if text is not None:
+        fd, path = tempfile.mkstemp(dir=project, prefix=".relay-")
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        args = list(args) + ["--file", path]
+    try:
+        done = subprocess.run(command + list(args), capture_output=True,
+                              text=True, timeout=30, env=env)
+        return done.returncode, done.stdout, done.stderr
+    except Exception as problem:
+        return 2, "", str(problem)
+    finally:
+        if path:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+
+
+# ── the hub ──────────────────────────────────────────────────────────────────
+class Hub:
+    def __init__(self, config):
+        self.base = config["hub"].rstrip("/")
+        self.headers = {"Content-Type": "application/json"}
+        access = config.get("access") or {}
+        if access:
+            secret = access.get("client_secret")
+            if not secret and access.get("client_secret_command"):
+                done = subprocess.run(access["client_secret_command"],
+                                      capture_output=True, text=True,
+                                      timeout=10)
+                secret = done.stdout.strip() if done.returncode == 0 else ""
+            if not access.get("client_id") or not secret:
+                raise SystemExit("bridge.json: access needs client_id and a "
+                                 "secret (client_secret or "
+                                 "client_secret_command) — got none")
+            self.headers["CF-Access-Client-Id"] = access["client_id"]
+            self.headers["CF-Access-Client-Secret"] = secret
+        if config.get("dev_namespace_header"):
+            self.headers["X-Hub-Namespace"] = config["namespace"]
+
+    def request(self, method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(self.base + path, data=data,
+                                         method=method, headers=self.headers)
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                raw = response.read()
+            try:
+                return response.status, json.loads(raw or b"{}")
+            except ValueError:
+                # Access answers an unaccepted service token with its own
+                # HTML login page, and that page is a 200. It is a refusal.
+                return 401, {"error": "HTTP %d but not JSON — most likely "
+                                      "Cloudflare Access's login page, which "
+                                      "means it did not accept this "
+                                      "service token" % response.status}
+        except urllib.error.HTTPError as refused:
+            try:
+                payload = json.loads(refused.read() or b"{}")
+            except ValueError:
+                payload = {"error": "HTTP %d (not JSON — is Access in front "
+                                    "and the credential right?)" % refused.code}
+            return refused.code, payload
+        except (urllib.error.URLError, OSError) as unreachable:
+            # Status 0: not an answer at all. A hub that is down for a
+            # minute must not kill the bridge; the marks hold and the next
+            # poll retries.
+            return 0, {"error": "hub unreachable: %s"
+                                % getattr(unreachable, "reason", unreachable)}
+
+
+# ── names and audiences across the boundary ──────────────────────────────────
+def audience_up(audience, namespace, proxies):
+    if audience in (None, AUDIENCE_ALL, AUDIENCE_NONE):
+        return audience
+    return ",".join(n if n in proxies else "%s.%s" % (namespace, n)
+                    for n in audience.split(","))
+
+
+def audience_down(audience, namespace):
+    """(local audience, remote names that must exist here as proxies)."""
+    if audience in (None, AUDIENCE_ALL, AUDIENCE_NONE):
+        return audience, []
+    local, remote = [], []
+    for name in audience.split(","):
+        if name.startswith(namespace + "."):
+            local.append(name[len(namespace) + 1:])
+        else:
+            local.append(name)
+            remote.append(name)
+    return ",".join(local), remote
+
+
+def audience_flags(audience):
+    if audience is None:
+        return []
+    if audience == AUDIENCE_ALL:
+        return ["--to-all"]
+    if audience == AUDIENCE_NONE:
+        return ["--to-none"]
+    return ["--to", audience]
+
+
+def classify(message, room):
+    """(kind, extra) for a local message: the passive notices that `leave`,
+    `topic` and `close` post are replayed on the far side with the same verb,
+    so they are recognised by their exact shape, and only when unaddressed."""
+    sender, text = message.get("from") or "", message.get("text") or ""
+    if message.get("audience") == AUDIENCE_NONE:
+        if text.startswith("%s is done here — nothing further" % sender):
+            return "leave", {}
+        if text.startswith("Topic changed to: "):
+            topic = text[len("Topic changed to: "):].split("  (was: ")[0]
+            return "topic", {"topic": topic}
+        if text.startswith("#%s is now CLOSED — " % room):
+            reason = text.splitlines()[0].split(" — ", 1)[1]
+            return "close", {"reason": reason}
+    return "say", {}
+
+
+# ── the pumps ────────────────────────────────────────────────────────────────
+class Bridge:
+    def __init__(self, config, hub=None, cli=None, state_path=STATE_FILE,
+                 projects=PROJECT):
+        self.config = config
+        self.ns = config["namespace"]
+        self.reader = config["reader"]
+        self.server = config.get("server")
+        self.hub = hub or Hub(config)
+        self._cli = cli or run_cli
+        self.state_path = state_path
+        self.projects = projects
+        self.state = read_state(state_path)
+
+    def cli(self, args, text=None):
+        """One CLI call, in the project of the identity it acts `--as`."""
+        who = args[args.index("--as") + 1] if "--as" in args else self.reader
+        return self._cli(args, self.server, text,
+                         os.path.join(self.projects, who))
+
+    def save(self):
+        write_state(self.state, self.state_path)
+
+    def refuse_broadcast(self, room):
+        """True when the room must not be bridged: it is a broadcast room."""
+        code, out, _ = self.cli(["channels", "--json"])
+        if code != 0:
+            return False
+        try:
+            rooms = {c.get("name"): c for c in json.loads(out)}
+        except ValueError:
+            return False
+        if rooms.get(room, {}).get("broadcast"):
+            print("REFUSING to bridge #%s: it is a broadcast room, and those "
+                  "reach every agent\n  on the machine. Bridge a room opened "
+                  "for the purpose." % room, file=sys.stderr)
+            return True
+        return False
+
+    def ensure_reader(self, room):
+        """Join the room as this bridge's reader, creating it if needed, and
+        start the up-mark at the room's current end — like any join, the
+        bridge does not ship a backlog nobody asked to share."""
+        st = room_state(self.state, room)
+        if st["up"] is not None:
+            return True
+        code, out, err = self.cli(["join", room, "--as", self.reader])
+        if code != 0:
+            print("cannot join #%s as %s: %s" % (room, self.reader,
+                                                 (err or out).strip()),
+                  file=sys.stderr)
+            return False
+        code, out, _ = self.cli(["channels", "--json", "--all"])
+        count = 0
+        if code == 0:
+            for c in json.loads(out or "[]"):
+                if c.get("name") == room:
+                    count = c.get("message_count") or 0
+        st["up"] = count
+        self.save()
+        return True
+
+    def ensure_proxy(self, room, name):
+        st = room_state(self.state, room)
+        if name in st["proxies"]:
+            return True
+        code, out, err = self.cli(["join", room, "--as", name])
+        if code != 0:
+            print("cannot add proxy %s to #%s: %s"
+                  % (name, room, (err or out).strip()), file=sys.stderr)
+            return False
+        st["proxies"].append(name)
+        self.save()
+        return True
+
+    def announce_members(self, room):
+        """Tell the hub who is in this room, once per member.
+
+        Without this a remote agent cannot be addressed until it has SPOKEN:
+        its proxy only appears here when one of its messages arrives, and
+        until then `say --to morgan.owner` is refused as "not in the room".
+        The announcement creates the proxy on the far side and posts nothing
+        there. Its origin_seq counts DOWN from -1, so it can never collide
+        with a message's local seq, which counts up from 1.
+        """
+        st = room_state(self.state, room)
+        code, out, _ = self.cli(["channels", "--json"])
+        if code != 0:
+            return 0
+        try:
+            members = next((c.get("members") or [] for c in json.loads(out)
+                            if c.get("name") == room), [])
+        except ValueError:
+            return 0
+        sent = 0
+        for name in members:
+            if name in st["proxies"] or name == self.reader \
+                    or name in st["announced"]:
+                continue
+            status, payload = self.hub.request(
+                "POST", "/v1/rooms/%s/messages" % urllib.parse.quote(room), {
+                    "from": "%s.%s" % (self.ns, name), "kind": "join",
+                    "text": "%s.%s is in #%s" % (self.ns, name, room),
+                    "origin_seq": -1 - len(st["announced"])})
+            if status not in (200, 201):
+                print("hub refused announcing %s in #%s (HTTP %d): %s"
+                      % (name, room, status, payload.get("error")),
+                      file=sys.stderr)
+                break
+            st["announced"].append(name)
+            sent += 1
+        if sent:
+            self.save()
+        return sent
+
+    def pump_up(self, room):
+        """Local -> hub. Returns how many were sent."""
+        st = room_state(self.state, room)
+        code, out, err = self.cli(["read", room, "--since", str(st["up"]),
+                                   "--peek", "--json", "--as", self.reader])
+        if code != 0:
+            print("cannot read #%s: %s" % (room, (err or out).strip()),
+                  file=sys.stderr)
+            return 0
+        sent = 0
+        for message in sorted(json.loads(out or "[]"),
+                              key=lambda m: m["seq"]):
+            sender = message.get("from")
+            if sender in st["proxies"] or sender == self.reader:
+                st["up"] = message["seq"]          # an echo, or ours
+                continue
+            kind, extra = classify(message, room)
+            status, payload = self.hub.request(
+                "POST", "/v1/rooms/%s/messages" % urllib.parse.quote(room), {
+                    "from": "%s.%s" % (self.ns, sender),
+                    "text": message.get("text") or "",
+                    "audience": audience_up(message.get("audience"), self.ns,
+                                            st["proxies"]),
+                    "kind": kind, "extra": extra,
+                    "origin_seq": message["seq"]})
+            if status not in (200, 201):
+                print("hub refused #%s seq %d (HTTP %d): %s — will retry"
+                      % (room, message["seq"], status,
+                         payload.get("error")), file=sys.stderr)
+                break
+            st["up"] = message["seq"]
+            sent += 1
+        self.save()
+        return sent
+
+    def pump_down(self, room):
+        """Hub -> local. Returns how many were posted."""
+        st = room_state(self.state, room)
+        status, payload = self.hub.request(
+            "GET", "/v1/rooms/%s/messages?since=%d"
+            % (urllib.parse.quote(room), st["down"]))
+        if status != 200:
+            print("cannot read the hub for #%s (HTTP %d): %s"
+                  % (room, status, payload.get("error")), file=sys.stderr)
+            return 0
+        posted = 0
+        for message in payload.get("messages") or []:
+            if message.get("origin") == self.ns:
+                st["down"] = message["seq"]
+                continue
+            if not self.deliver(room, message):
+                break
+            st["down"] = message["seq"]
+            posted += 1
+        self.save()
+        return posted
+
+    def deliver(self, room, message):
+        proxy = message["from"]
+        if not self.ensure_proxy(room, proxy):
+            return False
+        kind, extra = message.get("kind"), message.get("extra") or {}
+        if kind == "join":
+            return True          # the proxy above is the whole effect
+        if kind == "leave":
+            code, out, err = self.cli(["leave", room, "--as", proxy])
+        elif kind == "topic":
+            code, out, err = self.cli(["topic", room, extra.get("topic") or "",
+                                       "--as", proxy])
+        elif kind == "close":
+            code, out, err = self.cli(["close", room, "--as", proxy,
+                                       "--reason", extra.get("reason")
+                                       or "closed on another machine"])
+        else:
+            audience, remote = audience_down(message.get("audience"), self.ns)
+            for name in remote:
+                if not self.ensure_proxy(room, name):
+                    return False
+            args = ["say", room, "--as", proxy] + audience_flags(audience)
+            code, out, err = self.cli(args, text=message.get("text") or "")
+            if code == EXIT_REFUSED and audience not in (None, AUDIENCE_ALL,
+                                                         AUDIENCE_NONE):
+                # An addressee who has LEFT this room is refused by `say`,
+                # and refusing forever would wedge the room. Keep the message
+                # in the record, woken by nobody, and say so.
+                print("  #%s: %s — kept, woken by nobody"
+                      % (room, (err or out).strip().splitlines()[0]),
+                      file=sys.stderr)
+                code, out, err = self.cli(
+                    ["say", room, "--as", proxy, "--to-none"],
+                    text=message.get("text") or "")
+        if code != 0:
+            print("could not post hub #%d into #%s as %s (exit %d): %s"
+                  % (message["seq"], room, proxy, code,
+                     ((err or out).strip().splitlines() or ["?"])[0]),
+                  file=sys.stderr)
+            return False
+        return True
+
+    # ── liveness ─────────────────────────────────────────────────────────────
+    def local_live(self):
+        """Names, with this machine's namespace, of bridged-room members who
+        have a live session here. None when the host could not be asked."""
+        code, out, _ = self.cli(["who", "--json"])
+        if code != 0:
+            # SAID, ONCE. Relaying and waking still work without this, so
+            # nothing else would ever look wrong here — only the other
+            # machine sees it, as every agent of ours reading "no live
+            # session". The usual cause is a bridge started at login (a
+            # LaunchAgent) without the PATH that finds `claude`.
+            if not getattr(self, "_said_unaskable", False):
+                self._said_unaskable = True
+                print("CANNOT PUBLISH LIVENESS: `llm_chat who` could not ask "
+                      "Claude Code (`claude agents`).\n  The other machine "
+                      "will see this machine's agents as not live. Is "
+                      "`claude` on\n  this process's PATH? (A LaunchAgent "
+                      "needs PATH set in its plist.)", file=sys.stderr)
+            return None
+        self._said_unaskable = False
+        live = {i["identity"] for i in json.loads(out).get("identities", [])
+                if any(not s.get("unchecked") for s in i.get("sessions", []))}
+        code, out, _ = self.cli(["channels", "--json"])
+        members = set()
+        if code == 0:
+            for c in json.loads(out or "[]"):
+                if c.get("name") in self.config["rooms"]:
+                    members.update(c.get("members") or [])
+        proxies = {p for r in self.state.values() for p in r.get("proxies", [])}
+        return sorted("%s.%s" % (self.ns, n) for n in live & members
+                      if n not in proxies and n != self.reader)
+
+    def publish_presence(self):
+        live = self.local_live()
+        if live is not None:
+            self.hub.request("PUT", "/v1/presence", {"live": live})
+
+    def fetch_presence(self, path):
+        status, payload = self.hub.request("GET", "/v1/presence")
+        if status != 200:
+            return
+        now = payload.get("now") or int(time.time())
+        remote = {name: row["seen_at"] for name, row in
+                  (payload.get("names") or {}).items()
+                  if row.get("origin") != self.ns
+                  and now - row.get("seen_at", 0) <= PRESENCE_FRESH_SEC}
+        record = {"updated": int(time.time()), "live": remote,
+                  "bridge": self.reader}
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path),
+                                   prefix=".remote-")
+        with os.fdopen(fd, "w") as f:
+            json.dump(record, f)
+        os.replace(tmp, path)
+
+    def cycle(self):
+        moved = 0
+        for room in self.config["rooms"]:
+            if self.refuse_broadcast(room) or not self.ensure_reader(room):
+                continue
+            self.announce_members(room)
+            moved += self.pump_up(room) + self.pump_down(room)
+        return moved
+
+
+def presence_path(server, env=os.environ):
+    """Where the CLI looks for remote liveness. Duplicated from bin/llm_chat
+    (`remote_presence_path`) the way doorbell_dir is; a test holds them
+    together."""
+    port = urllib.parse.urlparse(server).port or 7717
+    base = env.get(STORE_ENV) or os.path.join(
+        os.path.expanduser("~"), ".local", "share", "llm_chat")
+    return os.path.join(base, "port-%d.remote.json" % port)
+
+
+def check(config):
+    if config is None:
+        print("no bridge configured: write %s (see --help)" % CONFIG)
+        return 1
+    hub = Hub(config)
+    status, payload = hub.request("GET", "/v1/whoami")
+    if status != 200:
+        print("hub %s: HTTP %d — %s" % (config["hub"], status,
+                                        payload.get("error")))
+        return 1
+    if payload.get("namespace") != config["namespace"]:
+        print("hub says this credential is %r, but bridge.json says %r"
+              % (payload.get("namespace"), config["namespace"]))
+        return 1
+    print("hub %s: reachable, this machine is %r; rooms: %s"
+          % (config["hub"], config["namespace"],
+             ", ".join(config["rooms"])))
+    return 0
+
+
+def main(argv=sys.argv[1:]):
+    if "--help" in argv or "-h" in argv:
+        print(__doc__)
+        return 0
+    # --config <path>: its state and per-identity projects live beside it,
+    # so two bridges (or a smoke test) never share marks.
+    path = argv[argv.index("--config") + 1] if "--config" in argv else CONFIG
+    state_dir = os.path.dirname(os.path.abspath(path))
+    config = load_config(path)
+    if "--check" in argv or config is None:
+        return check(config)
+    server = config.get("server") or os.environ.get("LLM_CHAT_SERVER") \
+        or "http://localhost:7717"
+    bridge = Bridge(config,
+                    state_path=os.path.join(state_dir, "bridge-state.json"),
+                    projects=os.path.join(state_dir, "bridge-project"))
+    where = presence_path(server)
+    print("bridging %s as %r via %s every %ds — Ctrl-C to stop"
+          % (", ".join("#" + r for r in config["rooms"]), config["namespace"],
+             config["hub"], config["poll_sec"]))
+    last_presence = 0
+    while True:
+        if time.time() - last_presence >= PRESENCE_EVERY_SEC:
+            bridge.publish_presence()
+            bridge.fetch_presence(where)
+            last_presence = time.time()
+        moved = bridge.cycle()
+        if moved:
+            print("  relayed %d" % moved)
+        time.sleep(config["poll_sec"])
+
+
+if __name__ == "__main__":
+    sys.exit(main())
