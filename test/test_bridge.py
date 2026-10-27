@@ -518,6 +518,13 @@ class OverHttpTest(unittest.TestCase):
                 ["--check", "--config", path])), 0)
             self.assertEqual(bridge_mod.main(["--help"]), 0)
 
+    def test_the_bridge_NAMES_itself_rather_than_sending_pythons_agent(self):
+        """Cloudflare's bot protection answers `Python-urllib/x` with a 403
+        before Access even looks at the token — measured on the first real
+        deploy, where curl with the same token got a 200."""
+        agent = self.client().headers.get("User-Agent", "")
+        self.assertTrue(agent.startswith("llm-chat-bridge/"), agent)
+
     def test_an_UNREACHABLE_hub_is_a_status_not_a_crash(self):
         self.server.server_close()
         status, body = self.client().request("GET", "/v1/whoami")

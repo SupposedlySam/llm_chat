@@ -93,6 +93,7 @@ PRESENCE_FRESH_SEC = 90
 STORE_ENV = "LLM_CHAT_STORE"
 AUDIENCE_ALL, AUDIENCE_NONE = "*", "-"
 EXIT_REFUSED = 1
+USER_AGENT = "llm-chat-bridge/1 (+https://github.com/SupposedlySam/llm_chat)"
 
 
 # ── config and state ─────────────────────────────────────────────────────────
@@ -177,7 +178,13 @@ def run_cli(args, server=None, text=None, project=PROJECT):
 class Hub:
     def __init__(self, config):
         self.base = config["hub"].rstrip("/")
-        self.headers = {"Content-Type": "application/json"}
+        # NAMED, NOT PYTHON'S DEFAULT. Cloudflare's bot protection answers
+        # `Python-urllib/x` with a 403 before Access looks at the token at
+        # all; found on the first real deploy, where curl with the same
+        # token got a 200. The local smoke test could not see it: nothing
+        # was in front of that hub.
+        self.headers = {"Content-Type": "application/json",
+                        "User-Agent": USER_AGENT}
         access = config.get("access") or {}
         if access:
             secret = access.get("client_secret")

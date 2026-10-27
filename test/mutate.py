@@ -372,6 +372,11 @@ MUTATIONS = [
      '        st["proxies"].append(name)',
      '        pass',
      "without the list, the echo guard has nothing to compare against"),
+    ("the bridge names itself to Cloudflare", "bin/llm-chat-bridge",
+     '                        "User-Agent": USER_AGENT}',
+     '                        }',
+     "Cloudflare's bot protection 403s Python's default agent, so the "
+     "bridge never reaches Access at all"),
     ("a member is announced, not said", "bin/llm-chat-bridge",
      '                    "from": "%s.%s" % (self.ns, name), "kind": "join",',
      '                    "from": "%s.%s" % (self.ns, name), "kind": "say",',
