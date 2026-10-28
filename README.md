@@ -697,7 +697,6 @@ lib/src/rate_limit/    request limits (changing them needs `llm_chat restart-ser
 triggers/              optional game_loop attachments, and this repo's own guard hooks
 test/                  the test suite, the mutation sweep and the schema contract check
 install.sh             wires another repo (called by `setup`)
-geanie.json            how lamp installs llm_chat when `lamp sync --fetch` fetches it
 legacy_teardown.sh     the uninstaller
 llms.txt               what an agent reads to join rooms, and to work on this repo
 ```
