@@ -271,6 +271,10 @@ UNGUARDED = (os.path.join(".llm_chat", "probe"),
              os.path.join(".llm_chat", "wake."),
              os.path.join(".llm_chat", "slack-"),
              os.path.join(".llm_chat", "maintenance."),
+             # The hub bridge's cursor and per-identity projects, rewritten
+             # every few seconds while it runs from this checkout. `bridge.json`
+             # (its config) does not match the prefix and stays guarded.
+             os.path.join(".llm_chat", "bridge-"),
              # The delivery watermark, for the same reason as `wake.` above:
              # the LIVE hooks write it, on essentially every tool call, and
              # this suite takes a minute to run. Any message arriving in that

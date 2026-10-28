@@ -238,16 +238,26 @@ class RepoDamageTest(unittest.TestCase):
         # reported the repo damaged by a test while naming a file no test
         # touches.
         deliver = load("bin/llm-chat-deliver")
+        # FIFTH WRITER, same gap: the hub bridge (#61) shipped without being
+        # added here, and its cursor refused the very next release while
+        # Jonah's bridge ran from this checkout.
+        hub = load("bin/llm-chat-bridge")
 
         live = [waker.PID_PATH, waker.EXIT_PATH, waker.ALIVE_PATH,
                 waker.REWAKE_PATH, waker.LANDED_PATH,
                 deliver.WATERMARK,
+                hub.STATE_FILE, os.path.join(hub.PROJECT, "joined.json"),
                 bridge.CURSOR, bridge.THREADS, bridge.REPLIES, bridge.ASKED,
                 os.path.join(bridge.STATE, "slack-inbound.txt"),
                 cli.maintenance_path(gate.ROOT),
                 cli.maintenance_lock(gate.ROOT)]
         for path in live:
-            relative = os.path.join(".llm_chat", os.path.basename(path))
+            # Kept from `.llm_chat` down, so a writer's SUBDIRECTORY (the hub
+            # bridge's per-identity projects) is checked as the walk sees it.
+            parts = path.split(os.sep)
+            relative = os.path.join(*parts[parts.index(".llm_chat"):]) \
+                if ".llm_chat" in parts \
+                else os.path.join(".llm_chat", os.path.basename(path))
             with self.subTest(path=relative):
                 self.assertTrue(
                     any(relative.startswith(entry) for entry in gate.UNGUARDED),
@@ -260,6 +270,14 @@ class RepoDamageTest(unittest.TestCase):
         bridge's live cursors; `slack.json` is configuration a human wrote,
         and a test that rewrote it would be real damage."""
         relative = os.path.join(".llm_chat", "slack.json")
+        self.assertFalse(
+            any(relative.startswith(entry) for entry in gate.UNGUARDED))
+
+    def test_the_hub_bridge_CONFIG_is_still_guarded(self):
+        """The same line for the hub bridge: `bridge-` covers its cursor and
+        per-identity projects; `bridge.json` names the hub and the Keychain
+        entry, and a test that rewrote it would be real damage."""
+        relative = os.path.join(".llm_chat", "bridge.json")
         self.assertFalse(
             any(relative.startswith(entry) for entry in gate.UNGUARDED))
 
