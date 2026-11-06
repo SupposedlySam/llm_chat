@@ -949,7 +949,12 @@ def announce(blocks, box=None):
     # miss if no turn follows, exactly as for an exit 2 the host ignored.
     text = wake_text(blocks)
     if post_to_inbox(box[0], box[1], text):
-        record_exit("woke the session through its inbox (healthy)")
+        # ACCEPTED, NOT LANDED. The host taking the post says nothing about a
+        # turn starting; this said "(healthy)" and was read as proof while the
+        # watcher had already recorded that no turn followed.
+        record_exit("posted the wake to the session's inbox — whether a turn "
+                    "followed is checked %ds later" % (REWAKE_GRACE
+                                                       + WATCH_MARGIN))
         return 0
     try:
         os.makedirs(STATE, exist_ok=True)

@@ -6152,6 +6152,17 @@ def do_doctor(server):
                 ago = f", {(now_ms() // 1000 - when) // 60}m ago" if when else ""
                 print(f"  last waker (pid {said_by}) stopped because: "
                       f"{reason}{ago}")
+                # THE SECOND WITNESS HERE TOO. It was read only while a waker
+                # was listening, so a wake posted, accepted and never answered
+                # showed as its post on exactly the screen that needed it.
+                missed = missed_since_the_last_wake(project,
+                                                    wake_landing(project)[0])
+                if missed is not None:
+                    print("  BUT A WAKE REQUESTED SINCE THE LAST ONE THAT "
+                          "LANDED NEVER LANDED\n  (recorded %dm ago): no turn "
+                          "followed it. A post the host accepted is\n  not a "
+                          "turn. Anything arriving now arrives because you ran "
+                          "a tool." % (missed // 60))
                 if reason.startswith("running"):
                     # It never recorded a REASON, so it did not choose to stop:
                     # something outside it ended the process. That is a

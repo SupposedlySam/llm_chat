@@ -192,7 +192,11 @@ class InboxTest(unittest.TestCase):
         self.assertEqual(lines[1]["message"]["content"],
                          self.mod.wake_text(blocks))
         self.assertIn("[other] hello", lines[1]["message"]["content"])
-        self.assertIn("through its inbox", json.dumps(self.exits()))
+        said = json.dumps(self.exits())
+        self.assertIn("inbox", said)
+        # Accepted is not landed: the host taking the post says nothing about
+        # whether a turn started, and "healthy" was read as if it did.
+        self.assertNotIn("healthy", said)
 
     def test_the_inbox_path_STILL_arms_the_missed_wake_watcher(self):
         """A held or dropped post looks exactly like an ignored exit 2 from

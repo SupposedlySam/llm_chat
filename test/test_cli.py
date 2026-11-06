@@ -1345,6 +1345,28 @@ class DoctorTest(unittest.TestCase):
         self.exited("superseded by a newer waker (healthy)")
         self.assertNotIn("killed from outside", self.report())
 
+    def test_an_inbox_post_that_NEVER_LANDED_is_said_while_not_listening(self):
+        """gravity-brew-owner, in VS Code: doctor said LISTENING NOW: NO and
+        "woke the session through its inbox (healthy)" while the watcher had
+        already recorded that no turn followed. The miss was only consulted
+        while a waker was listening, so the one screen that needed it most
+        showed the post as the answer."""
+        self.joined()
+        now = cli.now_ms() // 1000
+        self.exited("posted the wake to the session's inbox", at=now - 180)
+        d = os.path.join(self.project, ".llm_chat")
+        with open(os.path.join(d, "wake.missed"), "w") as f:
+            json.dump({"at": now - 60, "requested_at": now - 180}, f)
+        text = self.report()
+        self.assertIn("LISTENING NOW: NO", text)
+        self.assertIn("NEVER LANDED", text)
+
+    def test_with_no_miss_the_inbox_post_is_not_called_a_failure(self):
+        """Paired: a line that always fires teaches nothing."""
+        self.joined()
+        self.exited("posted the wake to the session's inbox")
+        self.assertNotIn("NEVER LANDED", self.report())
+
     def test_it_says_how_long_ago(self):
         self.joined()
         self.exited("running", at=cli.now_ms() // 1000 - 1800)

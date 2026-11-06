@@ -309,6 +309,24 @@ MUTATIONS = [
      "a session started above the repo joins 34 rooms nothing can deliver "
      "to, and doctor reports its wiring healthy"),
 
+    ("a missed wake is said while NOT listening, too", "bin/llm_chat",
+     "                if missed is not None:\n"
+     '                    print("  BUT A WAKE REQUESTED SINCE THE LAST ONE THAT "',
+     "                if False:\n"
+     '                    print("  BUT A WAKE REQUESTED SINCE THE LAST ONE THAT "',
+     "doctor shows an inbox post the host accepted as the waker's last word "
+     "while the watcher has recorded that no turn followed it — "
+     "gravity-brew-owner, in VS Code, missed a reply that way"),
+
+    ("an accepted inbox post is not called healthy", "bin/llm-chat-wake",
+     '        record_exit("posted the wake to the session\'s inbox — whether a '
+     'turn "\n'
+     '                    "followed is checked %ds later" % (REWAKE_GRACE\n'
+     '                                                       + WATCH_MARGIN))',
+     '        record_exit("woke the session through its inbox (healthy)")',
+     "the exit record calls a post the host merely accepted healthy, and it "
+     "is read as proof a turn started"),
+
     ("a borrowed project name is refused while another session is here (#45)",
      "bin/llm_chat",
      "        if not identity_for_report(shared=False) and (\n"
