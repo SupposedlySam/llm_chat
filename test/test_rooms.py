@@ -818,6 +818,17 @@ class ProjectIdentityTest(RoomTest):
         self.assertEqual(cli.resolve_identity("someone-else", "room"),
                          "someone-else")
 
+    def test_say_as_a_NON_MEMBER_names_the_join_that_keeps_the_name(self):
+        """#45: the refusal named a missing join, the caller ran `join`
+        without `--as`, and the report went out under another agent's name.
+        The fix it offers carries the name the caller already gave."""
+        name = "ops"
+        self.fake.channel(name)
+        with self.assertRaises(SystemExit) as caught:
+            cli.do_say("http://127.0.0.1:1", name, "stranger", "hi")
+        self.assertIn("llm_chat join %s --as stranger" % name,
+                      str(caught.exception))
+
     def test_a_room_you_already_joined_keeps_its_own_identity(self):
         """One project holds a different identity per room, which is what the
         owner-channel convention encourages."""

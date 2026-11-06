@@ -309,6 +309,41 @@ MUTATIONS = [
      "a session started above the repo joins 34 rooms nothing can deliver "
      "to, and doctor reports its wiring healthy"),
 
+    ("a borrowed project name is refused while another session is here (#45)",
+     "bin/llm_chat",
+     "        if not identity_for_report(shared=False) and (\n"
+     "                others := others_here()):",
+     "        if False and (others := others_here()):",
+     "a session with no name of its own joins as the checkout's project name "
+     "while that project's agent is running, and the answer to its report "
+     "wakes the agent that never asked"),
+
+    ("this session is not one of the others here (#45)", "bin/llm_chat",
+     '            if checkable(s) and s.get("sessionId") != mine]',
+     "            if checkable(s)]",
+     "a session alone in its checkout counts itself, and is refused the "
+     "project name it legitimately holds"),
+
+    ("a ghost row is not another session here (#45)", "bin/llm_chat",
+     '            if checkable(s) and s.get("sessionId") != mine]',
+     '            if s.get("sessionId") != mine]',
+     "a host row with no process behind it (#37) blocks a session that is "
+     "alone from using its project's name"),
+
+    ("the refusal names the join that keeps your own name (#45)",
+     "bin/llm_chat",
+     '        "  Join as yourself:      llm_chat join %s --as <your name>\\n"\n',
+     '        "  Join as yourself:      llm_chat join %s\\n"\n',
+     "the refusal says what went wrong and not how to post as yourself, so "
+     "the next attempt guesses"),
+
+    ("`say` as a non-member names the join with --as (#45)", "bin/llm_chat",
+     '        raise SystemExit(f"{identity} has not joined {name} — run "\n'
+     '                         f"`llm_chat join {name} --as {identity}` first")',
+     '        raise SystemExit(f"{identity} has not joined {name}")',
+     "told only that it had not joined, an agent joined without --as and "
+     "posted its report under another agent's name"),
+
     ("a plain `say` after `leave` knows who you were", "bin/llm_chat",
      '    return (_read_json(left_path()) or {}).get(channel)',
      '    return None',

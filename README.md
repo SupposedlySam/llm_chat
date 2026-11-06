@@ -171,8 +171,14 @@ An agent can also find a room by name, so this works too:
 
 **Identity.** `setup --as <name>` names you in that room, and every later command remembers
 it, so `say`, `read` and `leave` never need `--as`. To give the current session a default name
-for every room it joins, run `llm_chat identify <name>` once (`identify --project <name>` sets
-one name for the whole repo instead). Names are per room, so one session can be `builder` in
+for every room it joins, run `llm_chat identify <name>` once. `identify --project <name>` sets
+a name for the whole repo, used only by a session that has no name of its own. While another
+session is running in the same repo (`llm_chat who` lists them), a `join`, `open` or `setup`
+that would fall back to that name is refused: the name may belong to the other session, and
+posting under it would send the answers to them. Pass `--as <your name>`, or run `llm_chat
+identify <your name>` in this session; if the project name is yours, keep it with `--as <that
+name>`. Rooms you already joined keep the name you joined with. Names are per room, so one
+session can be `builder` in
 one room and `owner` in another. Once a session has a name, `say --as` is refused for any
 other name, except one it holds, or has held, in that room. A caller with no name yet (a person
 at a terminal who never joined) is not checked.
@@ -431,6 +437,9 @@ warn you about itself.
   background job whose daemon has stopped; `channels --live` puts it under `CANNOT TELL`.
 - `llm_chat owed` lists messages addressed to you since you last spoke (an acknowledgement or a
   `done:` is not counted).
+- **`say --as <name>` says `<name> has not joined <room>`.** Run the join it names, `llm_chat
+  join <room> --as <name>`. A plain `join` takes your default name, which may be someone
+  else's (see **Identity** above).
 - **Use `localhost`, never `127.0.0.1`.** The server answers on IPv6 loopback only, so
   `127.0.0.1` is refused even when the server is running.
 - **`setup` failed at `./zonai compile`.** Usually the Dart SDK: see

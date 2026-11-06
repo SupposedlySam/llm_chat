@@ -27,7 +27,7 @@ A = "aaaaaaaa-1111-2222-3333-444444444444"
 B = "bbbbbbbb-5555-6666-7777-888888888888"
 
 
-class SessionScopeTest(unittest.TestCase):
+class SessionBase(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.project = self.tmp.name
@@ -64,6 +64,8 @@ class SessionScopeTest(unittest.TestCase):
         with open(path, "w") as f:
             json.dump(payload, f)
 
+
+class SessionScopeTest(SessionBase):
     # ── the collision itself ────────────────────────────────────────────────
     def test_TWO_SESSIONS_DO_NOT_SHARE_STATE(self):
         self.be(A)
@@ -176,6 +178,94 @@ class SessionScopeTest(unittest.TestCase):
         self.assertIsNone(cli.default_identity())
         with self.assertRaises(SystemExit):
             cli.resolve_identity(None)
+
+
+class SharedNameTest(SessionBase):
+    """#45: a session with no name of its own fell back to the checkout's
+    project name while another agent was running there, so its report went
+    out as that agent and the answer woke the wrong session.
+
+    The project name is refused only when the host PROVES somebody else is
+    running in this checkout. A host that cannot be asked, or a row with no
+    process behind it, is not that proof, and refusing on it would block a
+    session that is alone."""
+
+    def setUp(self):
+        super().setUp()
+        self.be(B)
+        self.quiet(cli.do_identify, "http://127.0.0.1:1", "project-a",
+                   shared=True)
+        self.be(A)
+
+    def hosts(self, sessions, returncode=0):
+        real = cli.subprocess.run
+
+        def run(argv, **kw):
+            return type("R", (), {"returncode": returncode,
+                                  "stdout": json.dumps(sessions),
+                                  "stderr": ""})()
+
+        cli.subprocess.run = run
+        self.addCleanup(lambda: setattr(cli.subprocess, "run", real))
+
+    def resolved(self, explicit=None):
+        """A refusal where none is due is a FAILED ASSERTION, not an error:
+        the sweep counts a mutant that only raised as crashed, not caught."""
+        try:
+            return cli.resolve_identity(explicit, "room")
+        except SystemExit as refused:
+            self.fail("refused where nothing proves another session: %s"
+                      % refused)
+
+    def other_session_here(self, **row):
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": A},
+                    dict({"pid": 2, "cwd": self.project, "sessionId": B},
+                         **row)])
+
+    def test_ANOTHER_LIVE_SESSION_here_refuses_the_project_name(self):
+        self.other_session_here()
+        with self.assertRaises(SystemExit) as caught:
+            cli.resolve_identity(None, "room")
+        message = str(caught.exception)
+        self.assertIn("project-a", message)
+        self.assertIn("llm_chat join room --as <your name>", message)
+        self.assertIn("llm_chat identify <your name>", message)
+
+    def test_ALONE_in_the_checkout_the_project_name_still_applies(self):
+        self.hosts([{"pid": 1, "cwd": self.project, "sessionId": A},
+                    {"pid": 2, "cwd": "/elsewhere", "sessionId": B}])
+        self.assertEqual(self.resolved(),"project-a")
+
+    def test_a_host_that_CANNOT_BE_ASKED_is_not_proof(self):
+        self.hosts([], returncode=1)
+        self.assertEqual(self.resolved(),"project-a")
+
+    def test_a_row_with_NO_PROCESS_is_not_proof(self):
+        """#37's ghost: listed by the host, nothing behind it to check."""
+        self.other_session_here(pid=None)
+        self.assertEqual(self.resolved(),"project-a")
+
+    def test_naming_it_EXPLICITLY_is_the_way_through(self):
+        """For the agent the project name really belongs to."""
+        self.other_session_here()
+        self.assertEqual(self.resolved("project-a"), "project-a")
+
+    def test_a_room_ALREADY_JOINED_under_it_keeps_working(self):
+        self.other_session_here()
+        cli.remember("room", "project-a", "http://127.0.0.1:1")
+        self.assertEqual(self.resolved(),"project-a")
+
+    def test_a_session_with_its_OWN_name_is_untouched(self):
+        self.other_session_here()
+        self.quiet(cli.do_identify, "http://127.0.0.1:1", "mine")
+        self.assertEqual(self.resolved(),"mine")
+
+    def test_a_HUMAN_at_a_terminal_still_is_the_project(self):
+        """`identify --project` exists for a human's own repo; there is no
+        session of theirs for an agent's to be confused with."""
+        self.other_session_here()
+        self.be(None)
+        self.assertEqual(self.resolved(),"project-a")
 
 
 class DeliverScopeTest(unittest.TestCase):

@@ -205,6 +205,9 @@ def resolve_identity(explicit, channel=None):
             return entry["identity"]
     known = project_identity()
     if known:
+        if not identity_for_report(shared=False) and (
+                others := others_here()):
+            raise SystemExit(shared_name_refusal(known, channel, others))
         return known
     # A SESSION ALWAYS HAS A NAME rather than an error. Requiring --as here is
     # what pushed sessions into picking the same word; a unique default is
@@ -217,6 +220,34 @@ def resolve_identity(explicit, channel=None):
         "no identity — either pass --as <name>, or set one once for this "
         "project:\n  llm_chat identify <name>"
     )
+
+
+def others_here():
+    """Other sessions the host PROVES are running in this checkout (#45).
+
+    Empty for a human at a terminal, for a host that cannot be asked, and for
+    a row with no process behind it: none of those shows that somebody else
+    holds the project's name, and refusing on them would block a session that
+    is alone."""
+    mine = session_id()
+    if not mine:
+        return []
+    return [s for s in live_here() or []
+            if checkable(s) and s.get("sessionId") != mine]
+
+
+def shared_name_refusal(name, channel, others):
+    room = channel or "<room>"
+    pids = ", ".join(str(s["pid"]) for s in others)
+    return (
+        "refusing to post as '%s': that is this checkout's PROJECT name, and "
+        "this session has\n  no name of its own. %d other session(s) are "
+        "running here (pid %s), and it may\n  be theirs — posting under it "
+        "sends the answers to them, not to you.\n"
+        "  Join as yourself:      llm_chat join %s --as <your name>\n"
+        "  or name this session:  llm_chat identify <your name>\n"
+        "  If '%s' IS you:  llm_chat join %s --as %s"
+        % (name, len(others), pids, room, name, room, name))
 
 
 def identity_for_report(shared):
@@ -3568,7 +3599,10 @@ def do_say(server, name, identity, text, audience=None, thread=None,
     # moment of sending, which is if anything the more honest instant.
     roster = rows(server, "memberships", eq("channel", name))
     if not any(m["identity"] == identity for m in roster):
-        raise SystemExit(f"{identity} has not joined {name}")
+        # The name goes into the fix (#45): told only "join", an agent joined
+        # without --as and posted under somebody else's.
+        raise SystemExit(f"{identity} has not joined {name} — run "
+                         f"`llm_chat join {name} --as {identity}` first")
     check_recipients(server, name, audience, roster)
 
     count = chan.get("message_count", 0)
