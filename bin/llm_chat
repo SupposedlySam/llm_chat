@@ -533,10 +533,16 @@ def live_here(project=None):
         cwd = session.get("cwd")
         if not cwd:
             continue
-        cwd = os.path.abspath(cwd)
-        if cwd == root or cwd.startswith(root + os.sep):
+        if within(cwd, root):
             here.append(session)
     return here
+
+
+def within(cwd, root):
+    """Whether `cwd` is `root` or below it. A sibling that merely shares the
+    prefix (`/x/llm_chat_old` beside `/x/llm_chat`) is not."""
+    cwd = os.path.abspath(cwd)
+    return cwd == root or cwd.startswith(root + os.sep)
 
 
 def started_outside(project=None):
@@ -557,10 +563,9 @@ def started_outside(project=None):
     for session in sessions:
         if session.get("sessionId") != mine or not session.get("cwd"):
             continue
-        cwd = os.path.abspath(session["cwd"])
-        if cwd == root or cwd.startswith(root + os.sep):
+        if within(session["cwd"], root):
             return None
-        return cwd
+        return os.path.abspath(session["cwd"])
     return None
 
 

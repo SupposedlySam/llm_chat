@@ -1860,6 +1860,15 @@ class DoctorTest(unittest.TestCase):
                 self.hosts([{"pid": 9, "cwd": cwd, "sessionId": "sid-in"}])
                 self.assertIsNone(cli.started_outside(self.project))
 
+    def test_a_session_in_a_SIBLING_directory_is_outside(self):
+        """`/x/llm_chat_old` shares the prefix but loads none of
+        `/x/llm_chat`'s hooks, so it is outside, and saying nothing would
+        leave it deaf."""
+        self.as_session("sid-sib")
+        sibling = self.project + "_old"
+        self.hosts([{"pid": 9, "cwd": sibling, "sessionId": "sid-sib"}])
+        self.assertEqual(cli.started_outside(self.project), sibling)
+
     def test_CANNOT_ASK_or_UNLISTED_says_nothing(self):
         """A guess here would tell a healthy session to restart."""
         self.as_session("sid-x")

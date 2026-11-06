@@ -30,6 +30,23 @@ class MutationAnchorTest(unittest.TestCase):
                          "these mutations no longer match their code; update "
                          "the snippet so it re-introduces the same bug")
 
+    def test_every_mutation_anchor_is_in_its_file_ONCE(self):
+        """Present is not enough. #60 copied a line a mutation anchored on
+        into a second function; the anchor still matched, so the test above
+        passed, and the sweep refused it as AMBIGUOUS every night for two
+        weeks (#44)."""
+        ambiguous = []
+        for mutation in mutate.MUTATIONS:
+            name, path, original = mutation[0], mutation[1], mutation[2]
+            with open(os.path.join(mutate.ROOT, path)) as f:
+                count = f.read().count(original)
+            if count > 1:
+                ambiguous.append("%s (%s, %d matches)" % (name, path, count))
+        self.assertEqual(ambiguous, [],
+                         "these anchors match more than one place, so the "
+                         "sweep refuses them; lengthen the snippet until it "
+                         "names one")
+
 
 if __name__ == "__main__":
     unittest.main()

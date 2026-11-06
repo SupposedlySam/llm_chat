@@ -304,8 +304,8 @@ MUTATIONS = [
 
     ("a session started above the repo is told it cannot be woken (#38)",
      "bin/llm_chat",
-     '            return None\n        return cwd\n    return None',
-     '            return None\n        return None\n    return None',
+     '            return None\n        return os.path.abspath(session["cwd"])\n',
+     '            return None\n        return None\n',
      "a session started above the repo joins 34 rooms nothing can deliver "
      "to, and doctor reports its wiring healthy"),
 
@@ -1871,8 +1871,8 @@ MUTATIONS = [
      "cannot be reached — the same inversion at both ends of the mapping"),
 
     ("a sibling directory is not this project", "bin/llm_chat",
-     "        if cwd == root or cwd.startswith(root + os.sep):",
-     "        if cwd.startswith(root):",
+     "    return cwd == root or cwd.startswith(root + os.sep)",
+     "    return cwd.startswith(root)",
      "`/x/llm_chat_old` matches `/x/llm_chat`, so doctor reports a live agent "
      "in a project nobody is working in and a missed wake looks like somebody "
      "sitting there deaf"),
