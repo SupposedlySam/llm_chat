@@ -309,6 +309,24 @@ MUTATIONS = [
      "a session started above the repo joins 34 rooms nothing can deliver "
      "to, and doctor reports its wiring healthy"),
 
+    ("a woken turn still running is recorded as a landing", "bin/llm-chat-wake",
+     '        record_landing("turn-started")\n',
+     "",
+     "a woken turn that works past the grace window leaves no landing, and "
+     "doctor reports the wake path NOT working on a three-week-old receipt"),
+
+    ("a landing records the event that proved it", "bin/llm-chat-wake",
+     '            json.dump({"at": time.time(), "event": event,',
+     '            json.dump({"at": time.time(), "event": "Stop",',
+     "every receipt reads as a turn ending, so a reload's or a running "
+     "turn's cannot be told apart from one"),
+
+    ("a running-turn landing is a confirmed one", "bin/llm_chat",
+     '    return None if event is None else event in ("Stop", "turn-started")',
+     '    return None if event is None else event == "Stop"',
+     "doctor reads the commonest receipt — a woken turn seen running — as a "
+     "reload, and says it proves nothing about the wake path"),
+
     ("an Agent SDK session is its own host", "bin/llm_chat",
      '    if entry.startswith("sdk"):\n        return "sdk"\n',
      "",
@@ -1724,7 +1742,7 @@ MUTATIONS = [
      "failure goes unread with it"),
 
     ("a landing marker of unknown provenance is not confirmed", "bin/llm_chat",
-     "    return None if event is None else event == \"Stop\"",
+     '    return None if event is None else event in ("Stop", "turn-started")',
      "    return True",
      "every marker written before this distinction existed reads as a "
      "confirmed turn, which is every marker anybody already has — the bug "
@@ -2487,8 +2505,8 @@ MUTATIONS = [
      "expensive to stop believing"),
 
     ("a turn still running is not a missed wake", "bin/llm-chat-wake",
-     "    if tool_ran_since(at):\n        return 0",
-     "    if False:\n        return 0",
+     '    if tool_ran_since(at):\n        record_landing("turn-started")',
+     '    if False:\n        record_landing("turn-started")',
      "`wake_landing` only consumes the note when a turn ENDS, so any turn "
      "longer than the grace window records a miss — and the record is now "
      "spoken, so the session that WAS woken gets told its wake never landed, "

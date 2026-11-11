@@ -5208,7 +5208,10 @@ def landing_is_confirmed(project):
     except (OSError, ValueError):
         return None
     event = record.get("event")
-    return None if event is None else event == "Stop"
+    # `turn-started`: the missed-wake watcher saw a tool call after the
+    # request, which is the woken turn running — the receipt for a turn that
+    # outlasted the grace window, and the commonest kind.
+    return None if event is None else event in ("Stop", "turn-started")
 
 
 def missed_since_the_last_wake(project, landed_at):

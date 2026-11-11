@@ -230,6 +230,25 @@ class MissedWakeWatcherTest(unittest.TestCase):
         self.mod.watch(1000.0)
         self.assertFalse(os.path.exists(self.mod.MISSED_PATH))
 
+    def test_A_TURN_STILL_RUNNING_IS_RECORDED_AS_A_LANDING(self):
+        """The receipt used to be written only by a Stop inside the grace
+        window, so any woken turn that did real work for longer than 90s
+        consumed its request and left no landing. Measured on this repo,
+        2026-11-10: last landing Oct 22, through weeks of inbox wakes, and
+        doctor said the wake path was NOT working. A tool call after an idle
+        request is the turn having started."""
+        self.mod.LANDED_PATH = os.path.join(self.tmp.name, "wake.landed")
+        self.pending()
+        self.tool_mark(1500.0)
+        self.mod.watch(1000.0)
+        self.assertTrue(os.path.exists(self.mod.LANDED_PATH),
+                        "a turn running on the wake left no landing")
+        with open(self.mod.LANDED_PATH) as f:
+            landed = json.load(f)
+        self.assertEqual(landed["event"], "turn-started")
+        self.assertFalse(os.path.exists(self.mod.REWAKE_PATH),
+                         "answered, so a later Stop cannot claim it again")
+
     def test_a_tool_call_from_BEFORE_the_request_proves_nothing(self):
         """Paired with the one above, and the reason it is an mtime
         comparison rather than a presence check: every project that has ever

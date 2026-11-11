@@ -3466,6 +3466,9 @@ class DoctorTest(unittest.TestCase):
         self.joined_with_waker(os.getpid())
         self.landed(event="Stop")
         self.assertIs(cli.landing_is_confirmed(self.project), True)
+        self.landed(event="turn-started")
+        self.assertIs(cli.landing_is_confirmed(self.project), True,
+                      "a turn seen running after the request is a landing")
         self.landed(event="SessionStart")
         self.assertIs(cli.landing_is_confirmed(self.project), False)
         self.landed()

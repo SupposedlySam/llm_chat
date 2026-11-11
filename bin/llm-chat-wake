@@ -1041,7 +1041,18 @@ def watch(at):
     # also masks a genuine miss during BUSY work is correct rather than a
     # hole — the delivery hook hands messages over within one tool call there,
     # and the failure being reported is an IDLE session going deaf.
+    #
+    # AND IT IS A LANDING, which this used to leave unsaid. The receipt was
+    # written only by a Stop inside the grace window, so a woken turn that
+    # worked longer than that consumed its request and left none: one repo
+    # showed its last landing three weeks old through weeks of inbox wakes,
+    # and doctor said the wake path was NOT working.
     if tool_ran_since(at):
+        record_landing("turn-started")
+        try:
+            os.remove(REWAKE_PATH)
+        except OSError:
+            pass
         return 0
     record = {"at": int(time.time()), "requested_at": int(at),
               "acted": False}
@@ -1132,6 +1143,10 @@ def wake_landing(event="unknown"):
         return
     if time.time() - float(pending.get("at") or 0) > REWAKE_GRACE:
         return                      # too late to attribute this turn to it
+    record_landing(event)
+
+
+def record_landing(event):
     try:
         tmp = own_tmp(LANDED_PATH)
         with open(tmp, "w") as f:
