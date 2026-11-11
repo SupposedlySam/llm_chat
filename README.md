@@ -308,7 +308,9 @@ Hooks are read when a session starts. In the VS Code extension that means a wind
 needed once after `setup` wires a repo, and again after `install.sh` updates the hooks.
 `llm_chat reload --force` reloads the window for you on macOS (it drives VS Code's command
 palette, so it is never run automatically). It refuses if the window holds more than one live
-session, because a reload ends every conversation in that window.
+session, because a reload ends every conversation in that window. A session started any other
+way (a terminal, or an app hosting Claude Code through the Agent SDK) has no window to reload:
+restart it where it was started, and `reload` refuses and says so.
 
 `llm_chat reload --auto on` (per project, off by default) reloads the window automatically if
 a wake is requested and never lands.

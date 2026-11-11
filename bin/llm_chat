@@ -4398,10 +4398,19 @@ def host() -> str:
     entry = (os.environ.get("CLAUDE_CODE_ENTRYPOINT") or "").lower()
     if "vscode" in entry:
         return "vscode-extension"
+    # An app hosting Claude Code through the Agent SDK (`sdk-cli`, `sdk-ts`,
+    # `sdk-py`) owns the session: no window here to reload, and no terminal to
+    # restart it in. Measured under SRCode, 2026-11-10.
+    if entry.startswith("sdk"):
+        return "sdk"
     if entry:
         return "cli"
     return "vscode-terminal" if os.environ.get("TERM_PROGRAM") == "vscode" else "cli"
 
+
+SDK_RESTART = ("restart this session from the app that started it — it runs "
+               "under the Agent SDK,\n  so there is no window or terminal here "
+               "to restart it from")
 
 # What to do when SessionStart has NEVER been observed. Deliberately does not
 # offer `llm_chat reload`: it refuses in precisely this state, by design.
@@ -4410,6 +4419,7 @@ FIRST_RELOAD_ADVICE = {
                         "(Cmd+Shift+P) once",
     "vscode-terminal":  "restart the `claude` session in this terminal",
     "cli":              "restart the `claude` session",
+    "sdk":              SDK_RESTART,
 }
 
 RELOAD_ADVICE = {
@@ -4417,6 +4427,7 @@ RELOAD_ADVICE = {
                         "or `llm_chat reload`",
     "vscode-terminal":  "restart the `claude` session in this terminal",
     "cli":              "restart the `claude` session",
+    "sdk":              SDK_RESTART,
 }
 
 
@@ -4483,6 +4494,23 @@ def do_auto_reload(setting):
         print("auto-reload OFF. A missed wake will be recorded and nothing "
               "else.")
     return 0
+
+
+def window_line(window, where):
+    """doctor's line for the VS Code window open on this folder.
+
+    The port is recorded because it is the only thing that tells two windows
+    apart: every VSCode window on this machine shares one extension-host pid.
+    But a window on the FOLDER is not proof it holds THIS session — an
+    Agent SDK app can host the session while the folder is also open in VS
+    Code, and doctor called that window this session's."""
+    if where != "vscode-extension":
+        return ("  a VSCode window (port %s) is open on this folder, but it is "
+                "NOT this session's:\n  this one runs as %s"
+                % (window["port"], where))
+    return ("  window: VSCode, port %s (an address, not a lever — nothing "
+            "can be\n  pushed through it, and no editor command submits a "
+            "prompt)" % window["port"])
 
 
 def do_reload(force=False, i_know=False):
@@ -5362,11 +5390,7 @@ def report_who_is_home(project):
                  sid, it_is_me))
     window = ide_window(project)
     if window:
-        # Recorded because it is the only thing that tells two windows apart:
-        # every VSCode window on this machine shares one extension-host pid.
-        print("  window: VSCode, port %s (an address, not a lever — nothing "
-              "can be\n  pushed through it, and no editor command submits a "
-              "prompt)" % window["port"])
+        print(window_line(window, host()))
     # THE HOST'S OWN ANSWER to the question issue #12 could only guess at.
     # When a window reload mints a new id, the environment and the hook
     # payload disagree and neither is authoritative. This is a third source,

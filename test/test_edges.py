@@ -100,6 +100,35 @@ class CliEdgeTest(unittest.TestCase):
             if saved is not None:
                 os.environ["CLAUDE_CODE_ENTRYPOINT"] = saved
 
+    def entry(self, value):
+        saved = os.environ.get("CLAUDE_CODE_ENTRYPOINT")
+        os.environ["CLAUDE_CODE_ENTRYPOINT"] = value
+        self.addCleanup(lambda: os.environ.__setitem__(
+            "CLAUDE_CODE_ENTRYPOINT", saved) if saved is not None
+            else os.environ.pop("CLAUDE_CODE_ENTRYPOINT", None))
+
+    def test_an_AGENT_SDK_session_is_its_own_host(self):
+        """A desktop app hosting Claude Code through the Agent SDK (SRCode,
+        2026-11-10) is neither a window nor a terminal, and both remedies
+        point at something that is not where the session lives."""
+        self.entry("sdk-cli")
+        self.assertEqual(cli.host(), "sdk")
+
+    def test_reload_under_the_SDK_says_restart_it_from_its_app(self):
+        self.entry("sdk-cli")
+        with self.assertRaises(SystemExit) as caught:
+            cli.do_reload(force=True)
+        self.assertIn("from the app that started it", str(caught.exception))
+
+    def test_a_VSCode_window_on_the_folder_is_not_an_SDK_sessions_window(self):
+        """The folder can be open in VS Code while an SDK app hosts the
+        session; doctor said `window: VSCode` as if it were this session's."""
+        line = cli.window_line({"port": "25465"}, "sdk")
+        self.assertIn("NOT this session's", line)
+        self.assertNotIn("window: VSCode", line)
+        self.assertIn("window: VSCode", cli.window_line({"port": "1"},
+                                                        "vscode-extension"))
+
     def test_reload_is_refused_off_macos(self):
         saved_platform = sys.platform
         saved_entry = os.environ.get("CLAUDE_CODE_ENTRYPOINT")

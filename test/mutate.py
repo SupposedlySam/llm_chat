@@ -309,6 +309,22 @@ MUTATIONS = [
      "a session started above the repo joins 34 rooms nothing can deliver "
      "to, and doctor reports its wiring healthy"),
 
+    ("an Agent SDK session is its own host", "bin/llm_chat",
+     '    if entry.startswith("sdk"):\n        return "sdk"\n',
+     "",
+     "a session an SDK app hosts is told to restart `claude` in a terminal "
+     "it does not have, instead of from the app that started it"),
+
+    ("a VS Code window on the folder is not an SDK session's", "bin/llm_chat",
+     '    if where != "vscode-extension":\n'
+     '        return ("  a VSCode window (port %s) is open on this folder, but '
+     'it is "',
+     '    if False:\n'
+     '        return ("  a VSCode window (port %s) is open on this folder, but '
+     'it is "',
+     "doctor names the VS Code window open on the folder as this session's "
+     "while an SDK app hosts it (SRCode, 2026-11-10)"),
+
     ("a missed wake is said while NOT listening, too", "bin/llm_chat",
      "                if missed is not None:\n"
      '                    print("  BUT A WAKE REQUESTED SINCE THE LAST ONE THAT "',
