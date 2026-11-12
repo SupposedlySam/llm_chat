@@ -468,7 +468,10 @@ window. It is said once per miss.
 
 If llm_chat was just updated (`git pull` in a clone, or `lamp upgrade llm_chat` in a project that
 vendors it), up to three things may need doing. **Run `llm_chat doctor` and do what it names**;
-do not guess:
+do not guess. `llm_chat version` answers the same two questions in four lines (which commit
+your repo runs, whether it needs a re-wire, whether the server needs a restart), and
+`llm_chat version --json` gives them to a program. The latest release is the tip of `main` on
+GitHub: `git ls-remote https://github.com/SupposedlySam/llm_chat.git refs/heads/main`.
 
 1. **Re-wire repos whose hooks changed.** `doctor` (and the delivery hook, once) says when a repo
    was wired from older hook scripts. Run `<copy>/install.sh <repo>`, or `setup` again.
@@ -505,7 +508,7 @@ If `doctor` names none of these, nothing needs doing.
 
 `setup`, `say`, `read`, `owed`, `pending`, `channels`, `who`, `leave`, `close`, `reopen`,
 `delete`, `join`, `open`, `invite`, `topic`, `briefing`, `identify`, `mode`, `sync`, `doctor`,
-`restart-server`, `reload`, `maintenance`, `fingerprint`. `llm_chat <command> --help` gives each
+`restart-server`, `reload`, `maintenance`, `fingerprint`, `version`. `llm_chat <command> --help` gives each
 one's flags. `--server <url>` goes **before** the command: `llm_chat --server <url> channels`.
 
 - `pending <room>` prints what is waiting for you as JSON **without** marking it read.
@@ -514,6 +517,9 @@ one's flags. `--server <url>` goes **before** the command: `llm_chat --server <u
   overrides). `reload --auto on` lets a wake that never landed reload the window by itself, per
   project, off by default.
 - `fingerprint` prints the hash of this copy's hook scripts; `--of <path>` hashes another copy.
+- `version` reports the copy your repo is wired to: its commit (and lamp release, if vendored),
+  whether the repo needs a re-wire, and whether the server needs a restart. `--json` prints one
+  record; a `null` means it could not tell, never "no".
 
 ### Exit codes
 

@@ -309,6 +309,32 @@ MUTATIONS = [
      "a session started above the repo joins 34 rooms nothing can deliver "
      "to, and doctor reports its wiring healthy"),
 
+    ("a clone reports its commit through git", "bin/llm_chat",
+     '    if os.path.exists(os.path.join(tree, ".git")):\n'
+     '        head = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"],',
+     '    if False:\n'
+     '        head = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"],',
+     "`version` says UNKNOWN COMMIT for every clone, so a host cannot tell a "
+     "current one from a stale one"),
+
+    ("a lamp copy reports the release it was vendored at", "bin/llm_chat",
+     '                    "release": wish.get("wish"), "dirty": None}',
+     '                    "release": None, "dirty": None}',
+     "a host shows a lamp consumer's commit with no release number, though "
+     "every announcement names releases"),
+
+    ("version keeps doctor's rule for a directly-wired repo", "bin/llm_chat",
+     "        rewire = not direct and stamp != wiring_fingerprint(copy)",
+     "        rewire = stamp != wiring_fingerprint(copy)",
+     "a repo wired straight from the checkout, already running its scripts, "
+     "is told to re-wire on every release, and the host's upgrade button "
+     "nags forever"),
+
+    ("version says CANNOT TELL about the server, not current", "bin/llm_chat",
+     "                  server_restart_needed=reads_are_limited(server),",
+     "                  server_restart_needed=bool(reads_are_limited(server)),",
+     "a server nobody could ask is reported as needing no restart"),
+
     ("an opening @mention with no audience is refused", "bin/llm_chat",
      "        check_leading_mention(name, identity, text, audience, chan, roster)\n",
      "",
@@ -809,8 +835,10 @@ MUTATIONS = [
      "and it will be right one day"),
 
     ("drift is measured against the tree you were WIRED FROM", "bin/llm_chat",
-     '    wired_from = installed_checkout(project)',
-     '    wired_from = None',
+     '    wired_from = installed_checkout(project)\n'
+     '    source = wired_from or ROOT',
+     '    wired_from = None\n'
+     '    source = wired_from or ROOT',
      "a vendored consumer is permanently STALE against a tree it never used, "
      "and the remedy repoints its hooks and undoes the vendoring"),
 
@@ -3455,6 +3483,9 @@ NOT_SWEPT = {
         "the flag it emits is one this parser accepts",
     "bin/llm-chat-mcp:_build_fingerprint": "both branches asserted directly "
         "for the exact argv produced",
+    "bin/llm-chat-mcp:_build_version": "both branches asserted directly for "
+        "the exact argv produced; the CLI-correspondence tests additionally "
+        "prove the flag it emits is one this parser accepts",
     "bin/llm-chat-mcp:_build_reload": "both branches asserted directly for "
         "the exact argv produced",
 

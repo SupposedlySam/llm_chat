@@ -4409,6 +4409,91 @@ def own_checkout(root=None):
     return os.path.realpath(top) == os.path.realpath(root)
 
 
+LATEST_RELEASE = ("git ls-remote https://github.com/SupposedlySam/llm_chat.git "
+                  "refs/heads/main")
+
+
+def commit_of(tree):
+    """Which commit a copy of llm_chat is, and how it knows.
+
+    A clone answers through git; a lamp copy has no .git but carries
+    `.lamp-wish.json`, which names the commit and the release it was vendored
+    at. Anything else is `unknown`, said rather than guessed."""
+    if os.path.exists(os.path.join(tree, ".git")):
+        head = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"],
+                              capture_output=True, text=True)
+        dirty = subprocess.run(["git", "-C", tree, "status", "--porcelain",
+                                "--untracked-files=no"],
+                               capture_output=True, text=True)
+        if head.returncode == 0:
+            return {"commit": head.stdout.strip(), "source": "git",
+                    "release": None,
+                    "dirty": (bool(dirty.stdout.strip())
+                              if dirty.returncode == 0 else None)}
+    try:
+        with open(os.path.join(tree, ".lamp-wish.json")) as f:
+            wish = json.load(f) or {}
+        if wish.get("sha"):
+            return {"commit": wish["sha"], "source": "lamp",
+                    "release": wish.get("wish"), "dirty": None}
+    except (OSError, ValueError):
+        pass
+    return {"commit": None, "source": "unknown", "release": None,
+            "dirty": None}
+
+
+def do_version(server, as_json=False):
+    """What this repo runs, for a host deciding whether to say "upgrade".
+
+    Asked for by showrunner-code-owner for SRCode (2026-11-12). The copy
+    reported is the one this repo's hooks are WIRED to, because that is the
+    code that runs here; the re-wire answer is doctor's, including its rule
+    that a repo wired straight from this checkout already runs its scripts.
+    """
+    project = project_dir()
+    stamp = installed_fingerprint(project)
+    wired_from = installed_checkout(project)
+    copy = os.path.abspath(wired_from or ROOT)
+    direct = wired_from is not None and copy == os.path.abspath(ROOT)
+    gone = not os.path.isdir(os.path.join(copy, "bin"))
+    if stamp is None:
+        rewire = None                       # not wired at all
+    elif gone:
+        rewire = True                       # wired to a tree that is gone
+    else:
+        rewire = not direct and stamp != wiring_fingerprint(copy)
+    installer = os.path.join(ROOT if gone else copy, "install.sh")
+    record = dict(commit_of(copy), tool="llm_chat", copy=copy, repo=project,
+                  wired=stamp is not None, rewire_needed=rewire,
+                  rewire_command=("%s %s" % (installer, project)
+                                  if rewire is not False else None),
+                  server_restart_needed=reads_are_limited(server),
+                  latest_release=LATEST_RELEASE)
+    if as_json:
+        print(json.dumps(record))
+        return 0
+    release = (" (lamp release #%s)" % record["release"]
+               if record["release"] else "")
+    print("llm_chat %s%s, from %s\n  copy: %s"
+          % ((record["commit"] or "UNKNOWN COMMIT")[:12], release,
+             record["source"], copy))
+    if record["dirty"]:
+        print("  that clone has UNCOMMITTED changes")
+    if not record["wired"]:
+        print("  this repo is NOT WIRED: %s" % record["rewire_command"])
+    elif rewire:
+        print("  RE-WIRE NEEDED: %s" % record["rewire_command"])
+    else:
+        print("  wiring: current")
+    restart = record["server_restart_needed"]
+    print("  server: %s" % ("SERVER IS OLDER — restart it: %s/bin/llm_chat "
+                            "restart-server" % copy if restart
+                            else "current" if restart is False
+                            else "CANNOT TELL"))
+    print("  latest release: %s" % LATEST_RELEASE)
+    return 0
+
+
 def installed_checkout(project):
     """WHICH tree this repo was wired from, if it said.
 
@@ -7764,6 +7849,11 @@ def build_parser():
                    help="which tree to hash. Defaults to this checkout — but a "
                         "repo wired from a VENDORED copy must be compared "
                         "against that copy, or it reports stale forever")
+    p = sub.add_parser("version",
+                       help="which llm_chat this repo runs, and whether it "
+                            "needs a re-wire or a server restart")
+    p.add_argument("--json", dest="as_json", action="store_true",
+                   help="one record, for programs")
     sub.add_parser("restart-server",
                    help="rebuild this copy and restart the chat server on it "
                         "(needed once after an update changes the server)")
@@ -7855,6 +7945,8 @@ def main() -> int:
     if args.cmd == "fingerprint":
         print(wiring_fingerprint(args.of))
         return 0
+    if args.cmd == "version":
+        return do_version(server, args.as_json)
     if args.cmd == "doctor":
         do_doctor(server)
         return 0

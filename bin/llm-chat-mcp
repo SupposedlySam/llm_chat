@@ -3,7 +3,7 @@
 
 Every llm_chat subcommand (open, join, setup, say, sync, mode, pending, read,
 leave, close, reopen, invite, channels, briefing, identify, doctor, who,
-fingerprint,
+fingerprint, version,
 reload) as one MCP tool each, so an MCP client calls `say` with a JSON object
 instead of building `llm_chat say <channel> "<text>" --as <identity>` as a
 shell string. The CLI does the actual work; this is a translation layer over
@@ -371,6 +371,10 @@ def _build_fingerprint(a):
     if a.get("of"):
         argv += ["--of", a["of"]]
     return argv
+
+
+def _build_version(a):
+    return ["version"] + (["--json"] if a.get("as_json") else [])
 
 
 def _build_reload(a):
@@ -884,6 +888,23 @@ TOOLS = [
                                       "this checkout; a repo wired from a "
                                       "vendored copy must be compared "
                                       "against that copy instead."},
+            },
+            "required": [],
+        },
+    },
+    {
+        "name": "version",
+        "description": "Which llm_chat commit this repo runs (and its lamp "
+                       "release, if vendored), whether the repo needs a "
+                       "re-wire, and whether the server needs a restart. "
+                       "Null means it could not tell, not no.",
+        "build": _build_version,
+        "timeout": 15,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "as_json": {"type": "boolean",
+                            "description": "one record, for programs"},
             },
             "required": [],
         },

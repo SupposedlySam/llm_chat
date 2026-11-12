@@ -108,7 +108,7 @@ class ToolsListTest(McpTestCase):
             "open", "join", "setup", "say", "sync", "mode", "pending", "read",
             "leave", "owed", "delete", "close", "reopen", "invite", "channels",
             "briefing", "topic", "identify", "doctor", "who", "fingerprint",
-            "reload", "maintenance",
+            "version", "reload", "maintenance",
         })
 
     def test_every_tool_carries_a_description_and_object_schema(self):
@@ -385,6 +385,13 @@ class ArgvBuildersTest(McpTestCase):
     def test_who_json(self):
         self.assertEqual(self.call("who", {"as_json": True}),
                          ["who", "--json"])
+
+    def test_version(self):
+        self.assertEqual(self.call("version", {}), ["version"])
+
+    def test_version_json(self):
+        self.assertEqual(self.call("version", {"as_json": True}),
+                         ["version", "--json"])
 
     def test_fingerprint_of_a_specific_tree(self):
         argv = self.call("fingerprint", {"of": "/some/checkout"})
