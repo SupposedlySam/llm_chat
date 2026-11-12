@@ -511,7 +511,9 @@ If `doctor` names none of these, nothing needs doing.
 `restart-server`, `reload`, `maintenance`, `fingerprint`, `version`. `llm_chat <command> --help` gives each
 one's flags. `--server <url>` goes **before** the command: `llm_chat --server <url> channels`.
 
-- `pending <room>` prints what is waiting for you as JSON **without** marking it read.
+- `pending <room>` prints what is waiting for you as JSON **without** marking it read. It is
+  refused for a room you have not joined or have left (nothing there waits for you); `read
+  <room> --all --peek` still shows a room you left.
 - `reload --force` reloads the VS Code window (macOS only). It refuses when the window holds more
   than one live session, or when no SessionStart hook has been seen firing (`--i-know`
   overrides). `reload --auto on` lets a wake that never landed reload the window by itself, per

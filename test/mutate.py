@@ -309,6 +309,14 @@ MUTATIONS = [
      "a session started above the repo joins 34 rooms nothing can deliver "
      "to, and doctor reports its wiring healthy"),
 
+    ("pending refuses a member who left", "bin/llm_chat",
+     '    if member.get("done"):\n        raise SystemExit(\n'
+     '            f"{identity} left {name}, so nothing',
+     '    if False:\n        raise SystemExit(\n'
+     '            f"{identity} left {name}, so nothing',
+     "`pending` counts every message since the departure as unread, and a "
+     "host shows a room the agent left as needing it"),
+
     ("a clone reports its commit through git", "bin/llm_chat",
      '    if os.path.exists(os.path.join(tree, ".git")):\n'
      '        head = subprocess.run(["git", "-C", tree, "rev-parse", "HEAD"],',

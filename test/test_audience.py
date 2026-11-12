@@ -716,6 +716,29 @@ class PendingTest(ServerTest):
         with self.assertRaises(SystemExit):
             self.pending("stranger")
 
+    def test_a_member_who_LEFT_is_refused_not_counted(self):
+        """Reported from SRCode, 2026-11-12: `pending wcs_owner --as
+        gravity-brew-owner` answered 9 for a room it had left, because `leave`
+        keeps the row (done) and the stale cursor counted the whole room as
+        unread. A number is what made it look true."""
+        self.say("one")
+        self.server.get_membership("room", "bob")["done"] = 1
+        with self.assertRaises(SystemExit) as caught:
+            self.pending("bob")
+        message = str(caught.exception)
+        self.assertIn("left", message)
+        self.assertIn("join room --as bob", message)
+
+    def test_the_LOOK_remedy_it_names_works_for_a_member_who_left(self):
+        """The refusal offers `read --all --peek`; a remedy that refuses in
+        turn is the dead-pointer class this project keeps removing."""
+        self.say("still readable")
+        self.server.get_membership("room", "bob")["done"] = 1
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_read("srv", "room", "bob", peek=True, all_messages=True)
+        self.assertIn("still readable", out.getvalue())
+
     def test_a_missing_room_is_refused(self):
         self.server.membership("ghost", "bob")
         with self.assertRaises(SystemExit) as caught:

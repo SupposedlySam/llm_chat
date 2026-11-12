@@ -2899,6 +2899,16 @@ def do_pending(server, name, identity):
     member = get_membership(server, name, identity)
     if member is None:
         raise SystemExit(f"{identity} has not joined {name}")
+    # A MEMBER WHO LEFT HAS NOTHING WAITING. `leave` keeps the row, marked
+    # done, with the cursor where it stopped, so counting from it reported
+    # every later message as unread: SRCode showed 9 pending in a room the
+    # agent had left (2026-11-12). Refused like a non-member, because a number
+    # is what made it look true. `read --all --peek` still shows the room.
+    if member.get("done"):
+        raise SystemExit(
+            f"{identity} left {name}, so nothing there is waiting for it.\n"
+            f"  Rejoin: llm_chat join {name} --as {identity}\n"
+            f"  Or just look: llm_chat read {name} --all --peek --as {identity}")
     chan = get_channel(server, name)
     if chan is None:
         raise SystemExit(f"no such channel: {name}")
