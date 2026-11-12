@@ -309,6 +309,32 @@ MUTATIONS = [
      "a session started above the repo joins 34 rooms nothing can deliver "
      "to, and doctor reports its wiring healthy"),
 
+    ("an opening @mention with no audience is refused", "bin/llm_chat",
+     "        check_leading_mention(name, identity, text, audience, chan, roster)\n",
+     "",
+     "a message opening \"@bob ...\" with no --to goes to every member, and "
+     "each of them owes a reply nobody meant to ask for"),
+
+    ("a departed member's @ is not an address", "bin/llm_chat",
+     '    here = {m["identity"] for m in roster if not m.get("done")} - '
+     '{identity}',
+     '    here = {m["identity"] for m in roster} - {identity}',
+     "the refusal suggests --to for a member who left, and --to refuses them, "
+     "so the sender gets a second refusal for following the first"),
+
+    ("a broadcast room's @mention is not refused", "bin/llm_chat",
+     '    if audience or chan.get("broadcast"):\n        return\n'
+     '    here = {m["identity"]',
+     '    if audience:\n        return\n    here = {m["identity"]',
+     "a note in a broadcast room, whose default wakes nobody, is refused for "
+     "a reply-burden it cannot create"),
+
+    ("a two-member room's @mention is not refused", "bin/llm_chat",
+     "    if len(here) < 2:\n        return\n    opening = ",
+     "    if len(here) < 1:\n        return\n    opening = ",
+     "a message to the only other member is refused, though everyone and "
+     "that one member are the same person"),
+
     ("a woken turn still running is recorded as a landing", "bin/llm-chat-wake",
      '        record_landing("turn-started")\n',
      "",

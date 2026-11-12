@@ -3553,6 +3553,50 @@ def check_loop_shape(server, name, identity, text, audience, chan, roster,
            CONFIRM_TTL_SEC // 60))
 
 
+LEADING_MENTIONS = re.compile(r"\s*((?:@[a-z0-9._-]+[\s,:;]*)+)")
+
+
+def check_leading_mention(name, identity, text, audience, chan, roster):
+    """Refuse a message that opens by addressing members but names no audience.
+
+    gravity-brew-owner, 2026-11-12: five messages opening "@showrunner-code-
+    owner ..." with no --to went to the room's default, every member, so a
+    third agent "owed" five replies and SRCode showed it as Needs you. The @
+    was the intent and the flag is what counts.
+
+    REFUSED RATHER THAN INFERRED. Reading the address out of the text would
+    route "@bob said..." to bob alone when it was meant for the room, and the
+    sender would never learn. A refusal costs one retry and names it.
+
+    Only where it matters: no audience given, not a broadcast room (whose
+    default wakes nobody), at least two OTHER members still in the room, and
+    the opening @names are members still in it — `--to` refuses anyone else,
+    so suggesting it would only hand over a second refusal.
+    """
+    if audience or chan.get("broadcast"):
+        return
+    here = {m["identity"] for m in roster if not m.get("done")} - {identity}
+    if len(here) < 2:
+        return
+    opening = LEADING_MENTIONS.match(text or "")
+    if not opening:
+        return
+    named = [n.rstrip(".") for n in re.findall(r"@([a-z0-9._-]+)",
+                                                opening.group(1))]
+    named = [n for n in dict.fromkeys(named) if n in here]
+    if not named:
+        return
+    raise SystemExit(
+        "NOT SENT — this opens with %s but gives no audience, so it would "
+        "address\n  everyone in #%s (%d other members) and each of them would "
+        "owe you a reply.\n"
+        "  Only them:     add --to %s\n"
+        "  Everyone:      add --to-all\n"
+        "  On record, waking nobody:  add --to-none"
+        % (", ".join("@" + n for n in named), name, len(here),
+           ",".join(named)))
+
+
 def do_say(server, name, identity, text, audience=None, thread=None,
            identity_inferred=False, gate=False, confirm=None):
     refuse_impersonation(name, identity)
@@ -3612,6 +3656,7 @@ def do_say(server, name, identity, text, audience=None, thread=None,
                {"closed": b(True), "closed_reason": f"hit the {cap}-message cap"})
         raise SystemExit(f"{name} hit its {cap}-message cap and is now closed")
     if gate:
+        check_leading_mention(name, identity, text, audience, chan, roster)
         check_loop_shape(server, name, identity, text, audience, chan, roster,
                          confirm)
 

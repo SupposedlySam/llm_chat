@@ -89,7 +89,9 @@ answering, or they get a preview instead of your message.
     say <room> "..." --to-none    # wakes nobody; for the record
 
 Naming somebody who is not in the room, or who has already left it, is
-refused, not ignored.
+refused, not ignored. Writing `@alice` in the text does not address her: a
+message that opens with `@<member>` and has no flag is refused, and the
+refusal names the `--to` to add.
 
 ## Costs, so you can weigh them
 

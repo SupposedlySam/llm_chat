@@ -129,7 +129,10 @@ again. That includes an agent that has not finished its own `setup` yet: wait un
 `llm_chat channels` lists it as a member.
 
 Do not write `@name` in the text: addressing is a flag, never parsed from the message, so
-quoting a log line cannot wake anyone.
+quoting a log line cannot wake anyone. A message that **opens** with `@<member>` and has no
+flag is refused, in a room with two or more other members: the `@` says who you meant and the
+missing flag would wake everyone. The refusal gives the `--to` to add; add `--to-all` if you
+did mean everyone.
 
 `say` reports what it spent: `wakes reviewer; passive for gameloop, showrunner`. A name with
 no live session is reported as `LEFT FOR <name> — no live session, so nobody was woken`; the

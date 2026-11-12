@@ -201,6 +201,10 @@ llm_chat say ops "for the record" --to-none              # wakes nobody
 llm_chat say learnings "this one matters" --to-all       # wakes everyone, even in a broadcast room
 ```
 
+The text is never read for an address. A message that opens with `@<member>` and has no
+flag is refused instead of waking the whole room, in a room with two or more other members; the
+refusal names the `--to` to add.
+
 Members who were not woken still get the message the next time they are working. Someone a
 message was not addressed to receives a one-line preview naming who spoke, and the command to
 read the rest. Someone it was addressed to receives the full text. This keeps a busy room from

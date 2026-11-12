@@ -1509,3 +1509,91 @@ class DeleteTest(RoomTest):
         self.assertIn(name, cli.read_joined())
         self.quiet(cli.do_delete, self.SERVER, name, "me", yes=True)
         self.assertNotIn(name, cli.read_joined())
+
+
+class LeadingMentionTest(RoomTest):
+    """gravity-brew-owner, 2026-11-12: five messages opening "@showrunner-
+    code-owner ..." with no --to went to every member, so a third agent
+    "owed" five replies and SRCode showed it as Needs you. The @ was the
+    intent; the flag is what counts, so the gap is refused, not guessed."""
+
+    SERVER = "http://127.0.0.1:1"
+
+    def members(self, *names, room="ops", **channel):
+        self.fake.channel(room, **channel)
+        self.fake.tables.setdefault("memberships", []).extend(
+            {"id": "m-" + n, "channel": room, "identity": n, "done": 0}
+            for n in names)
+        return room
+
+    def sent(self):
+        return len(self.fake.tables.get("messages", []))
+
+    def say(self, text, audience=None, gate=True, room="ops"):
+        """A refusal where none is due is a FAILED ASSERTION, not an error:
+        the sweep counts a mutant that only raised as crashed, not caught."""
+        try:
+            return self.attempt(text, audience, gate, room)
+        except SystemExit as refused:
+            self.fail("refused a message that should send: %s" % refused)
+
+    def attempt(self, text, audience=None, gate=True, room="ops"):
+        return self.quiet(cli.do_say, self.SERVER, room, "me", text,
+                          audience=audience, gate=gate)
+
+    def test_an_OPENING_mention_with_no_audience_is_refused(self):
+        self.members("me", "bob", "carol")
+        with self.assertRaises(SystemExit) as caught:
+            self.attempt("@bob can you look at this?")
+        message = str(caught.exception)
+        self.assertIn("--to bob", message)
+        self.assertIn("--to-all", message)
+        self.assertEqual(self.sent(), 0, "a refusal must not send")
+
+    def test_several_opening_mentions_are_named_together(self):
+        self.members("me", "bob", "carol", "dave")
+        with self.assertRaises(SystemExit) as caught:
+            self.attempt("@bob @carol: both of you, please")
+        self.assertIn("--to bob,carol", str(caught.exception))
+
+    def test_naming_the_audience_sends(self):
+        self.members("me", "bob", "carol")
+        self.say("@bob can you look?", audience="bob")
+        self.say("@bob and everyone", audience=cli.AUDIENCE_ALL)
+        self.assertEqual(self.sent(), 2)
+
+    def test_a_TWO_member_room_has_nobody_else_to_reach(self):
+        self.members("me", "bob")
+        self.say("@bob can you look?")
+        self.assertEqual(self.sent(), 1)
+
+    def test_a_mention_LATER_in_the_text_is_not_an_address(self):
+        self.members("me", "bob", "carol")
+        self.say("thanks, @bob was right about this")
+        self.assertEqual(self.sent(), 1)
+
+    def test_an_at_word_that_is_NOT_a_member_is_just_text(self):
+        self.members("me", "bob", "carol")
+        self.say("@here is not anybody")
+        self.assertEqual(self.sent(), 1)
+
+    def test_a_member_who_LEFT_is_not_an_address(self):
+        """`--to` refuses a departed member, so suggesting it would hand the
+        sender a second refusal."""
+        room = self.members("me", "carol", "dave")
+        self.fake.tables["memberships"].append(
+            {"id": "m-bob", "channel": room, "identity": "bob", "done": 1})
+        self.say("@bob already left")
+        self.assertEqual(self.sent(), 1)
+
+    def test_a_BROADCAST_room_wakes_nobody_by_default(self):
+        self.members("me", "bob", "carol", broadcast=1)
+        self.say("@bob a note for the record")
+        self.assertEqual(self.sent(), 1)
+
+    def test_a_relay_is_never_refused(self):
+        """A bridge relaying a human or another machine runs ungated; a
+        refusal there would drop the message."""
+        self.members("me", "bob", "carol")
+        self.say("@bob from Slack", gate=False)
+        self.assertEqual(self.sent(), 1)
