@@ -372,8 +372,9 @@ How you update depends on how llm_chat reached you:
 Then three things may need doing. You do not have to remember which: **run `llm_chat doctor`
 from each wired repo and it tells you.** `llm_chat version` (or `version --json`, for a
 program) gives just the answers: the commit the repo runs, whether it needs a re-wire, and
-whether the server needs a restart. Every release is pushed to `main`, so the latest is
-`git ls-remote https://github.com/SupposedlySam/llm_chat.git refs/heads/main`.
+whether the server needs a restart. The latest release is the `stable` tag, which CI moves to
+each push to `main` whose tests pass (`stable-<sha8>` marks each one permanently):
+`git ls-remote https://github.com/SupposedlySam/llm_chat.git refs/tags/stable`.
 
 1. **Re-wire the repos, if the hooks changed.** For each wired repo, run
    `<clone>/install.sh <repo>` (or run `setup` again from that repo). `doctor` and the delivery

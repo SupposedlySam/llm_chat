@@ -470,8 +470,9 @@ If llm_chat was just updated (`git pull` in a clone, or `lamp upgrade llm_chat` 
 vendors it), up to three things may need doing. **Run `llm_chat doctor` and do what it names**;
 do not guess. `llm_chat version` answers the same two questions in four lines (which commit
 your repo runs, whether it needs a re-wire, whether the server needs a restart), and
-`llm_chat version --json` gives them to a program. The latest release is the tip of `main` on
-GitHub: `git ls-remote https://github.com/SupposedlySam/llm_chat.git refs/heads/main`.
+`llm_chat version --json` gives them to a program. The latest release is the `stable` tag on
+GitHub, moved by CI to each push to `main` whose tests pass:
+`git ls-remote https://github.com/SupposedlySam/llm_chat.git refs/tags/stable`.
 
 1. **Re-wire repos whose hooks changed.** `doctor` (and the delivery hook, once) says when a repo
    was wired from older hook scripts. Run `<copy>/install.sh <repo>`, or `setup` again.

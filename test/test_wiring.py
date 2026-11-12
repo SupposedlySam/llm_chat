@@ -1163,6 +1163,42 @@ class ContinuousIntegrationTest(unittest.TestCase):
             text = f.read()
         self.assertIn("does NOT run the mutation sweep", text)
 
+    # ── `stable`: the release tag every tool shares (SRCode, 2026-11-12) ────
+    # game_loop and showrunner mark a release with a moving `stable` tag and
+    # an immutable `stable-<sha8>`, so SRCode reads each tool's latest with
+    # one `git ls-remote <repo> refs/tags/stable`.
+
+    def stable_job(self):
+        text = self.commands()
+        self.assertIn("  stable:", text, "no job moves the stable tag")
+        return text[text.index("  stable:"):]
+
+    def test_a_job_moves_STABLE_and_adds_an_immutable_tag(self):
+        job = self.stable_job()
+        self.assertIn("refs/tags/stable", job)
+        self.assertIn("stable-${", job)
+
+    def test_STABLE_moves_only_after_the_suite_passed(self):
+        self.assertIn("needs: cold-clone", self.stable_job())
+
+    def test_STABLE_moves_only_for_a_PUSH_to_main(self):
+        """A pull request's commit is not a release."""
+        job = self.stable_job()
+        self.assertIn("github.event_name == 'push'", job)
+        self.assertIn("refs/heads/main", job)
+
+    def test_a_SLOWER_older_run_cannot_move_stable_backwards(self):
+        """Two pushes close together: if the first one's job finished last,
+        it would move `stable` back. It only moves to main's current tip."""
+        self.assertIn("git ls-remote origin refs/heads/main", self.stable_job())
+
+    def test_only_that_job_may_write(self):
+        """The suite runs untrusted pull-request code; it keeps read-only."""
+        text = self.commands()
+        top = text[:text.index("jobs:")]
+        self.assertNotIn("contents: write", top)
+        self.assertIn("contents: write", self.stable_job())
+
 
 class TheSweepWorkflowTest(unittest.TestCase):
     """The OTHER workflow, which nothing here asserted anything about.

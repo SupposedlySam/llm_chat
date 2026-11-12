@@ -55,6 +55,11 @@ on:
   #     gh workflow run tests --ref main
   workflow_dispatch:
 
+# READ-ONLY BY DEFAULT. The suite runs pull-request code; only `stable` below
+# writes, and only for a push to main.
+permissions:
+  contents: read
+
 jobs:
   cold-clone:
     runs-on: ubuntu-latest
@@ -84,3 +89,29 @@ jobs:
         run: |
           python3 test/run.py --tests-only 2>&1 \
             | grep -iE "skipped|skip:" || echo "nothing skipped"
+
+  # THE RELEASE TAG every tool shares (agreed with SRCode, 2026-11-12):
+  # `stable` moves to each release, and `stable-<sha8>` marks it for good, so
+  # SRCode reads the latest of any tool with `git ls-remote <repo>
+  # refs/tags/stable`. Every push to main here is a release, and this moves
+  # only after the suite above passed on it.
+  stable:
+    needs: cold-clone
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: move stable to this commit, if it is still main's tip
+        run: |
+          # A slower run for an OLDER push must not move stable backwards.
+          tip=$(git ls-remote origin refs/heads/main | cut -f1)
+          if [ "$tip" != "$GITHUB_SHA" ]; then
+            echo "main has moved on to $tip; leaving stable to that run"
+            exit 0
+          fi
+          short=$(echo "$GITHUB_SHA" | cut -c1-8)
+          git tag -f stable "$GITHUB_SHA"
+          git tag -f "stable-${short}" "$GITHUB_SHA"
+          git push -f origin refs/tags/stable "refs/tags/stable-${short}"

@@ -4419,8 +4419,11 @@ def own_checkout(root=None):
     return os.path.realpath(top) == os.path.realpath(root)
 
 
+# Moved by CI (.github/workflows/tests.yml) to each push to main whose suite
+# passed; `stable-<sha8>` marks each one for good. The rule SRCode reads for
+# every tool it hosts.
 LATEST_RELEASE = ("git ls-remote https://github.com/SupposedlySam/llm_chat.git "
-                  "refs/heads/main")
+                  "refs/tags/stable")
 
 
 def commit_of(tree):
