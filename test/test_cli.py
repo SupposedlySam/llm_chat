@@ -1551,8 +1551,96 @@ class DoctorTest(unittest.TestCase):
             self.session("bbbb000%d" % n)
         text = self.report()
         self.assertIn("6 stub session(s) in no rooms", text)
-        self.assertIn("--verbose to list them", text)
+        self.assertNotIn("--verbose", text, "doctor has no --verbose")
         self.assertNotIn("bbbb0003", text, "a stub was listed anyway")
+
+    def test_the_stub_count_NAMES_THE_VERB_that_clears_it(self):
+        """Reported from a checkout with 41 stubs: a finding with no verb to
+        clear it is a line people learn to skip."""
+        self.joined()
+        self.session("aaaa0001", {"room": {"identity": "me"}})
+        self.session("bbbb0002")
+        self.assertIn("`llm_chat sync --repair` removes", self.report())
+
+    # ── sync --repair prunes the stubs that hold nothing ────────────────────
+
+    def sessions_left(self):
+        return sorted(os.listdir(os.path.join(self.project, ".llm_chat",
+                                              "sessions")))
+
+    def prune(self, mine=None):
+        if mine:
+            os.environ["CLAUDE_CODE_SESSION_ID"] = mine
+        try:
+            return cli.prune_stub_sessions(self.project)
+        finally:
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+
+    def test_REPAIR_REMOVES_a_stub_holding_only_its_lock(self):
+        self.session("aaaa0001", {"room": {"identity": "me"}})
+        self.session("bbbb0002")
+        os.makedirs(os.path.join(self.project, ".llm_chat", "sessions",
+                                 "cccc0003"))       # empty: also nothing
+        self.assertEqual(self.prune(), (["bbbb0002", "cccc0003"], []))
+        self.assertEqual(self.sessions_left(), ["aaaa0001"],
+                         "a session that holds rooms was touched")
+
+    def test_REPAIR_NEVER_REMOVES_THIS_SESSIONS_OWN_STUB(self):
+        """The stub that matters is this one, and doctor's remedy for it is
+        `identify` — deleting it would hide the finding, not fix it."""
+        self.session("bbbb0002")
+        self.assertEqual(self.prune(mine="bbbb0002"), ([], []))
+        self.assertEqual(self.sessions_left(), ["bbbb0002"])
+
+    def test_REPAIR_KEEPS_a_stub_holding_ANYTHING_ELSE(self):
+        """A file we did not expect is somebody's state."""
+        self.session("bbbb0002")
+        d = os.path.join(self.project, ".llm_chat", "sessions", "bbbb0002")
+        open(os.path.join(d, "wake.mark"), "w").close()
+        self.assertEqual(self.prune(), ([], ["bbbb0002"]))
+        self.assertTrue(os.path.isfile(os.path.join(d, "wake.mark")))
+        # The rmdir would refuse a non-empty directory anyway; what the guard
+        # protects is the LOCK, which would otherwise be unlinked out from
+        # under a session that is evidently still writing here.
+        self.assertTrue(os.path.isfile(os.path.join(d, "read.lock")),
+                        "the lock of a stub that was kept was deleted")
+
+    def test_REPAIR_KEEPS_a_stub_whose_lock_is_HELD(self):
+        """A reader mid-flight holds the lock. Unlinking a held flock file
+        lets the next reader lock a different inode, so two deliverers would
+        race on one cursor."""
+        import fcntl
+        self.session("bbbb0002")
+        lock = os.path.join(self.project, ".llm_chat", "sessions", "bbbb0002",
+                            "read.lock")
+        fd = os.open(lock, os.O_RDWR)
+        self.addCleanup(os.close, fd)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        self.assertEqual(self.prune(), ([], ["bbbb0002"]))
+        self.assertTrue(os.path.isfile(lock))
+
+    def test_SYNC_REPAIR_reports_what_it_removed_and_kept(self):
+        self.session("aaaa0001", {"room": {"identity": "me"}})
+        self.session("bbbb0002")
+        self.session("bbbb0003")
+        d = os.path.join(self.project, ".llm_chat", "sessions", "bbbb0003")
+        open(os.path.join(d, "other"), "w").close()
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_sync("http://127.0.0.1:1", repair=True)
+        text = out.getvalue()
+        self.assertIn("removed 1 stub session directory", text)
+        self.assertIn("kept 1 stub(s)", text)
+        self.assertIn("bbbb0003", text)
+
+    def test_SYNC_REPAIR_with_no_stub_says_so(self):
+        """Silence from a command somebody typed is indistinguishable from a
+        command that did not run."""
+        self.session("aaaa0001", {"room": {"identity": "me"}})
+        out = io.StringIO()
+        with redirect_stdout(out):
+            cli.do_sync("http://127.0.0.1:1", repair=True)
+        self.assertIn("no empty stub session to remove", out.getvalue())
 
     def test_a_FEW_stubs_are_still_named(self):
         """Paired. Collapsing is for the case that drowns the report; three

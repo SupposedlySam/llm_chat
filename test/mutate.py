@@ -2042,6 +2042,45 @@ MUTATIONS = [
      "healthy — every other check reports at PROJECT level, so the wiring is "
      "right and the rooms exist while this session's waker looks at nothing"),
 
+    ("pruning stubs never touches THIS session's own", "bin/llm_chat",
+     "        if has or name == mine:\n            continue\n"
+     "        path = os.path.join(base, name)",
+     "        if has:\n            continue\n"
+     "        path = os.path.join(base, name)",
+     "the stub that matters is this session's, and its remedy is `identify` — "
+     "deleting it hides doctor's finding instead of fixing it"),
+
+    ("pruning stubs keeps one holding anything but its lock", "bin/llm_chat",
+     '        if contents not in ([], ["read.lock"]):',
+     "        if False:",
+     "a file nobody expected in a session directory is somebody's state, and "
+     "`sync --repair` would delete it"),
+
+    ("pruning stubs keeps one whose lock is HELD", "bin/llm_chat",
+     "                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+     "                except OSError:\n                    kept.append(name)",
+     "                    pass\n"
+     "                except OSError:\n                    kept.append(name)",
+     "unlinking a lock a reader holds lets the next reader lock a different "
+     "inode, so two deliverers race on one cursor and a message is shown twice"),
+
+    ("sync --repair still drops shadowed project rooms", "bin/llm_chat",
+     "    for room, was, now in shadowed:\n        del at_project[room]",
+     "    for room, was, now in shadowed:\n        pass",
+     "the project store's only writer: a shadowed entry naming a departed "
+     "identity could otherwise be fixed only by editing state by hand"),
+
+    ("sync --repair prunes stubs at all", "bin/llm_chat",
+     "        removed, kept = prune_stub_sessions()",
+     "        removed, kept = [], []",
+     "doctor counts stub sessions as a finding and names this as the verb that "
+     "clears them; without it the count only grows (one checkout had 41)"),
+
+    ("doctor names the verb that clears the stub count", "bin/llm_chat",
+     '        print("    `llm_chat sync --repair` removes the ones that hold "',
+     '        print("    "',
+     "a finding with no verb to clear it is a line people learn to skip"),
+
     ("prose the shell will RUN is refused before it ships",
      "triggers/prose-through-shell",
      "        if LIVE_BACKTICK.search(text):",

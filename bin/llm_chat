@@ -655,6 +655,63 @@ def live_sessions(project=None):
     return found
 
 
+def prune_stub_sessions(project=None):
+    """Remove the stub session directories that hold nothing. (removed, kept)
+
+    A stub is a session directory with no `joined.json`, and almost always
+    one with a `read.lock` and nothing else: an id that read once and never
+    joined. They accumulate — one checkout reported 41 — and `doctor` counted
+    them as a finding with no verb to clear it.
+
+    REMOVED ONLY WHEN THERE IS PROVABLY NOTHING IN IT:
+      · never this session's own directory, which is the stub that matters;
+      · never one holding anything besides `read.lock` — a file we did not
+        expect is somebody's state, and deleting it is not a repair;
+      · never one whose lock is HELD. A reader mid-flight holds it, and
+        unlinking a held flock file lets the next reader lock a different
+        inode, so two deliverers race on one cursor. Taken non-blocking, and
+        unlinked while held, so no reader can be inside it at that moment.
+    A directory that refills between the unlink and the rmdir just fails the
+    rmdir and is kept, which is the safe direction.
+    """
+    base = os.path.join(project or project_dir(), ".llm_chat", "sessions")
+    mine = session_id()
+    removed, kept = [], []
+    for name, has in live_sessions(project):
+        if has or name == mine:
+            continue
+        path = os.path.join(base, name)
+        try:
+            contents = os.listdir(path)
+        except OSError:
+            continue
+        if contents not in ([], ["read.lock"]):
+            kept.append(name)
+            continue
+        if contents:
+            lock = os.path.join(path, "read.lock")
+            try:
+                fd = os.open(lock, os.O_RDWR)
+            except OSError:
+                kept.append(name)
+                continue
+            try:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except OSError:
+                    kept.append(name)
+                    continue
+                os.unlink(lock)
+            finally:
+                os.close(fd)
+        try:
+            os.rmdir(path)
+            removed.append(name)
+        except OSError:
+            kept.append(name)
+    return removed, kept
+
+
 def joined_path() -> str:
     """Where THIS agent remembers who it is in each room.
 
@@ -2247,32 +2304,16 @@ def do_sync(server, repair=False):
     an opt-out rather than an error: say nothing and exit clean.
     """
     if repair:
-        # THE ONLY WRITER THE PROJECT STORE HAS. Since session scoping nothing
-        # writes that file, so a shadowed entry naming a departed identity
-        # cannot be corrected by joining, leaving, or syncing — the answer to
-        # "how do I fix this" was editing state by hand, which is the coupling
-        # this project refuses everywhere else.
-        shadowed = shadowed_project_rooms()
-        if not shadowed:
-            print("nothing to repair: no project-level room is shadowed by a "
-                  "different\n  identity in this session's store.")
-            return
-        path = os.path.join(project_dir(), ".llm_chat", "joined.json")
-        with open(path) as f:
-            at_project = json.load(f) or {}
-        for room, was, now in shadowed:
-            del at_project[room]
-            print(f"dropped #{room} from the project store (it said {was}; "
-                  f"this session uses {now})")
-        tmp = own_tmp(path)
-        with open(tmp, "w") as f:
-            json.dump(at_project, f, indent=2)
-        os.replace(tmp, path)
-        # NOT DELETED WHOLESALE. An agent with no session store runs entirely
-        # on this file — one on this machine does — so only the entries a
-        # session store already shadows are dropped.
-        print("  Entries no session store shadows were left alone: for an "
-              "agent without\n  one, this file IS its membership.")
+        repair_shadowed_rooms()
+        removed, kept = prune_stub_sessions()
+        if removed:
+            print("removed %d stub session director%s that held nothing"
+                  % (len(removed), "y" if len(removed) == 1 else "ies"))
+        else:
+            print("no empty stub session to remove")
+        if kept:
+            print("  kept %d stub(s) that are in use or hold more than a lock:"
+                  " %s" % (len(kept), ", ".join(kept)))
         return
 
     identity = project_identity()
@@ -2280,6 +2321,36 @@ def do_sync(server, repair=False):
         return
     for name in reconcile_broadcasts(server, identity):
         print(f"joined broadcast room: {name}")
+
+
+def repair_shadowed_rooms():
+    """Drop project-level room entries that this session's store overrides."""
+    # THE ONLY WRITER THE PROJECT STORE HAS. Since session scoping nothing
+    # writes that file, so a shadowed entry naming a departed identity cannot
+    # be corrected by joining, leaving, or syncing — the answer to "how do I
+    # fix this" was editing state by hand, which is the coupling this project
+    # refuses everywhere else.
+    shadowed = shadowed_project_rooms()
+    if not shadowed:
+        print("nothing to repair: no project-level room is shadowed by a "
+              "different\n  identity in this session's store.")
+        return
+    path = os.path.join(project_dir(), ".llm_chat", "joined.json")
+    with open(path) as f:
+        at_project = json.load(f) or {}
+    for room, was, now in shadowed:
+        del at_project[room]
+        print(f"dropped #{room} from the project store (it said {was}; "
+              f"this session uses {now})")
+    tmp = own_tmp(path)
+    with open(tmp, "w") as f:
+        json.dump(at_project, f, indent=2)
+    os.replace(tmp, path)
+    # NOT DELETED WHOLESALE. An agent with no session store runs entirely on
+    # this file — one on this machine does — so only the entries a session
+    # store already shadows are dropped.
+    print("  Entries no session store shadows were left alone: for an "
+          "agent without\n  one, this file IS its membership.")
 
 
 MODES = ("broadcast", "ordinary")
@@ -5589,7 +5660,11 @@ def report_sessions(project):
             for name in stubs:
                 print("    %s" % name)
         else:
-            print("    --verbose to list them")
+            print("    listed in .llm_chat/sessions/")
+        # A FINDING NEEDS A VERB. This counted stubs with nothing able to
+        # clear them, and pointed at a `--verbose` doctor never had.
+        print("    `llm_chat sync --repair` removes the ones that hold "
+              "nothing (never this session's)")
     # AN IDENTITY SPLIT IS A NAMED CONDITION, said here rather than left to be
     # inferred from the lines above. `bin/llm-chat-wake` already writes the
     # exact phrase into `wake.exit` — "in no rooms — but session X holds rooms

@@ -342,8 +342,11 @@ llm_chat mode <room> ordinary --yes           # make it wake people again
 room is told, without waking anyone. Judge by what the room is for: a conversation wants
 ordinary; announcements and reference material want broadcast.
 
-`llm_chat sync --repair` removes stale entries from the project-level room record that this
-session's own record already overrides; `doctor` names any it finds.
+`llm_chat sync --repair` cleans up this project's local state, and `doctor` names what it
+would clear. It removes stale entries from the project-level room record that this session's
+own record already overrides. It also removes **stub** session directories (see `doctor`'s
+sessions line in section 6) that hold nothing but an unused lock. It never removes this
+session's own, one holding any other file, or one whose lock is in use; it lists those it kept.
 
 `join` and `open` are the lower-level pieces `setup` uses. Use them directly only in a repo that
 is already wired.
@@ -428,9 +431,10 @@ Run it from your repo when messages only arrive when you run `read`, or not at a
   only every 300 seconds;
 - **wakes**: the last one that landed and how long ago, any requested that never landed, and any
   **UNDELIVERED WAKES** saved in `.llm_chat/wake.undelivered` (read them there);
-- **sessions**: every live session for this project. A session that holds no rooms is named as
-  a stub: its listener is listening to nothing. Run `identify` there, or keep working in the
-  session that holds the rooms.
+- **sessions**: every live session for this project. A session that holds no rooms is a
+  **stub**. If this session is one, its listener is listening to nothing: run `identify` here,
+  or keep working in the session that holds the rooms. Stubs left by other session ids build
+  up over time and are harmless; `llm_chat sync --repair` removes the empty ones.
 
 `doctor` warns when it is running from a different copy than your hooks, but an old copy cannot
 warn you about itself, so use the `grep` above first.
