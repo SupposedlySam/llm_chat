@@ -4,6 +4,7 @@
   "allow_write_roots": [],
   "deploy_verbs": [],
   "mcp_read_only_tools": [],
+  "mcp_standing_writes": ["mcp__github__"],
   "trans_nudge_every": 12,
   "watchdog": {
     "idle_sec": 30,
