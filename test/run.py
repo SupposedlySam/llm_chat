@@ -290,6 +290,23 @@ UNGUARDED = (os.path.join(".llm_chat", "probe"),
              # which anybody runs it.
              os.path.join(".llm_chat", "delivered.json"))
 
+# THE WAKER'S STAMPS MOVED INTO THE SESSION (#48), and the `wake.` prefix
+# above stopped covering them: the first gate run after the move reported the
+# repo damaged by `.llm_chat/sessions/<this session>/wake.alive` — the live
+# listener's heartbeat, not a test. Excluded by NAME INSIDE a session
+# directory, never by the directory: `sessions/` stays guarded for the reason
+# given above, so a test that escaped into `joined.json` is still caught.
+UNGUARDED_IN_SESSION = ("wake.",)
+
+
+def unguarded(relative):
+    """Is this repo-relative path one the live processes rewrite?"""
+    if any(relative.startswith(skip) for skip in UNGUARDED):
+        return True
+    parts = relative.split(os.sep)
+    return (len(parts) == 4 and parts[:2] == [".llm_chat", "sessions"]
+            and any(parts[3].startswith(p) for p in UNGUARDED_IN_SESSION))
+
 
 def guarded_paths():
     """Every file the suite must leave alone: git's answer, plus the ignored
@@ -329,8 +346,7 @@ def fingerprint_repo():
         # would then have changed nothing at all — the tuple would name it,
         # the walk would still hash it, and the fix would look applied while
         # the gate kept failing.
-        if any(os.path.relpath(path, ROOT).startswith(skip)
-               for skip in UNGUARDED):
+        if unguarded(os.path.relpath(path, ROOT)):
             continue
         try:
             with open(path, "rb") as f:

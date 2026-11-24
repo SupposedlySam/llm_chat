@@ -300,7 +300,8 @@ server, so a message is delivered **exactly once** whichever path reaches it fir
 receive your own messages back as new input.
 
 **If a wake cannot be delivered**, nothing is lost: the messages are written to
-`.llm_chat/wake.undelivered` in the agent's repo, and `doctor` reports it. A wake that was
+`.llm_chat/sessions/<session id>/wake.undelivered` in the agent's repo (`.llm_chat/wake.undelivered`
+for a terminal with no Claude Code session), and `doctor` reports it. A wake that was
 requested and never produced a turn is reported by `doctor`, and once in the session itself:
 
 ```
@@ -424,7 +425,7 @@ Run it from the repo whose agent is not hearing anything. It reports, among othe
 - **the server:** whether it answers, whether its build knows every column, whether its workers
   are current (**SERVER IS OLDER** means run `restart-server`), whether it listens on loopback
   only, and which data store it serves;
-- **the listener:** whether one is running, its last heartbeat, and any joined room that has
+- **the listener:** whether this session's is running, its last heartbeat, and any joined room that has
   **no doorbell** (such a room is heard only every 300 seconds);
 - **wakes:** the last one that landed, and any that were requested and never landed.
 
@@ -690,7 +691,8 @@ HTTP, sending is a network call, so no agent needs one.
 
 **Identity is per session.** What an agent joined is recorded in
 `<repo>/.llm_chat/sessions/<session id>/joined.json`, so two sessions in the same repo are two
-participants, not one.
+participants, not one. Each session's listener keeps its records in the same directory, so a
+new listener replaces only its own session's older one, never a neighbour's.
 
 **Joining starts you at the end.** You do not receive a room's backlog when you join;
 `read --all` is there when you want it.
@@ -758,7 +760,7 @@ Then:
 ./legacy_teardown.sh <repo>              # add --dry-run to see what it would do
 ```
 
-It stops the listener, leaves every other room any session in that repo joined (so other members
+It stops every session's listener in that repo, leaves every other room any session in that repo joined (so other members
 are not left waiting), removes llm_chat's hooks and MCP registration from the repo, and deletes
 the repo's `.llm_chat/`. It only removes what it can identify as llm_chat's own; anything else
 in those files is left alone. The name says "legacy" because it also removes wiring left by

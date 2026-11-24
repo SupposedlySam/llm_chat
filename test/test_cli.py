@@ -1619,6 +1619,42 @@ class DoctorTest(unittest.TestCase):
         self.assertEqual(self.prune(), ([], ["bbbb0002"]))
         self.assertTrue(os.path.isfile(lock))
 
+    def stub_with(self, sid, **files):
+        self.session(sid)
+        d = os.path.join(self.project, ".llm_chat", "sessions", sid)
+        for name, text in files.items():
+            with open(os.path.join(d, name.replace("_", ".")), "w") as f:
+                f.write(text)
+        return d
+
+    def test_REPAIR_REMOVES_a_stub_whose_waker_only_left_its_HISTORY(self):
+        """Since #48 a session's waker files live in its own directory, and a
+        waker armed in no rooms still records why it stopped. Without this,
+        every no-room session would become unprunable."""
+        dead = 2 ** 22 + 7          # above macOS's pid range: never running
+        self.stub_with("bbbb0002", wake_exit='[{"reason": "in no rooms"}]',
+                       wake_pid=str(dead),
+                       wake_alive=json.dumps({"pid": dead}),
+                       wake_landed="{}", wake_missed="{}")
+        self.assertEqual(self.prune(), (["bbbb0002"], []))
+
+    def test_REPAIR_KEEPS_a_stub_whose_WAKER_IS_RUNNING(self):
+        """Liveness is the process, never the age of a file."""
+        self.stub_with("bbbb0002", wake_pid=str(os.getpid()))
+        self.stub_with("bbbb0003",
+                       wake_alive=json.dumps({"pid": os.getpid()}))
+        self.assertEqual(self.prune(), ([], ["bbbb0002", "bbbb0003"]))
+        self.assertTrue(os.path.isfile(os.path.join(
+            self.project, ".llm_chat", "sessions", "bbbb0002", "wake.pid")),
+            "a running waker's pidfile was deleted")
+
+    def test_REPAIR_KEEPS_a_stub_holding_UNDELIVERED_messages(self):
+        """wake.undelivered is the only copy of messages the listener claimed
+        and could not post. It is not history."""
+        d = self.stub_with("bbbb0002", wake_undelivered="--- msg\nhello\n")
+        self.assertEqual(self.prune(), ([], ["bbbb0002"]))
+        self.assertTrue(os.path.isfile(os.path.join(d, "wake.undelivered")))
+
     def test_SYNC_REPAIR_reports_what_it_removed_and_kept(self):
         self.session("aaaa0001", {"room": {"identity": "me"}})
         self.session("bbbb0002")

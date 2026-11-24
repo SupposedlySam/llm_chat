@@ -345,8 +345,9 @@ ordinary; announcements and reference material want broadcast.
 `llm_chat sync --repair` cleans up this project's local state, and `doctor` names what it
 would clear. It removes stale entries from the project-level room record that this session's
 own record already overrides. It also removes **stub** session directories (see `doctor`'s
-sessions line in section 6) that hold nothing but an unused lock. It never removes this
-session's own, one holding any other file, or one whose lock is in use; it lists those it kept.
+sessions line in section 6) that hold nothing but an unused lock and a stopped listener's
+records. It never removes this session's own, one whose listener is still running, one holding
+undelivered wakes or any other file, or one whose lock is in use; it lists those it kept.
 
 `join` and `open` are the lower-level pieces `setup` uses. Use them directly only in a repo that
 is already wired.
@@ -426,15 +427,16 @@ Run it from your repo when messages only arrive when you run `read`, or not at a
 - **the server**: whether it answers, whether its workers are current (**SERVER IS OLDER** means
   run `llm_chat restart-server`), whether it listens on loopback only, and which data store it
   serves;
-- **the listener**: whether one is running, its last heartbeat, why the last one stopped (the
+- **the listener**: whether this session's is running, its last heartbeat, why the last one stopped (the
   most recent few stops, newest first), and any joined room with **no doorbell**, which is heard
   only every 300 seconds;
 - **wakes**: the last one that landed and how long ago, any requested that never landed, and any
-  **UNDELIVERED WAKES** saved in `.llm_chat/wake.undelivered` (read them there);
+  **UNDELIVERED WAKES** saved in `.llm_chat/sessions/<session id>/wake.undelivered` (read them
+  there; a terminal with no session uses `.llm_chat/wake.undelivered`);
 - **sessions**: every live session for this project. A session that holds no rooms is a
   **stub**. If this session is one, its listener is listening to nothing: run `identify` here,
   or keep working in the session that holds the rooms. Stubs left by other session ids build
-  up over time and are harmless; `llm_chat sync --repair` removes the empty ones.
+  up over time and are harmless; `llm_chat sync --repair` removes the ones nothing is using.
 
 `doctor` warns when it is running from a different copy than your hooks, but an old copy cannot
 warn you about itself, so use the `grep` above first.
@@ -753,6 +755,11 @@ defect in the guard: say so.
   to check when verifying a join. `$CLAUDE_PROJECT_DIR/.llm_chat/joined.json` is only read as a
   fallback for a session with no record of its own. Only a caller with no Claude Code session
   (a person at a terminal, a script) writes it.
+- **A listener's records are per session too.** `wake.pid`, `wake.alive`, `wake.exit`,
+  `wake.landed`, `wake.missed` and `wake.undelivered` live in the session's directory. "Newest
+  listener wins" must kill only this session's older listener: with one project-wide pidfile,
+  every session in a shared checkout killed its neighbours' listeners (#48). An empty or unset
+  `CLAUDE_CODE_SESSION_ID` means no session, and uses `.llm_chat/` itself.
 - **`read` filters out your own messages**, or an agent answers itself forever. `--all` is the
   exception, because there it means transcript.
 - **Joining starts you at the end of the room**, so entering does not dump the backlog into your

@@ -399,7 +399,23 @@ TOLD_PATH = MISSED_PATH + ".told"
 LANDED_PATH = os.path.join(PROJECT, ".llm_chat", "wake.landed")
 
 
-def wake_landed_since(when) -> bool:
+def wake_paths(session_id):
+    """(missed, told, landed) for THIS session — the waker writes them under
+    `.llm_chat/sessions/<id>/` (issue #48), so reading the project's copy told
+    one session about another session's missed wake.
+
+    The id comes from the payload first, the env second, as joined_for's does.
+    No id at all is a human at a terminal, and the project paths are theirs.
+    """
+    sid = (session_id or os.environ.get("CLAUDE_CODE_SESSION_ID") or "").strip()
+    if not sid:
+        return MISSED_PATH, TOLD_PATH, LANDED_PATH
+    base = os.path.join(PROJECT, ".llm_chat", "sessions", sid)
+    missed = os.path.join(base, "wake.missed")
+    return missed, missed + ".told", os.path.join(base, "wake.landed")
+
+
+def wake_landed_since(when, session_id=None) -> bool:
     """Has a rewake been observed LANDING since `when`? False if unknown.
 
     THE RECORD IS A FACT ABOUT A MOMENT, NOT ABOUT NOW. Caught by running
@@ -418,13 +434,13 @@ def wake_landed_since(when) -> bool:
     just did.
     """
     try:
-        with open(LANDED_PATH) as f:
+        with open(wake_paths(session_id)[2]) as f:
             return float((json.load(f) or {}).get("at") or 0) > when
     except (OSError, ValueError, TypeError):
         return False
 
 
-def missed_wake_note() -> str:
+def missed_wake_note(session_id=None) -> str:
     """Say, once, that a wake was requested for this session and never landed.
 
     THE RECORD ALREADY EXISTED AND NOTHING READ IT. The waker spawns a
@@ -450,26 +466,27 @@ def missed_wake_note() -> str:
     out for good, which is this project's own finding about warnings that cry
     wolf, applied to a warning it would be expensive to stop believing.
     """
+    missed_path, told_path, _ = wake_paths(session_id)
     try:
-        with open(MISSED_PATH) as f:
+        with open(missed_path) as f:
             record = json.load(f) or {}
         at = int(record.get("at") or 0)
     except (OSError, ValueError, TypeError):
         return ""
     if not at:
         return ""
-    if wake_landed_since(at):
+    if wake_landed_since(at, session_id):
         return ""       # the path recovered; this is history, not the state
     try:
-        with open(TOLD_PATH) as f:
+        with open(told_path) as f:
             if int((f.read() or "0").strip() or 0) >= at:
                 return ""
     except (OSError, ValueError):
         pass                     # never told, or the marker is unreadable —
         # repeating once is the cheap failure here, staying silent is not.
     try:
-        os.makedirs(os.path.dirname(TOLD_PATH), exist_ok=True)
-        with open(TOLD_PATH, "w") as f:
+        os.makedirs(os.path.dirname(told_path), exist_ok=True)
+        with open(told_path, "w") as f:
             f.write(str(at))
     except OSError:
         return ""       # cannot remember having said it, so do not start
@@ -718,7 +735,7 @@ def main() -> int:
     mark_fired("deliver-%s" % event)
 
     notice = upgrade_notice(session_id)
-    missed = missed_wake_note()
+    missed = missed_wake_note(session_id)
 
     # In no rooms is fine — a wiring notice still has to get out.
     joined = joined_for(session_id)

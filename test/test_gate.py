@@ -242,9 +242,22 @@ class RepoDamageTest(unittest.TestCase):
         # added here, and its cursor refused the very next release while
         # Jonah's bridge ran from this checkout.
         hub = load("bin/llm-chat-bridge")
+        # AND THE SAME WAKER IN A SESSION, which is how it actually runs
+        # here. Since #48 its stamps live under `sessions/<id>/`, and this
+        # test loaded it with no session id only — so it checked the paths
+        # the waker writes for a terminal and passed while the gate failed on
+        # the ones it writes for an agent.
+        os.environ["CLAUDE_CODE_SESSION_ID"] = "gate0001"
+        try:
+            in_session = load("llm-chat-wake")
+        finally:
+            os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
 
         live = [waker.PID_PATH, waker.EXIT_PATH, waker.ALIVE_PATH,
                 waker.REWAKE_PATH, waker.LANDED_PATH,
+                in_session.PID_PATH, in_session.EXIT_PATH,
+                in_session.ALIVE_PATH, in_session.REWAKE_PATH,
+                in_session.LANDED_PATH, in_session.MISSED_PATH,
                 deliver.WATERMARK,
                 hub.STATE_FILE, os.path.join(hub.PROJECT, "joined.json"),
                 bridge.CURSOR, bridge.THREADS, bridge.REPLIES, bridge.ASKED,
@@ -260,7 +273,7 @@ class RepoDamageTest(unittest.TestCase):
                 else os.path.join(".llm_chat", os.path.basename(path))
             with self.subTest(path=relative):
                 self.assertTrue(
-                    any(relative.startswith(entry) for entry in gate.UNGUARDED),
+                    gate.unguarded(relative),
                     "%s is written by a live background process and is not "
                     "excluded — it will fail a release while an agent is "
                     "working, which is when releases happen" % relative)
@@ -272,6 +285,19 @@ class RepoDamageTest(unittest.TestCase):
         relative = os.path.join(".llm_chat", "slack.json")
         self.assertFalse(
             any(relative.startswith(entry) for entry in gate.UNGUARDED))
+
+    def test_a_SESSIONS_rooms_are_still_guarded_beside_its_waker_stamps(self):
+        """Paired with the per-session `wake.` exclusion: it must fall on the
+        file name inside one session directory, not on `sessions/`. A test
+        that escaped into a session's `joined.json` is the escape this guard
+        has actually caught, and excusing the directory would lose it."""
+        session = os.path.join(".llm_chat", "sessions", "gate0001")
+        self.assertTrue(gate.unguarded(os.path.join(session, "wake.alive")))
+        for relative in (os.path.join(session, "joined.json"),
+                         os.path.join(session, "identity.json"),
+                         os.path.join(session, "deeper", "wake.alive")):
+            with self.subTest(path=relative):
+                self.assertFalse(gate.unguarded(relative))
 
     def test_the_hub_bridge_CONFIG_is_still_guarded(self):
         """The same line for the hub bridge: `bridge-` covers its cursor and

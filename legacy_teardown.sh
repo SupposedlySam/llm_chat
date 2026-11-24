@@ -148,14 +148,17 @@ echo "llm_chat teardown — $TARGET"
 
 # 1. Stop the waker. It is a background poller armed at turn-end; left running
 #    it would keep polling for a project that is no longer set up.
-PIDFILE="$TARGET/.llm_chat/wake.pid"
-if [ -f "$PIDFILE" ]; then
+#    EVERY SESSION'S, not just the project's: each session's waker keeps its
+#    pidfile under .llm_chat/sessions/<id>/ (issue #48), and the project one is
+#    only the no-session case and wakers from before that change.
+for PIDFILE in "$TARGET/.llm_chat/wake.pid" "$TARGET"/.llm_chat/sessions/*/wake.pid; do
+  [ -f "$PIDFILE" ] || continue
   WPID="$(cat "$PIDFILE" 2>/dev/null || true)"
   if [ -n "$WPID" ] && kill -0 "$WPID" 2>/dev/null; then
     say "stop waker (pid $WPID)"
     [ "$DRY" = 1 ] || kill "$WPID" 2>/dev/null || true
   fi
-fi
+done
 
 # 2. Leave the rooms BEFORE forgetting who we are. Deleting joined.json first
 #    would strand the membership server-side: the room would keep listing this

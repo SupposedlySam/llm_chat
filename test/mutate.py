@@ -2051,10 +2051,51 @@ MUTATIONS = [
      "deleting it hides doctor's finding instead of fixing it"),
 
     ("pruning stubs keeps one holding anything but its lock", "bin/llm_chat",
-     '        if contents not in ([], ["read.lock"]):',
+     '        if set(contents) - WAKE_HISTORY - {"read.lock"}:',
      "        if False:",
      "a file nobody expected in a session directory is somebody's state, and "
      "`sync --repair` would delete it"),
+
+    ("pruning stubs keeps one whose WAKER IS RUNNING", "bin/llm_chat",
+     "        if history and waker_running_in(path):",
+     "        if False:",
+     "since #48 a waker's files live in its session's directory; deleting "
+     "them under a running waker throws away the record `doctor` reads to "
+     "say why that session can or cannot be woken"),
+
+    ("a live pid in wake.alive counts as a running waker", "bin/llm_chat",
+     "            os.kill(pid, 0)\n            return True",
+     "            os.kill(pid, 0)\n            return False",
+     "the waker-liveness check would never see a running waker, so pruning "
+     "would delete a live session's waker files"),
+
+    ("pruning stubs keeps one holding UNDELIVERED messages", "bin/llm_chat",
+     '                "wake.missed", "wake.missed.told", "wake.rewake"}',
+     '                "wake.missed", "wake.missed.told", "wake.rewake",\n'
+     '                "wake.undelivered"}',
+     "wake.undelivered holds messages the listener claimed and could not "
+     "post; treating it as history deletes the only copy"),
+
+    ("the waker's pidfile is THIS SESSION'S, not the checkout's",
+     "bin/llm-chat-wake",
+     'PID_PATH = os.path.join(WAKE_DIR, "wake.pid")',
+     'PID_PATH = os.path.join(STATE, "wake.pid")',
+     "issue #48: newest-waker-wins on a project-wide pidfile SIGTERMs every "
+     "other session's waker in a shared checkout, so only the session that "
+     "most recently ended a turn can be woken"),
+
+    ("doctor reads THIS SESSION'S waker files", "bin/llm_chat",
+     "    return os.path.join(state_dir(project), name)",
+     '    return os.path.join(project, ".llm_chat", name)',
+     "doctor reported another session's waker as this session's — #48's "
+     "second symptom"),
+
+    ("the delivery hook reads THIS SESSION'S missed-wake record",
+     "bin/llm-chat-deliver",
+     '    base = os.path.join(PROJECT, ".llm_chat", "sessions", sid)',
+     '    base = os.path.join(PROJECT, ".llm_chat")',
+     "a missed wake for one session is announced to whichever session's "
+     "tool call fires the hook next"),
 
     ("pruning stubs keeps one whose lock is HELD", "bin/llm_chat",
      "                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
@@ -2571,7 +2612,7 @@ MUTATIONS = [
      "to report"),
 
     ("a missed wake is SAID, not merely filed", "bin/llm-chat-deliver",
-     "    missed = missed_wake_note()",
+     "    missed = missed_wake_note(session_id)",
      "    missed = ''",
      "the waker has been spawning a detached watcher to record a rewake that "
      "went nowhere, into a file nothing in this repo ever opened — which is "
@@ -2580,7 +2621,7 @@ MUTATIONS = [
      "had gone quiet"),
 
     ("a LATER landing retires the miss", "bin/llm-chat-deliver",
-     "    if wake_landed_since(at):\n        return \"\"",
+     "    if wake_landed_since(at, session_id):\n        return \"\"",
      '    if False:\n        return ""',
      "a wake that failed once is announced as the live state for as long as "
      "the record sits there — caught against real state, where a miss from "

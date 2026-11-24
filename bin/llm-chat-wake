@@ -81,20 +81,28 @@ JOINED = (os.path.join(SESSION_STATE, "joined.json")
           if _SID and os.path.isfile(os.path.join(SESSION_STATE,
                                                   "joined.json"))
           else os.path.join(STATE, "joined.json"))
-PID_PATH = os.path.join(STATE, "wake.pid")
-EXIT_PATH = os.path.join(STATE, "wake.exit")
+# THE WAKER'S OWN FILES ARE THIS SESSION'S, not the checkout's (issue #48).
+# They lived in the project's .llm_chat/, so "newest waker wins" SIGTERMed
+# every OTHER session's waker in a shared checkout and only the session that
+# most recently ended a turn could be woken: four live sessions, one minute,
+# three wakers killed by their neighbours. Keyed by SESSION_STATE, which is the
+# project directory itself when there is no session id — a human at a terminal
+# IS the project, and that case keeps the old path.
+WAKE_DIR = SESSION_STATE
+PID_PATH = os.path.join(WAKE_DIR, "wake.pid")
+EXIT_PATH = os.path.join(WAKE_DIR, "wake.exit")
 # The LIVE waker, kept apart from the exit history on purpose. `reason:
 # running` used to be written into wake.exit, where it read as an exit record
 # and — worse — destroyed the real one. See record_exit.
-ALIVE_PATH = os.path.join(STATE, "wake.alive")
+ALIVE_PATH = os.path.join(WAKE_DIR, "wake.alive")
 
 # How many exit records to keep. The failure this is sized for is a waker
 # stopping and its replacement starting immediately, so the minimum useful
 # number is two. Four covers a VSCode window reload, which starts more than one
 # on this host, and is still small enough to read at a glance.
 KEEP_EXITS = 4
-REWAKE_PATH = os.path.join(STATE, "wake.rewake")
-LANDED_PATH = os.path.join(STATE, "wake.landed")
+REWAKE_PATH = os.path.join(WAKE_DIR, "wake.rewake")
+LANDED_PATH = os.path.join(WAKE_DIR, "wake.landed")
 
 # How soon after an exit-2 a new waker must appear for the turn to be
 # attributable to it. Generous enough to survive a slow host, short enough
@@ -146,7 +154,7 @@ INBOX_TOKEN_ENV = "CLAUDE_CODE_MESSAGING_TOKEN"
 # Escape hatch: `rewake` forces the old exit-2 path.
 WAKE_VIA_ENV = "LLM_CHAT_WAKE_VIA"
 INBOX_MODE = "--inbox"
-UNDELIVERED_PATH = os.path.join(STATE, "wake.undelivered")
+UNDELIVERED_PATH = os.path.join(WAKE_DIR, "wake.undelivered")
 INBOX_LOG_PATH = os.path.join(STATE, "wake-inbox.log")
 
 
@@ -916,7 +924,7 @@ def wake_text(blocks):
     )
 
 
-MISSED_PATH = os.path.join(STATE, "wake.missed")
+MISSED_PATH = os.path.join(WAKE_DIR, "wake.missed")
 AUTO_RELOAD_PATH = os.path.join(STATE, "wake-by-reload")
 
 # How long after the request to give up on it. The grace window is what
@@ -957,7 +965,7 @@ def announce(blocks, box=None):
                                                        + WATCH_MARGIN))
         return 0
     try:
-        os.makedirs(STATE, exist_ok=True)
+        os.makedirs(os.path.dirname(UNDELIVERED_PATH), exist_ok=True)
         with open(UNDELIVERED_PATH, "a") as f:
             f.write("--- %s\n%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), text))
     except OSError:
@@ -1070,7 +1078,7 @@ def watch(at):
         except Exception as problem:
             record["said"] = str(problem)[:300]
     try:
-        os.makedirs(STATE, exist_ok=True)
+        os.makedirs(os.path.dirname(MISSED_PATH), exist_ok=True)
         tmp = own_tmp(MISSED_PATH)
         with open(tmp, "w") as f:
             json.dump(record, f)
@@ -1082,7 +1090,7 @@ def watch(at):
 
 def note_rewake():
     try:
-        os.makedirs(STATE, exist_ok=True)
+        os.makedirs(os.path.dirname(REWAKE_PATH), exist_ok=True)
         tmp = own_tmp(REWAKE_PATH)
         with open(tmp, "w") as f:
             json.dump({"at": time.time(), "pid": os.getpid()}, f)
@@ -1148,6 +1156,7 @@ def wake_landing(event="unknown"):
 
 def record_landing(event):
     try:
+        os.makedirs(os.path.dirname(LANDED_PATH), exist_ok=True)
         tmp = own_tmp(LANDED_PATH)
         with open(tmp, "w") as f:
             json.dump({"at": time.time(), "event": event,

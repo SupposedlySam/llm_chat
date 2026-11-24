@@ -25,6 +25,20 @@ from importlib.machinery import SourceFileLoader
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BIN = os.path.join(ROOT, "bin")
 
+# THE SESSION RUNNING THE SUITE IS NOT A SESSION UNDER TEST. Claude Code
+# exports CLAUDE_CODE_SESSION_ID into every agent shell, and since #48 the
+# waker's files follow it into `.llm_chat/sessions/<id>/` — so a suite run by
+# an agent and the same suite run in CI looked in different places, and only
+# the agent's run failed. A test that wants a session sets one itself. Popped
+# HERE because every test module imports this, including when one is run
+# alone with `python3 -m unittest`, which never passes through run.py.
+os.environ.pop("CLAUDE_CODE_SESSION_ID", None)
+# And the session's INBOX, which run.py already pops — but a module run alone
+# kept it, so a waker test took the inbox path instead of the one it asserts,
+# and one that reached `post_to_inbox` would type into the live conversation.
+os.environ.pop("CLAUDE_CODE_MESSAGING_SOCKET", None)
+os.environ.pop("CLAUDE_CODE_MESSAGING_TOKEN", None)
+
 
 def parsed(text):
     """`json.loads`, but unparseable input FAILS a comparison instead of

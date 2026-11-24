@@ -418,6 +418,17 @@ def project_state_dir(project=None) -> str:
     return os.path.join(project or project_dir(), ".llm_chat")
 
 
+def wake_file(project, name) -> str:
+    """One of THIS session's waker files (wake.pid, wake.alive, …).
+
+    The waker keeps them under the session's own directory (issue #48), so
+    reading the project's copy reported another session's waker as this
+    one's. No session id is a human at a terminal, and state_dir already
+    answers the project directory for that.
+    """
+    return os.path.join(state_dir(project), name)
+
+
 def host_sessions():
     """Every Claude Code session the HOST says is alive, or None.
 
@@ -655,6 +666,37 @@ def live_sessions(project=None):
     return found
 
 
+# What a session's waker leaves in its directory that says only what HAPPENED.
+# wake.undelivered is deliberately absent: it holds messages.
+WAKE_HISTORY = {"wake.pid", "wake.alive", "wake.exit", "wake.landed",
+                "wake.missed", "wake.missed.told", "wake.rewake"}
+
+
+def waker_running_in(path) -> bool:
+    """Does wake.pid or wake.alive in `path` name a process that is running?
+
+    A reused pid reads as running, and that is the safe way to be wrong: the
+    directory is kept, not deleted.
+    """
+    for item, read in (("wake.pid", lambda t: t.strip()),
+                       ("wake.alive", lambda t: (json.loads(t) or {}).get("pid"))):
+        try:
+            with open(os.path.join(path, item)) as f:
+                pid = int(read(f.read()) or 0)
+        except (OSError, ValueError, TypeError, AttributeError):
+            continue
+        if pid <= 0:
+            continue
+        try:
+            os.kill(pid, 0)
+            return True
+        except PermissionError:
+            return True          # it exists; it is just not ours to signal
+        except OSError:
+            continue
+    return False
+
+
 def prune_stub_sessions(project=None):
     """Remove the stub session directories that hold nothing. (removed, kept)
 
@@ -673,6 +715,16 @@ def prune_stub_sessions(project=None):
         unlinked while held, so no reader can be inside it at that moment.
     A directory that refills between the unlink and the rmdir just fails the
     rmdir and is kept, which is the safe direction.
+
+    THE WAKER'S HISTORY IS DISPOSABLE HERE, ITS LIFE IS NOT. Since #48 a
+    session's waker files live in its own directory, and a waker armed in no
+    rooms still records why it stopped — so every no-room session would leave
+    a `wake.exit` behind and none would ever be prunable again. Those records
+    describe a session in no rooms, which is nothing anybody is diagnosing.
+    But a directory whose wake.pid or wake.alive names a RUNNING process is
+    kept: liveness is decided by the process, never by the age of a file.
+    `wake.undelivered` is not history — it holds messages — so it keeps the
+    directory like any other file would.
     """
     base = os.path.join(project or project_dir(), ".llm_chat", "sessions")
     mine = session_id()
@@ -685,10 +737,14 @@ def prune_stub_sessions(project=None):
             contents = os.listdir(path)
         except OSError:
             continue
-        if contents not in ([], ["read.lock"]):
+        history = [c for c in contents if c in WAKE_HISTORY]
+        if set(contents) - WAKE_HISTORY - {"read.lock"}:
             kept.append(name)
             continue
-        if contents:
+        if history and waker_running_in(path):
+            kept.append(name)
+            continue
+        if "read.lock" in contents:
             lock = os.path.join(path, "read.lock")
             try:
                 fd = os.open(lock, os.O_RDWR)
@@ -704,6 +760,11 @@ def prune_stub_sessions(project=None):
                 os.unlink(lock)
             finally:
                 os.close(fd)
+        for item in history:
+            try:
+                os.unlink(os.path.join(path, item))
+            except OSError:
+                pass
         try:
             os.rmdir(path)
             removed.append(name)
@@ -5337,7 +5398,7 @@ def heartbeat_age(project=None):
     point of the stamp is that a live pid is not a live waker, and absence of
     evidence was the thing being fixed.
     """
-    path = os.path.join(project or project_dir(), ".llm_chat", "wake.alive")
+    path = wake_file(project or project_dir(), "wake.alive")
     try:
         with open(path) as f:
             at = (json.load(f) or {}).get("at")
@@ -5395,7 +5456,7 @@ def wake_landing(project):
     apart. Silence claiming to be listening is the failure being removed.
     """
     try:
-        with open(os.path.join(project, ".llm_chat", "wake.landed")) as f:
+        with open(wake_file(project, "wake.landed")) as f:
             record = json.load(f) or {}
     except (OSError, ValueError):
         return None, os.environ.get("CLAUDE_CODE_ENTRYPOINT")
@@ -5417,7 +5478,7 @@ def landing_is_confirmed(project):
     already has one, which is most people the first time they upgrade.
     """
     try:
-        with open(os.path.join(project, ".llm_chat", "wake.landed")) as f:
+        with open(wake_file(project, "wake.landed")) as f:
             record = json.load(f) or {}
     except (OSError, ValueError):
         return None
@@ -5454,7 +5515,7 @@ def missed_since_the_last_wake(project, landed_at):
     has.
     """
     try:
-        with open(os.path.join(project, ".llm_chat", "wake.missed")) as f:
+        with open(wake_file(project, "wake.missed")) as f:
             at = float((json.load(f) or {}).get("at") or 0)
     except (OSError, ValueError, TypeError):
         return None
@@ -5526,7 +5587,7 @@ def waker_exits(project):
     wrote and what somebody will be interrogating at the moment this ships.
     """
     try:
-        with open(os.path.join(project, ".llm_chat", "wake.exit")) as f:
+        with open(wake_file(project, "wake.exit")) as f:
             found = json.load(f)
     except (OSError, ValueError):
         return []
@@ -5778,7 +5839,7 @@ def waker_alive(project):
     processes on one resource. Fixed anyway, because the sentence is read by
     somebody deciding whether their agent is reachable.
     """
-    path = os.path.join(project, ".llm_chat", "wake.pid")
+    path = wake_file(project, "wake.pid")
     try:
         with open(path) as f:
             raw = f.read().strip()
@@ -5800,10 +5861,10 @@ def report_undelivered(project):
 
     The listener reads messages before posting them into the session, so a
     post that fails leaves them claimed and undelivered. It writes them to
-    `.llm_chat/wake.undelivered` rather than lose them; this is where a
+    this session's `wake.undelivered` rather than lose them; this is where a
     reader finds out that file exists.
     """
-    path = os.path.join(project, ".llm_chat", "wake.undelivered")
+    path = wake_file(project, "wake.undelivered")
     try:
         with open(path) as f:
             text = f.read()
