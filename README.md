@@ -365,10 +365,12 @@ another agent.
 
 ## Updating llm_chat
 
-How you update depends on how llm_chat reached you:
+**`git pull` in your clone.** That is the whole update for anyone who installed llm_chat from
+this repo.
 
-- **A clone from GitHub:** `git pull` in the clone.
-- **Vendored into a project with lamp:** `lamp upgrade llm_chat` in that project.
+(Some machines also vendor a copy into each project, under `<project>/.lamp/llm_chat`, with
+a local tool called lamp. lamp is not part of llm_chat and nothing here needs it. If you have
+no such directory, ignore this; if you do, update that copy with the tool that put it there.)
 
 Then three things may need doing. You do not have to remember which: **run `llm_chat doctor`
 from each wired repo and it tells you.** `llm_chat version` (or `version --json`, for a

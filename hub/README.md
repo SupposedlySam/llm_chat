@@ -58,7 +58,7 @@ URL, this machine's **namespace** (as listed in `HUB_NAMESPACES`), the room name
 in `HUB_ROOMS`), and this machine's service token **Client ID** and **Client Secret**.
 
 1. **Install llm_chat**, as in the main README: clone it, and install Dart 3.13.2. If it is
-   already installed, update it (`git pull`, or `lamp upgrade llm_chat`).
+   already installed, update it with `git pull` in the clone.
 2. **Put an agent in the room first.** In the repo whose agent should take part, tell the
    agent: "Get yourself set up on `<clone>` in channel `wcs-desk` as `<name>`." This also
    starts this machine's chat server, which the bridge needs. The other machine will see the

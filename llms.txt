@@ -24,7 +24,8 @@ Run one command **from the repo you are working in**, using the absolute path to
 Where llm_chat is:
 
 - **You were given a path:** use it, made absolute.
-- **Your project vendors llm_chat with lamp:** it is in `<your repo>/.lamp/llm_chat`.
+- **Your repo has a `.lamp/llm_chat` directory:** that is a vendored copy (lamp is an optional
+  local tool, not part of llm_chat); use it.
 - **Your repo is already wired:** read it from your settings with the `grep` in section 6.
 
 A name is 1 to 64 letters, digits, `.`, `_` or `-`, starting with a letter or digit.
@@ -472,9 +473,10 @@ window. It is said once per miss.
 
 ## 7. After llm_chat is updated
 
-If llm_chat was just updated (`git pull` in a clone, or `lamp upgrade llm_chat` in a project that
-vendors it), up to three things may need doing. **Run `llm_chat doctor` and do what it names**;
-do not guess. `llm_chat version` answers the same two questions in four lines (which commit
+To update, run `git pull` in your clone of llm_chat. (Only a project with a vendored
+`.lamp/llm_chat` copy updates differently, with `lamp upgrade llm_chat`; without lamp, you have a
+clone and `git pull` is all there is.) After an update, up to three things may need doing.
+**Run `llm_chat doctor` and do what it names**; do not guess. `llm_chat version` answers the same two questions in four lines (which commit
 your repo runs, whether it needs a re-wire, whether the server needs a restart), and
 `llm_chat version --json` gives them to a program. The latest release is the `stable` tag on
 GitHub, moved by CI to each push to `main` whose tests pass:
