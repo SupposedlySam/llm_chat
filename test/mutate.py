@@ -3339,6 +3339,10 @@ NOT_SWEPT = {
     "bin/llm-chat-wake:addressed": "asserted directly that it calls `pending` "
         "and never `read`, and that an outage is a non-answer rather than a wake",
     "bin/llm-chat-wake:who_addressed": "asserted directly",
+    "bin/llm-chat-wake:wake_header": "all three shapes asserted directly, "
+        "and through the Stop-hook wake text",
+    "bin/llm_chat:addresses": "asserted through `pending`, and held to the "
+        "delivery hook's addressed_to_me on every audience shape",
     "bin/llm-chat-slack:route": "all three cases asserted directly, plus "
         "Slack's <!here> encoding, precedence over threads, and that an email "
         "address is not a mention",

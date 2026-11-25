@@ -2286,6 +2286,26 @@ def wakes(message, identity, chan):
     return identity in audience.split(",")
 
 
+def addresses(message, identity):
+    """Was this message sent TO `identity`, rather than merely waking it?
+
+    Not `wakes()`. A message with no audience in an ordinary room wakes every
+    member, and the wake header used to call that "<sender> addressed you".
+    game-loop-owner was woken five times in #showrunner_code_owner under that
+    header by replies nobody had addressed to it, and spent a turn treating
+    each as a request (2026-11-25). The delivery hook already drew this line
+    (`addressed_to_me` in bin/llm-chat-deliver) and said "not addressed to
+    you" for the same messages, so the two outputs disagreed. This is that
+    rule, and a test holds the two copies to the same answers.
+    """
+    audience = message.get("audience")
+    if audience == AUDIENCE_ALL:
+        return True
+    if audience in (None, AUDIENCE_NONE):
+        return False
+    return identity in audience.split(",")
+
+
 def describe_audience(audience, identity=None):
     """How a message's reach reads to a person or an agent."""
     if audience is None:
@@ -3055,7 +3075,8 @@ def do_pending(server, name, identity):
         "wakes_me": any(wakes(m, identity, chan) for m in waiting),
         "messages": [{"seq": m["seq"], "from": m["from_identity"],
                       "audience": m.get("audience"),
-                      "wakes_me": wakes(m, identity, chan)}
+                      "wakes_me": wakes(m, identity, chan),
+                      "addressed_me": addresses(m, identity)}
                      for m in sorted(waiting, key=lambda m: m["seq"])],
     }))
 

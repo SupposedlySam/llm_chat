@@ -706,6 +706,16 @@ class PendingTest(ServerTest):
         self.say("for you", audience="bob")
         self.assertEqual(self.pending("bob")["messages"][0]["from"], "alice")
 
+    def test_it_says_which_messages_ADDRESS_me_not_only_which_wake_me(self):
+        """An unaddressed message in an ordinary room wakes every member and
+        addresses none of them. The wake header names senders from this."""
+        self.say("room traffic")
+        self.say("for you", audience="bob")
+        self.say("for carol", audience="carol")
+        got = [(m["wakes_me"], m["addressed_me"])
+               for m in self.pending("bob")["messages"]]
+        self.assertEqual(got, [(True, False), (True, True), (False, False)])
+
     def test_messages_come_back_in_order(self):
         for n in range(3):
             self.say("m%d" % n)

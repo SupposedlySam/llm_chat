@@ -764,9 +764,22 @@ class WakeHeaderTest(unittest.TestCase):
     def test_it_says_who_addressed_you(self):
         text = self.wake_text({"wakes_me": True,
                                "messages": [{"from": "alice",
-                                             "wakes_me": True}]})
+                                             "wakes_me": True,
+                                             "addressed_me": True}]})
         self.assertIn("alice addressed you", text)
         self.assertIn("your build is green", text)
+
+    def test_room_traffic_that_WAKES_you_is_not_said_to_ADDRESS_you(self):
+        """game-loop-owner, 2026-11-25: five wake-ups in
+        #showrunner_code_owner headed "showrunner-code-owner addressed you",
+        for replies with no audience that woke every member. Each read as a
+        request and cost a turn. The header says what happened instead."""
+        text = self.wake_text({"wakes_me": True,
+                               "messages": [{"from": "alice",
+                                             "wakes_me": True,
+                                             "addressed_me": False}]})
+        self.assertNotIn("addressed you", text)
+        self.assertIn("1 new from alice, none addressed to you", text)
 
     def test_an_unattributable_wake_still_names_the_room(self):
         """The header must survive a payload with no message detail rather than
@@ -827,20 +840,53 @@ class WhoAddressedTest(unittest.TestCase):
     """An agent pulled off its work with no idea who wanted it has to read the
     whole room to find out."""
 
-    def test_it_names_the_senders_that_woke_me(self):
-        info = {"messages": [{"from": "alice", "wakes_me": True},
-                             {"from": "bob", "wakes_me": False}]}
+    def test_it_names_the_senders_that_addressed_me(self):
+        info = {"messages": [{"from": "alice", "addressed_me": True},
+                             {"from": "bob", "addressed_me": False}]}
         self.assertEqual(waker.who_addressed(info), "alice")
 
+    def test_a_sender_who_only_WOKE_me_is_not_named(self):
+        info = {"messages": [{"from": "alice", "wakes_me": True,
+                              "addressed_me": False}]}
+        self.assertEqual(waker.who_addressed(info), "")
+
+    def test_a_pending_too_old_to_say_counts_as_NOT_addressed(self):
+        """Understating costs a read; overstating cost a turn per message."""
+        info = {"messages": [{"from": "alice", "wakes_me": True}]}
+        self.assertEqual(waker.who_addressed(info), "")
+
     def test_it_does_not_repeat_a_sender(self):
-        info = {"messages": [{"from": "alice", "wakes_me": True},
-                             {"from": "alice", "wakes_me": True}]}
+        info = {"messages": [{"from": "alice", "addressed_me": True},
+                             {"from": "alice", "addressed_me": True}]}
         self.assertEqual(waker.who_addressed(info), "alice")
 
     def test_several_senders_are_listed(self):
-        info = {"messages": [{"from": "bob", "wakes_me": True},
-                             {"from": "alice", "wakes_me": True}]}
+        info = {"messages": [{"from": "bob", "addressed_me": True},
+                             {"from": "alice", "addressed_me": True}]}
         self.assertEqual(waker.who_addressed(info), "alice, bob")
+
+
+class WakeHeaderTextTest(unittest.TestCase):
+    def test_addressed_wins_over_room_traffic_in_the_same_batch(self):
+        info = {"messages": [
+            {"from": "bob", "wakes_me": True, "addressed_me": False},
+            {"from": "alice", "wakes_me": True, "addressed_me": True}]}
+        self.assertEqual(waker.wake_header("room", "me", info),
+                         "#room (you are 'me') — alice addressed you")
+
+    def test_only_room_traffic_is_counted_and_attributed(self):
+        info = {"messages": [
+            {"from": "bob", "wakes_me": True, "addressed_me": False},
+            {"from": "alice", "wakes_me": True, "addressed_me": False},
+            {"from": "carol", "wakes_me": False, "addressed_me": False}]}
+        self.assertEqual(
+            waker.wake_header("room", "me", info),
+            "#room (you are 'me') — 2 new from alice, bob, none addressed to "
+            "you (room traffic; you are a member)")
+
+    def test_nothing_attributable_is_just_the_room(self):
+        self.assertEqual(waker.wake_header("room", "me", {}),
+                         "#room (you are 'me')")
 
     def test_no_messages_is_empty_rather_than_a_crash(self):
         self.assertEqual(waker.who_addressed({}), "")

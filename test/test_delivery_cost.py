@@ -54,6 +54,19 @@ class AddressedTest(unittest.TestCase):
         self.assertFalse(
             deliver.addressed_to_me(msg(1, "a", "x", "member"), "me"))
 
+    def test_the_WAKE_HEADER_rule_gives_the_same_answer_on_every_shape(self):
+        """The wake header (via the CLI's `pending`) and this hook described
+        the same delivery differently: "X addressed you" above, "not addressed
+        to you" here (game-loop-owner, 2026-11-25). Two copies of one rule,
+        held to one answer."""
+        cli = load("llm_chat")
+        for audience in (None, "*", "-", "me", "you", "member", "you,me",
+                         "me,you", "you,them"):
+            with self.subTest(audience=audience):
+                m = msg(1, "a", "x", audience)
+                self.assertEqual(cli.addresses(m, "me"),
+                                 deliver.addressed_to_me(m, "me"))
+
 
 class RenderTest(unittest.TestCase):
     def render(self, waiting, identity="me"):

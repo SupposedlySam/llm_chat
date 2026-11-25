@@ -749,11 +749,32 @@ def addressed(channel, entry):
 
 
 def who_addressed(info):
-    """The names that woke us, for the wake text. An agent pulled off its work
-    with no idea who wanted it has to read the whole room to find out."""
+    """The names that ADDRESSED us, for the wake text. An agent pulled off its
+    work with no idea who wanted it has to read the whole room to find out.
+
+    Addressed, not merely woke. Unaddressed traffic in an ordinary room wakes
+    every member, and naming its senders as "addressed you" made five replies
+    meant for someone else read as requests (game-loop-owner, 2026-11-25).
+    A `pending` too old to say `addressed_me` counts as not addressed: the
+    header then understates, which costs a read, rather than overstating,
+    which costs a turn."""
     senders = sorted({m["from"] for m in info.get("messages") or []
-                      if m.get("wakes_me")})
+                      if m.get("addressed_me")})
     return ", ".join(senders)
+
+
+def wake_header(channel, identity, info):
+    """`#room (you are 'x')`, plus who addressed you, or that nobody did."""
+    header = f"#{channel} (you are '{identity}')"
+    who = who_addressed(info)
+    if who:
+        return header + f" — {who} addressed you"
+    woke = [m for m in info.get("messages") or [] if m.get("wakes_me")]
+    if woke:
+        senders = ", ".join(sorted({m["from"] for m in woke}))
+        return header + (f" — {len(woke)} new from {senders}, none addressed "
+                         f"to you (room traffic; you are a member)")
+    return header
 
 
 def poll(channel, entry):
@@ -1365,10 +1386,7 @@ def listen(rooms, box):
                 continue
             out = poll(channel, entry)
             if out:
-                who = who_addressed(info)
-                header = f"#{channel} (you are '{entry['identity']}')"
-                if who:
-                    header += f" — {who} addressed you"
+                header = wake_header(channel, entry["identity"], info)
                 blocks.append(header + "\n"
                               + "\n".join(f"  {ln}" for ln in out.splitlines()))
         if blocks:
