@@ -1466,18 +1466,64 @@ def own_tmp(path):
     return "%s.tmp.%d" % (path, os.getpid())
 
 
-def remember(channel, identity, server, broadcast=False):
-    path = joined_path()
-    joined = read_joined()
-    joined[channel] = {"identity": identity, "server": server}
-    if broadcast:
-        # Recorded locally so the waker can skip it without a query per poll.
-        joined[channel]["broadcast"] = True
+@contextlib.contextmanager
+def joined_lock(path, timeout=10.0):
+    """Serialise read-modify-write of one joined.json.
+
+    own_tmp() stopped two writers sharing a TEMP file; it never stopped two
+    writers each reading the old map and replacing it with theirs plus one
+    room. Measured 2026-11-25 while chasing #47: eight `join`s in one session
+    at once kept about ONE room in eight, 140 of 160 lost over 20 rounds, and
+    every one printed "joined". A Crawler fanning reviewers out in parallel is
+    exactly eight joins at once, and a session whose entry for its own room is
+    gone is refused under its own name.
+
+    `flock`, so a holder that dies releases it. It FAILS OPEN after `timeout`,
+    like read_lock: a join that hangs forever on a wedged lock is worse than
+    the race this closes, and the race needs a second writer inside the same
+    10 seconds to matter.
+    """
+    lock = path + ".lock"
+    fd = None
+    try:
+        os.makedirs(os.path.dirname(lock), exist_ok=True)
+        fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o644)
+        deadline = time.time() + timeout
+        while True:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.time() >= deadline:
+                    break
+                time.sleep(0.01)
+    except OSError:
+        pass
+    try:
+        yield
+    finally:
+        if fd is not None:
+            os.close(fd)          # closing the descriptor drops the flock
+
+
+def write_joined(path, joined):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = own_tmp(path)
     with open(tmp, "w") as f:
         json.dump(joined, f, indent=2)
     os.replace(tmp, path)
+
+
+def remember(channel, identity, server, broadcast=False):
+    path = joined_path()
+    with joined_lock(path):
+        joined = read_joined()          # INSIDE the lock, or it is not one
+        joined[channel] = {"identity": identity, "server": server}
+        if broadcast:
+            # Recorded locally so the waker can skip it without a query per
+            # poll.
+            joined[channel]["broadcast"] = True
+        write_joined(path, joined)
     clear_left(channel)
 
 
@@ -1488,15 +1534,19 @@ def forget(channel):
     second copy would drift: both hooks read this file to decide what to poll,
     so a room left here after the server forgot it is polled forever against a
     404.
+
+    Checked once WITHOUT the lock, so a session that was never in the room
+    gets no lock file: a session directory holding one would stop being a
+    stub that `sync --repair` may remove.
     """
-    joined = read_joined()
-    if joined.pop(channel, None) is None:
+    if channel not in read_joined():
         return False
     path = joined_path()
-    tmp = own_tmp(path)
-    with open(tmp, "w") as f:
-        json.dump(joined, f, indent=2)
-    os.replace(tmp, path)
+    with joined_lock(path):
+        joined = read_joined()
+        if joined.pop(channel, None) is None:
+            return False
+        write_joined(path, joined)
     return True
 
 
@@ -2417,16 +2467,14 @@ def repair_shadowed_rooms():
               "different\n  identity in this session's store.")
         return
     path = os.path.join(project_dir(), ".llm_chat", "joined.json")
-    with open(path) as f:
-        at_project = json.load(f) or {}
-    for room, was, now in shadowed:
-        del at_project[room]
-        print(f"dropped #{room} from the project store (it said {was}; "
-              f"this session uses {now})")
-    tmp = own_tmp(path)
-    with open(tmp, "w") as f:
-        json.dump(at_project, f, indent=2)
-    os.replace(tmp, path)
+    with joined_lock(path):
+        with open(path) as f:
+            at_project = json.load(f) or {}
+        for room, was, now in shadowed:
+            if at_project.pop(room, None) is not None:
+                print(f"dropped #{room} from the project store (it said "
+                      f"{was}; this session uses {now})")
+        write_joined(path, at_project)
     # NOT DELETED WHOLESALE. An agent with no session store runs entirely on
     # this file — one on this machine does — so only the entries a session
     # store already shadows are dropped.

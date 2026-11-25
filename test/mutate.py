@@ -808,6 +808,24 @@ MUTATIONS = [
      "two deliverers claim the same messages and the cursor advances once, "
      "so the other agent reads it as you repeating yourself"),
 
+    ("joining holds the joined.json lock across read and write", "bin/llm_chat",
+     "    with joined_lock(path):\n        joined = read_joined()          # INSIDE",
+     "    if True:\n        joined = read_joined()          # INSIDE",
+     "parallel joins in one session each write back the map they read, and "
+     "all but one room is lost while every join prints 'joined'"),
+
+    ("leaving holds the joined.json lock across read and write", "bin/llm_chat",
+     "    with joined_lock(path):\n        joined = read_joined()\n        if joined.pop",
+     "    if True:\n        joined = read_joined()\n        if joined.pop",
+     "parallel leaves resurrect each other's rooms, which are then polled "
+     "forever"),
+
+    ("a no-op leave takes no lock", "bin/llm_chat",
+     "    if channel not in read_joined():\n        return False\n    path = joined_path()",
+     "    if False:\n        return False\n    path = joined_path()",
+     "a session that was never in the room gets a lock file, and its "
+     "directory stops being a stub `sync --repair` can remove"),
+
     ("broadcast rooms are auto-joined locally", "bin/llm_chat",
      '        remember(name, identity, server, broadcast=True)',
      '        pass',
@@ -2106,8 +2124,8 @@ MUTATIONS = [
      "inode, so two deliverers race on one cursor and a message is shown twice"),
 
     ("sync --repair still drops shadowed project rooms", "bin/llm_chat",
-     "    for room, was, now in shadowed:\n        del at_project[room]",
-     "    for room, was, now in shadowed:\n        pass",
+     "        for room, was, now in shadowed:\n            if at_project.pop(room, None) is not None:",
+     "        for room, was, now in shadowed:\n            if False:",
      "the project store's only writer: a shadowed entry naming a departed "
      "identity could otherwise be fixed only by editing state by hand"),
 
@@ -2921,6 +2939,11 @@ NOT_SWEPT = {
         "read_lock()` from do_read is caught by a two-thread test that gets the "
         "message delivered twice; the contextmanager's own mechanics (held, "
         "fail-open, unusable directory, failing unlock) are asserted directly",
+    "bin/llm_chat:joined_lock": "its CALL SITES are swept (join and leave "
+        "without it lose rooms in an eight-thread test); fail-open and an "
+        "unusable directory are asserted directly",
+    "bin/llm_chat:write_joined": "write-then-replace; every join and leave "
+        "test reads back what it wrote",
     "bin/llm_chat:identity_path": "a path join; exercised by every identity test",
     "bin/llm_chat:project_identity": "present, absent and corrupt asserted directly",
     "bin/llm_chat:resolve_identity": "all four precedence cases asserted directly "
